@@ -1,0 +1,76 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Spike S4: input</title>
+<style>body { margin: 0; } canvas { display: block; background: #204060; }</style>
+<canvas id="scene" width="400" height="300" tabindex="0"></canvas>
+<script>
+// Logs every input event the page receives, and what each one was allowed to do.
+const log = window.s4 = [];
+const canvas = document.getElementById('scene');
+const audio = new AudioContext();
+
+window.s4state = () => ({
+    audio: audio.state,
+    locked: document.pointerLockElement === canvas,
+    fullscreen: document.fullscreenElement === canvas,
+    activation: { active: navigator.userActivation.isActive, been: navigator.userActivation.hasBeenActive }
+});
+
+for (const type of ['keydown', 'keyup', 'mousedown', 'mouseup', 'mousemove', 'click', 'wheel', 'touchstart', 'touchmove', 'touchend', 'pointerdown', 'pointermove', 'pointerup'])
+{
+    addEventListener(type, (event) =>
+    {
+        const row = { type, trusted: event.isTrusted, active: navigator.userActivation.isActive };
+
+        if (type.startsWith('key'))
+        {
+            Object.assign(row, { key: event.key, code: event.code, keyCode: event.keyCode, repeat: event.repeat });
+        }
+        else if (type.startsWith('touch'))
+        {
+            row.touches = [...event.touches].map((touch) => [touch.identifier, Math.round(touch.clientX), Math.round(touch.clientY)]);
+        }
+        else
+        {
+            Object.assign(row, { x: event.clientX, y: event.clientY, dx: event.movementX, dy: event.movementY, buttons: event.buttons, locked: document.pointerLockElement === canvas });
+
+            if (type === 'wheel')
+            {
+                row.deltaY = event.deltaY;
+            }
+        }
+
+        log.push(row);
+    }, { passive: true });
+}
+
+// Things only a user gesture may do. window.s4want says which to try on the next mousedown.
+addEventListener('mousedown', async () =>
+{
+    const want = window.s4want;
+
+    window.s4want = null;
+
+    try
+    {
+        if (want === 'audio')
+        {
+            await audio.resume();
+        }
+        else if (want === 'lock')
+        {
+            await canvas.requestPointerLock();
+        }
+        else if (want === 'fullscreen')
+        {
+            await canvas.requestFullscreen();
+        }
+
+        window.s4result = 'ok';
+    }
+    catch (error)
+    {
+        window.s4result = String(error);
+    }
+});
+</script>

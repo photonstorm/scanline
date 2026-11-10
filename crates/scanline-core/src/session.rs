@@ -1,0 +1,657 @@
+//! One debugging session: a browser, the page in it, and the probes inside the page.
+
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use anyhow::{Context, Result, anyhow, bail};
+use scanline_browser::{Browser, LaunchOptions, Profile};
+use scanline_cdp::{Client, Event};
+use serde_json::{Value, json};
+use tokio::sync::Notify;
+
+/// The probe, built by `npm run build:probe` and embedded so host and probe always match.
+const PROBE: &str = include_str!("../../../probe/dist/probe.js");
+
+/// One copy of the probe: in a frame or in a worker.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Instance {
+    /// The flattened protocol session the instance is reached through.
+    pub cdp_session: String,
+    /// The execution context, for frames. Workers have one context and need none.
+    pub context_id: Option<i64>,
+    pub kind: String,
+    pub top: bool,
+    pub url: String,
+}
+
+/// A rendering context an agent can name: `ctx_3`.
+#[derive(Debug, Clone)]
+pub struct ContextRef {
+    pub handle: String,
+    pub instance: Instance,
+    /// The context's ID inside its probe.
+    pub local: i64,
+    pub api: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ConsoleLine {
+    pub seq: u64,
+    pub level: String,
+    pub text: String,
+    /// Wall-clock milliseconds, as the protocol reports them.
+    pub wall: f64,
+    pub source: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct QueuedEvent {
+    pub cursor: u64,
+    pub kind: String,
+    pub data: Value,
+}
+
+#[derive(Default)]
+pub struct State {
+    pub instances: Vec<Instance>,
+    pub contexts: Vec<ContextRef>,
+    pub next_context: u32,
+    pub console: VecDeque<ConsoleLine>,
+    pub console_seq: u64,
+    pub events: VecDeque<QueuedEvent>,
+    pub event_seq: u64,
+    /// Keys the agent is holding, by the name it gave.
+    pub keys_down: Vec<String>,
+    pub buttons: u32,
+    pub pointer: (f64, f64),
+    pub image_seq: u32,
+    pub url: String,
+    /// Why the session can no longer be used, once it cannot.
+    pub dead: Option<String>,
+    worker_urls: HashMap<String, String>,
+    /// Workers stopped at start, waiting for the instrumentation pause where the probe goes in.
+    waiting_workers: HashSet<String>,
+}
+
+pub struct SessionOptions {
+    pub url: String,
+    pub profile: Profile,
+    pub headless: bool,
+    pub width: u32,
+    pub height: u32,
+    pub dpr: Option<f64>,
+    pub level: String,
+    pub start_paused: bool,
+    pub unmodified: bool,
+    pub deterministic: Option<(u32, f64)>,
+    pub browser: Option<PathBuf>,
+}
+
+pub struct Session {
+    pub id: String,
+    pub profile: Profile,
+    pub headless: bool,
+    pub level: String,
+    pub unmodified: bool,
+    pub dir: PathBuf,
+    pub browser_version: String,
+    pub state: Mutex<State>,
+    /// Woken whenever an event is queued or an instance arrives.
+    pub changed: Notify,
+    browser: Browser,
+    client: Client,
+    page: String,
+    key: String,
+    binding: String,
+    source: String,
+}
+
+const CONSOLE_LIMIT: usize = 2000;
+const EVENT_LIMIT: usize = 5000;
+
+fn token() -> String {
+    // Not a secret from the page (which shares the probe's world); it only has to be unguessable
+    // enough that page code does not collide with it by accident.
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    let address = &nanos as *const _ as usize as u128;
+
+    format!("{:016x}", (nanos ^ (address << 17) ^ (std::process::id() as u128) << 40) as u64)
+}
+
+fn injectable(url: &str) -> bool {
+    url.is_empty() || ["http:", "https:", "file:", "blob:", "data:", "about:"].iter().any(|scheme| url.starts_with(scheme))
+}
+
+impl Session {
+    pub async fn launch(id: String, dir: PathBuf, options: SessionOptions) -> Result<Arc<Session>> {
+        std::fs::create_dir_all(dir.join("images")).with_context(|| format!("creating {}", dir.display()))?;
+
+        let browser = Browser::launch(LaunchOptions {
+            url: "about:blank".into(),
+            profile: options.profile,
+            headless: options.headless,
+            width: options.width,
+            height: options.height,
+            browser: options.browser.clone(),
+            user_data_dir: dir.join("browser-profile"),
+            extra_args: Vec::new(),
+        })
+        .await?;
+
+        let client = browser.client.clone();
+        let version = client.send("Browser.getVersion", json!({}), None).await?;
+        let key = format!("scanline.{}", token());
+        let binding = format!("__scanline_{}", token());
+
+        let config = json!({
+            "key": key,
+            "binding": binding,
+            "level": options.level,
+            "unmodified": options.unmodified,
+            "startPaused": options.start_paused,
+            "deterministic": options.deterministic.map(|(seed, fixed_dt)| json!({ "seed": seed, "fixedDt": fixed_dt })),
+            "probeVersion": env!("CARGO_PKG_VERSION"),
+        });
+
+        let source = format!("(() => {{ const __SCANLINE_CONFIG__ = {config};\n{PROBE}\n}})();");
+
+        // Find the page the browser opened and attach to it.
+        let targets = client.send("Target.getTargets", json!({}), None).await?;
+        let target = targets["targetInfos"]
+            .as_array()
+            .and_then(|list| list.iter().find(|info| info["type"] == "page"))
+            .and_then(|info| info["targetId"].as_str())
+            .ok_or_else(|| anyhow!("The browser opened no page."))?
+            .to_string();
+
+        let attached = client.send("Target.attachToTarget", json!({ "targetId": target, "flatten": true }), None).await?;
+        let page = attached["sessionId"].as_str().ok_or_else(|| anyhow!("The browser gave no session for its page."))?.to_string();
+
+        let session = Arc::new(Session {
+            id,
+            profile: options.profile,
+            headless: options.headless,
+            level: options.level.clone(),
+            unmodified: options.unmodified,
+            dir,
+            browser_version: version["product"].as_str().unwrap_or("unknown").to_string(),
+            state: Mutex::new(State { url: options.url.clone(), ..State::default() }),
+            changed: Notify::new(),
+            browser,
+            client: client.clone(),
+            page: page.clone(),
+            key,
+            binding,
+            source,
+        });
+
+        // Listen before anything can happen.
+        tokio::spawn(pump(session.clone(), client.subscribe()));
+
+        let p = Some(page.as_str());
+
+        client.send("Page.enable", json!({}), p).await?;
+        // The probe opens a data channel and compiles run-until expressions; a page's
+        // Content Security Policy must not stop it.
+        client.send("Page.setBypassCSP", json!({ "enabled": true }), p).await?;
+        client.send("Page.addScriptToEvaluateOnNewDocument", json!({ "source": session.source }), p).await?;
+        client.send("Runtime.enable", json!({}), p).await?;
+        client.send("Runtime.addBinding", json!({ "name": session.binding }), p).await?;
+        client.send("Log.enable", json!({}), p).await?;
+
+        let auto = json!({ "autoAttach": true, "waitForDebuggerOnStart": true, "flatten": true });
+
+        client.send("Target.setAutoAttach", auto.clone(), p).await?;
+        // Shared and service workers are not children of the page target (spike S1).
+        client.send("Target.setAutoAttach", auto, None).await?;
+
+        if let Some(dpr) = options.dpr {
+            client
+                .send(
+                    "Emulation.setDeviceMetricsOverride",
+                    json!({ "width": options.width, "height": options.height, "deviceScaleFactor": dpr, "mobile": false }),
+                    p,
+                )
+                .await?;
+        }
+
+        session.navigate(&options.url).await?;
+
+        Ok(session)
+    }
+
+    /// Loads a URL and waits for its load event (or 30 seconds, whichever is first).
+    pub async fn navigate(&self, url: &str) -> Result<()> {
+        let events = self.client.subscribe();
+        let page = self.page.clone();
+        let reply = self.client.send("Page.navigate", json!({ "url": url }), Some(&self.page)).await?;
+
+        if let Some(error) = reply["errorText"].as_str() {
+            bail!("Could not load {url}: {error}. Is the server running?");
+        }
+
+        self.state.lock().unwrap().url = url.to_string();
+
+        let loaded = self
+            .client
+            .wait_for(events, Duration::from_secs(30), |event| event.method == "Page.loadEventFired" && event.session.as_deref() == Some(page.as_str()))
+            .await;
+
+        if loaded.is_err() {
+            self.queue("warning", json!({ "text": format!("{url} had not finished loading after 30 s. Carrying on.") }));
+        }
+
+        // The top frame's probe says hello as the document starts; make sure it has.
+        for _ in 0..40 {
+            if self.top().is_ok() {
+                break;
+            }
+
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+
+        Ok(())
+    }
+
+    pub fn url(&self) -> String {
+        self.state.lock().unwrap().url.clone()
+    }
+
+    pub fn queue(&self, kind: &str, data: Value) {
+        let mut state = self.state.lock().unwrap();
+
+        state.event_seq += 1;
+
+        let cursor = state.event_seq;
+
+        state.events.push_back(QueuedEvent { cursor, kind: kind.to_string(), data });
+
+        if state.events.len() > EVENT_LIMIT {
+            state.events.pop_front();
+        }
+
+        drop(state);
+        self.changed.notify_waiters();
+    }
+
+    /// An error if the browser has gone, saying so and what to do.
+    pub fn check_alive(&self) -> Result<()> {
+        match &self.state.lock().unwrap().dead {
+            Some(reason) => bail!("{} is no longer usable: {reason} Call close, then launch again.", self.id),
+            None => Ok(()),
+        }
+    }
+
+    pub fn instances(&self) -> Vec<Instance> {
+        self.state.lock().unwrap().instances.clone()
+    }
+
+    /// The probe in the page's top frame.
+    pub fn top(&self) -> Result<Instance> {
+        self.check_alive()?;
+
+        self.state.lock().unwrap().instances.iter().find(|instance| instance.top).cloned().ok_or_else(|| {
+            anyhow!("{} has no probe in its page yet. The page may still be loading, or may be a browser error page. Call status to check.", self.id)
+        })
+    }
+
+    /// Calls a method of one probe.
+    pub async fn probe(&self, instance: &Instance, method: &str, args: Value, timeout: Duration) -> Result<Value> {
+        self.check_alive()?;
+
+        let quote = |text: &str| Value::String(text.to_string()).to_string();
+        let expression = format!("globalThis[Symbol.for({})]({}, {})", quote(&self.key), quote(method), quote(&args.to_string()));
+        let mut params = json!({ "expression": expression, "awaitPromise": true, "returnByValue": true });
+
+        if instance.kind == "window" {
+            if let Some(context) = instance.context_id {
+                params["contextId"] = json!(context);
+            }
+        }
+
+        let reply = self.client.send_with_timeout("Runtime.evaluate", params, Some(&instance.cdp_session), timeout).await?;
+
+        if let Some(details) = reply.get("exceptionDetails") {
+            let what = details["exception"]["description"].as_str().or(details["text"].as_str()).unwrap_or("unknown error");
+
+            bail!("The probe could not run {method}: {}", what.lines().next().unwrap_or(what));
+        }
+
+        let text = reply["result"]["value"].as_str().ok_or_else(|| anyhow!("The probe returned nothing for {method}."))?;
+        let mut parsed: Value = serde_json::from_str(text).with_context(|| format!("reading the probe's reply to {method}"))?;
+
+        if let Some(error) = parsed.get("error").and_then(Value::as_str) {
+            bail!("{error}");
+        }
+
+        Ok(parsed["ok"].take())
+    }
+
+    /// Calls a method of every probe at once. Results come back in instance order; a probe
+    /// that fails (its frame went away mid-call, say) is left out.
+    pub async fn probe_all(self: &Arc<Self>, method: &str, args: Value, timeout: Duration) -> Vec<(Instance, Value)> {
+        let mut tasks = tokio::task::JoinSet::new();
+
+        for (index, instance) in self.instances().into_iter().enumerate() {
+            let session = self.clone();
+            let method = method.to_string();
+            let args = args.clone();
+
+            tasks.spawn(async move {
+                let result = session.probe(&instance, &method, args, timeout).await;
+
+                (index, instance, result)
+            });
+        }
+
+        let mut results = Vec::new();
+
+        while let Some(joined) = tasks.join_next().await {
+            if let Ok((index, instance, Ok(value))) = joined {
+                results.push((index, instance, value));
+            }
+        }
+
+        results.sort_by_key(|entry| entry.0);
+        results.into_iter().map(|(_, instance, value)| (instance, value)).collect()
+    }
+
+    /// Gives every context the probes report a stable handle, and returns the current set.
+    pub fn register_contexts(&self, reports: &[(Instance, Value)]) -> Vec<(ContextRef, Value)> {
+        let mut state = self.state.lock().unwrap();
+        let mut current = Vec::new();
+
+        for (instance, status) in reports {
+            for context in status["contexts"].as_array().into_iter().flatten() {
+                let local = context["id"].as_i64().unwrap_or(0);
+                let existing = state.contexts.iter().find(|known| known.instance == *instance && known.local == local).cloned();
+
+                let reference = existing.unwrap_or_else(|| {
+                    state.next_context += 1;
+
+                    let reference = ContextRef {
+                        handle: format!("ctx_{}", state.next_context),
+                        instance: instance.clone(),
+                        local,
+                        api: context["api"].as_str().unwrap_or("").to_string(),
+                    };
+
+                    state.contexts.push(reference.clone());
+
+                    reference
+                });
+
+                current.push((reference, context.clone()));
+            }
+        }
+
+        current
+    }
+
+    /// Resolves a context handle, or explains why it cannot be.
+    pub fn context(&self, handle: &str) -> Result<ContextRef> {
+        let state = self.state.lock().unwrap();
+
+        match state.contexts.iter().find(|context| context.handle == handle) {
+            Some(context) if state.instances.contains(&context.instance) => Ok(context.clone()),
+            Some(_) => bail!("{handle} belongs to an earlier page load of {}. Call status to list current contexts.", self.id),
+            None => bail!("No context \"{handle}\" in {}. Call status to list its contexts.", self.id),
+        }
+    }
+
+    /// Evaluates an expression in the page's top frame.
+    pub async fn evaluate(&self, expression: &str, await_promise: bool) -> Result<Value> {
+        self.check_alive()?;
+
+        let reply = self
+            .client
+            .send(
+                "Runtime.evaluate",
+                json!({ "expression": expression, "awaitPromise": await_promise, "returnByValue": true, "userGesture": true }),
+                Some(&self.page),
+            )
+            .await?;
+
+        if let Some(details) = reply.get("exceptionDetails") {
+            let what = details["exception"]["description"].as_str().or(details["text"].as_str()).unwrap_or("unknown error");
+
+            bail!("The expression threw: {what}");
+        }
+
+        Ok(reply["result"].get("value").cloned().unwrap_or_else(|| json!(reply["result"]["description"].as_str().unwrap_or("undefined"))))
+    }
+
+    /// A command on the page's own protocol session (input, screenshots).
+    pub async fn page_command(&self, method: &str, params: Value) -> Result<Value> {
+        self.check_alive()?;
+        self.client.send_with_timeout(method, params, Some(&self.page), Duration::from_secs(10)).await
+    }
+
+    pub fn browser_pid(&self) -> Option<u32> {
+        self.browser.pid
+    }
+
+    /// The process ID of the browser's GPU process: what OS GPU counters are read by, and
+    /// what a test kills to force a real context loss.
+    pub async fn gpu_pid(&self) -> Option<i64> {
+        let info = self.client.send_with_timeout("SystemInfo.getProcessInfo", json!({}), None, Duration::from_secs(5)).await.ok()?;
+
+        info["processInfo"].as_array()?.iter().find(|process| process["type"] == "GPU")?["id"].as_i64()
+    }
+
+    pub async fn close(&self) {
+        self.browser.close().await;
+    }
+}
+
+/// Reads every event from the browser for the life of the session.
+async fn pump(session: Arc<Session>, mut events: tokio::sync::broadcast::Receiver<Event>) {
+    loop {
+        let event = match events.recv().await {
+            Ok(event) => event,
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(missed)) => {
+                session.queue("warning", json!({ "text": format!("The host fell behind the browser and missed {missed} protocol events.") }));
+                continue;
+            }
+            Err(_) => break,
+        };
+
+        if event.method == "Scanline.disconnected" {
+            session.state.lock().unwrap().dead = Some("the browser exited.".into());
+            session.state.lock().unwrap().instances.clear();
+            session.queue("crashed", json!({ "what": "browser", "detail": "The browser process exited." }));
+            break;
+        }
+
+        handle(&session, event);
+    }
+}
+
+fn handle(session: &Arc<Session>, event: Event) {
+    let params = &event.params;
+
+    match event.method.as_str() {
+        "Runtime.bindingCalled" if params["name"] == session.binding.as_str() => {
+            let Ok(payload) = serde_json::from_str::<Value>(params["payload"].as_str().unwrap_or("")) else { return };
+            let Some(cdp_session) = event.session.clone() else { return };
+
+            match payload["t"].as_str().unwrap_or("") {
+                "hello" => {
+                    let kind = payload["kind"].as_str().unwrap_or("window").to_string();
+                    let mut state = session.state.lock().unwrap();
+
+                    let url = if kind == "worker" {
+                        state.worker_urls.get(&cdp_session).cloned().unwrap_or_default()
+                    } else {
+                        payload["url"].as_str().unwrap_or("").to_string()
+                    };
+
+                    let instance = Instance { cdp_session, context_id: params["executionContextId"].as_i64(), kind, top: payload["top"] == true, url };
+
+                    if instance.top {
+                        // A new document in the top frame replaces the old one.
+                        state.instances.retain(|other| !other.top);
+                    }
+
+                    state.instances.push(instance);
+                    drop(state);
+                    session.changed.notify_waiters();
+                }
+                "" => {}
+                kind => {
+                    let mut data = payload.clone();
+
+                    if let Some(object) = data.as_object_mut() {
+                        object.remove("t");
+                    }
+
+                    session.queue(kind, data);
+                }
+            }
+        }
+
+        "Target.attachedToTarget" => attached(session, params),
+
+        "Debugger.paused" => {
+            let Some(cdp_session) = event.session.as_deref() else { return };
+
+            if params["reason"] == "instrumentation" && session.state.lock().unwrap().waiting_workers.remove(cdp_session) {
+                // The worker is stopped before its first statement, its global complete.
+                // Put the probe in, then switch the debugger off, which lets the worker run.
+                let _ = session.client.post("Runtime.evaluate", json!({ "expression": session.source }), Some(cdp_session));
+                let _ = session.client.post("Debugger.disable", json!({}), Some(cdp_session));
+            }
+        }
+
+        "Target.detachedFromTarget" => {
+            if let Some(gone) = params["sessionId"].as_str() {
+                let mut state = session.state.lock().unwrap();
+
+                state.instances.retain(|instance| instance.cdp_session != gone);
+                state.worker_urls.remove(gone);
+                state.waiting_workers.remove(gone);
+            }
+        }
+
+        "Runtime.executionContextDestroyed" => {
+            if let (Some(cdp_session), Some(context)) = (event.session.as_deref(), params["executionContextId"].as_i64()) {
+                session
+                    .state
+                    .lock()
+                    .unwrap()
+                    .instances
+                    .retain(|instance| !(instance.cdp_session == cdp_session && instance.context_id == Some(context) && instance.kind == "window"));
+            }
+        }
+
+        "Runtime.consoleAPICalled" => {
+            let text = params["args"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|arg| match arg.get("value") {
+                    Some(Value::String(text)) => text.clone(),
+                    Some(value) => value.to_string(),
+                    None => arg["description"].as_str().unwrap_or("").to_string(),
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+
+            console(session, params["type"].as_str().unwrap_or("log"), text, params["timestamp"].as_f64().unwrap_or(0.0), "console");
+        }
+
+        "Runtime.exceptionThrown" => {
+            let details = &params["exceptionDetails"];
+            let text = details["exception"]["description"].as_str().or(details["text"].as_str()).unwrap_or("Uncaught exception").to_string();
+
+            console(session, "exception", text, params["timestamp"].as_f64().unwrap_or(0.0), "page");
+        }
+
+        "Log.entryAdded" => {
+            let entry = &params["entry"];
+
+            console(
+                session,
+                entry["level"].as_str().unwrap_or("info"),
+                entry["text"].as_str().unwrap_or("").to_string(),
+                entry["timestamp"].as_f64().unwrap_or(0.0),
+                entry["source"].as_str().unwrap_or("browser"),
+            );
+        }
+
+        "Inspector.targetCrashed" | "Target.targetCrashed" => {
+            session.queue(
+                "crashed",
+                json!({ "what": "renderer", "detail": "The page's renderer process crashed. Reload with navigate, or close and launch again." }),
+            );
+        }
+
+        "Page.frameNavigated" if event.session.as_deref() == Some(session.page.as_str()) && params["frame"].get("parentId").is_none() => {
+            let url = params["frame"]["url"].as_str().unwrap_or("").to_string();
+
+            session.state.lock().unwrap().url = url.clone();
+            session.queue("navigated", json!({ "url": url }));
+        }
+
+        _ => {}
+    }
+}
+
+fn console(session: &Arc<Session>, level: &str, text: String, wall: f64, source: &str) {
+    let mut state = session.state.lock().unwrap();
+
+    state.console_seq += 1;
+
+    let seq = state.console_seq;
+
+    state.console.push_back(ConsoleLine { seq, level: level.to_string(), text, wall, source: source.to_string() });
+
+    if state.console.len() > CONSOLE_LIMIT {
+        state.console.pop_front();
+    }
+}
+
+/// A new target was attached: a worker, or a frame in another process. Prepare it and let it
+/// run. Nothing here waits for a reply: a target held at start answers only once released,
+/// and the browser runs the commands in the order they were written (spike S1).
+fn attached(session: &Arc<Session>, params: &Value) {
+    let Some(cdp_session) = params["sessionId"].as_str() else { return };
+    let kind = params["targetInfo"]["type"].as_str().unwrap_or("");
+    let url = params["targetInfo"]["url"].as_str().unwrap_or("");
+    let worker = matches!(kind, "worker" | "shared_worker" | "service_worker");
+    let post = |method: &str, params: Value| {
+        let _ = session.client.post(method, params, Some(cdp_session));
+    };
+
+    // The browser's own targets (its UI, extension workers) are released untouched.
+    if injectable(url) && (worker || kind == "iframe") {
+        if kind == "iframe" {
+            post("Page.enable", json!({}));
+            post("Page.setBypassCSP", json!({ "enabled": true }));
+            post("Page.addScriptToEvaluateOnNewDocument", json!({ "source": session.source }));
+        }
+
+        post("Runtime.enable", json!({}));
+        post("Runtime.addBinding", json!({ "name": session.binding }));
+
+        if worker {
+            let mut state = session.state.lock().unwrap();
+
+            state.worker_urls.insert(cdp_session.to_string(), url.to_string());
+            state.waiting_workers.insert(cdp_session.to_string());
+            drop(state);
+
+            // A worker held at start has no WebGPU interfaces yet and blocks on self.location,
+            // so the probe goes in at its first statement instead (see Debugger.paused above).
+            post("Debugger.enable", json!({}));
+            post("Debugger.setInstrumentationBreakpoint", json!({ "instrumentation": "beforeScriptExecution" }));
+        }
+
+        // Auto-attach is not recursive: nested workers need it set on their parent.
+        post("Target.setAutoAttach", json!({ "autoAttach": true, "waitForDebuggerOnStart": true, "flatten": true }));
+    }
+
+    post("Runtime.runIfWaitingForDebugger", json!({}));
+}

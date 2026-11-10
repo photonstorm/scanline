@@ -1,0 +1,109 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Spike S1: injection</title>
+<script>
+// First script on the page.
+const params = new URL(location.href).searchParams;
+const key = params.get('key');
+const other = params.get('other');
+
+window.s1 = {
+    main: {
+        who: 'main',
+        present: typeof globalThis[Symbol.for(key)] === 'function',
+        leaked: Object.getOwnPropertyNames(globalThis).filter((name) => name.startsWith('__scanline')),
+        toString: performance.now.toString(),
+        rafName: requestAnimationFrame.name,
+        rafLength: requestAnimationFrame.length,
+        dateOk: new Date() instanceof Date && Date.prototype.constructor === Date && typeof Date.now() === 'number',
+        symbols: Object.getOwnPropertySymbols(globalThis).length,
+        enumerable: Object.keys(globalThis).filter((name) => /scanline/i.test(name))
+    }
+};
+
+const record = (report) => { window.s1[report.who] = report; };
+
+addEventListener('message', (event) => record(event.data));
+
+const spawn = (who, url, options) =>
+{
+    try
+    {
+        const worker = new Worker(url, options);
+
+        worker.onmessage = (event) => record(event.data);
+        worker.onerror = (event) => record({ who, error: event.message || 'worker error' });
+    }
+    catch (error)
+    {
+        record({ who, error: String(error) });
+    }
+};
+
+spawn('classic', `./s1-worker.js?who=classic&key=${key}`);
+spawn('module', `./s1-module-worker.js?key=${key}`, { type: 'module' });
+spawn('offscreen', `./s1-worker.js?who=offscreen&key=${key}`);
+spawn('nested-parent', `./s1-worker.js?who=nested-parent&key=${key}`);
+
+const blobSource = `
+    const present = typeof globalThis[Symbol.for(${JSON.stringify(key)})] === 'function';
+    self.postMessage({ who: 'blob', present, leaked: Object.getOwnPropertyNames(globalThis).filter((name) => name.startsWith('__scanline')) });
+`;
+
+spawn('blob', URL.createObjectURL(new Blob([blobSource], { type: 'text/javascript' })));
+
+try
+{
+    const shared = new SharedWorker(`./s1-worker.js?who=shared&key=${key}`);
+
+    shared.port.onmessage = (event) => record(event.data);
+    shared.port.start();
+}
+catch (error)
+{
+    record({ who: 'shared', error: String(error) });
+}
+
+if (navigator.serviceWorker)
+{
+    navigator.serviceWorker.register(`./s1-worker.js?who=service&key=${key}`).then(async (registration) =>
+    {
+        const worker = registration.installing || registration.waiting || registration.active;
+
+        navigator.serviceWorker.addEventListener('message', (event) => record(event.data));
+
+        const ask = () => worker.postMessage('report');
+
+        if (worker.state === 'activated')
+        {
+            ask();
+        }
+        else
+        {
+            worker.addEventListener('statechange', () => worker.state === 'activated' && ask());
+        }
+    }).catch((error) => record({ who: 'service', error: String(error) }));
+}
+
+addEventListener('DOMContentLoaded', () =>
+{
+    const frame = (who, src, attributes = {}) =>
+    {
+        const element = document.createElement('iframe');
+
+        Object.assign(element, attributes);
+        element.src = src;
+        document.body.append(element);
+    };
+
+    frame('iframe-same-origin', `./s1-frame.html?who=iframe-same-origin&key=${key}`);
+    frame('iframe-cross-origin', `${other}/fixtures/spikes/s1-frame.html?who=iframe-cross-origin&key=${key}`);
+    frame('iframe-sandboxed', `./s1-frame.html?who=iframe-sandboxed&key=${key}`, { sandbox: 'allow-scripts' });
+
+    const srcdoc = document.createElement('iframe');
+
+    srcdoc.srcdoc = `<script>parent.postMessage({ who: 'iframe-srcdoc', present: typeof globalThis[Symbol.for(${JSON.stringify(key)})] === 'function', leaked: [] }, '*');<\/script>`;
+    document.body.append(srcdoc);
+});
+</script>
+<body></body>

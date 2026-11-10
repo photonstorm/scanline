@@ -1,0 +1,42 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Engine: PixiJS (WebGL or WebGPU renderer)</title>
+<style>body { margin: 0; background: #111; } canvas { display: block; }</style>
+<script type="module">
+import { Application, Graphics } from '/node_modules/pixi.js/dist/pixi.mjs';
+
+const webgpu = new URL(location.href).searchParams.get('renderer') === 'webgpu';
+const app = new Application();
+
+await app.init({ width: 320, height: 240, background: 0x204060, antialias: false, resolution: 1, preference: webgpu ? 'webgpu' : 'webgl' });
+
+document.body.append(app.canvas);
+
+const quads = [0xff0000, 0x00ff00, 0x0000ff].map((colour, i) =>
+{
+    const quad = new Graphics().rect(0, 0, 40, 40).fill(colour);
+
+    quad.label = ['RedQuad', 'GreenQuad', 'BlueQuad'][i];
+    quad.position.set(40 + i * 100, 40);
+    app.stage.addChild(quad);
+
+    return quad;
+});
+
+const mover = new Graphics().rect(0, 0, 20, 20).fill(0xffffff);
+
+mover.label = 'Mover';
+mover.y = 200;
+app.stage.addChild(mover);
+
+const state = window.fixture = { name: webgpu ? 'pixi-webgpu' : 'pixi-webgl', renderer: app.renderer.name, frames: 0, elapsed: 0, lastDelta: 0 };
+
+app.ticker.add((ticker) =>
+{
+    state.lastDelta = ticker.deltaMS;
+    state.elapsed += ticker.deltaMS;
+    state.frames++;
+
+    mover.x = Math.floor(state.elapsed * 0.06) % 300;
+});
+</script>

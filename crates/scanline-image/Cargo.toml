@@ -1,0 +1,11 @@
+[package]
+name = "scanline-image"
+description = "Image services: crop, nearest-neighbour zoom with a pixel grid, downscale, PNG."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+png.workspace = true

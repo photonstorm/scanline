@@ -1,0 +1,11 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Matrix: raw WebGL 2</title>
+<style>body { margin: 0; background: #111; } canvas { display: block; }</style>
+<canvas id="scene" width="320" height="240"></canvas>
+<script type="module">
+import { loop } from './scene.js';
+import { createWebGL2Scene } from './webgl2-scene.js';
+
+loop('webgl2', createWebGL2Scene(document.getElementById('scene')));
+</script>

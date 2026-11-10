@@ -1,0 +1,56 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Engine: three.js (WebGL or WebGPU renderer)</title>
+<style>body { margin: 0; background: #111; } canvas { display: block; }</style>
+<script type="module">
+// ?renderer=webgpu picks the WebGPU renderer. The scene: three cubes, one orbiting.
+const webgpu = new URL(location.href).searchParams.get('renderer') === 'webgpu';
+const THREE = await import(webgpu ? '/node_modules/three/build/three.webgpu.js' : '/node_modules/three/build/three.module.js');
+
+const renderer = webgpu ? new THREE.WebGPURenderer({ antialias: false }) : new THREE.WebGLRenderer({ antialias: false });
+
+renderer.setPixelRatio(1);
+renderer.setSize(320, 240);
+document.body.append(renderer.domElement);
+
+if (webgpu)
+{
+    await renderer.init();
+}
+
+const scene = new THREE.Scene();
+
+scene.background = new THREE.Color(0x204060);
+
+const camera = new THREE.PerspectiveCamera(50, 320 / 240, 0.1, 100);
+
+camera.position.z = 6;
+
+const cubes = [0xff0000, 0x00ff00, 0x0000ff].map((colour, i) =>
+{
+    const cube = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshBasicMaterial({ color: colour }));
+
+    cube.name = ['RedCube', 'GreenCube', 'BlueCube'][i];
+    cube.position.x = (i - 1) * 2;
+    scene.add(cube);
+
+    return cube;
+});
+
+const timer = new THREE.Timer();
+const state = window.fixture = { name: webgpu ? 'three-webgpu' : 'three-webgl', frames: 0, elapsed: 0, lastDelta: 0 };
+
+renderer.setAnimationLoop((timestamp) =>
+{
+    timer.update(timestamp);
+
+    state.lastDelta = timer.getDelta() * 1000;
+    state.elapsed = timer.getElapsed() * 1000;
+
+    cubes[1].position.y = Math.sin(state.elapsed / 500);
+    cubes[1].rotation.y = state.elapsed / 1000;
+
+    renderer.render(scene, camera);
+    state.frames++;
+});
+</script>

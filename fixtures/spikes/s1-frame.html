@@ -1,0 +1,11 @@
+<!doctype html>
+<script>
+const params = new URL(location.href).searchParams;
+const key = params.get('key');
+
+parent.postMessage({
+    who: params.get('who'),
+    present: typeof globalThis[Symbol.for(key)] === 'function',
+    leaked: Object.getOwnPropertyNames(globalThis).filter((name) => name.startsWith('__scanline'))
+}, '*');
+</script>

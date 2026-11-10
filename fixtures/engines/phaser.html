@@ -1,0 +1,44 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Engine: Phaser (WebGL or Canvas renderer)</title>
+<style>body { margin: 0; background: #111; } canvas { display: block; }</style>
+<script src="/node_modules/phaser/dist/phaser.js"></script>
+<script>
+const canvasRenderer = new URL(location.href).searchParams.get('renderer') === 'canvas';
+const state = window.fixture = { name: canvasRenderer ? 'phaser-canvas' : 'phaser-webgl', frames: 0, elapsed: 0, lastDelta: 0 };
+
+class Scene extends Phaser.Scene
+{
+    create ()
+    {
+        this.add.rectangle(60, 60, 40, 40, 0xff0000).setName('RedQuad');
+        this.add.rectangle(160, 60, 40, 40, 0x00ff00).setName('GreenQuad');
+        this.add.rectangle(260, 60, 40, 40, 0x0000ff).setName('BlueQuad');
+
+        this.mover = this.add.rectangle(10, 210, 20, 20, 0xffffff).setName('Mover');
+        this.total = 0;
+    }
+
+    update (time, delta)
+    {
+        this.total += delta;
+
+        state.lastDelta = delta;
+        state.elapsed = this.total;
+        state.frames++;
+
+        this.mover.x = 10 + Math.floor(this.total * 0.06) % 300;
+    }
+}
+
+window.game = new Phaser.Game({
+    type: canvasRenderer ? Phaser.CANVAS : Phaser.WEBGL,
+    width: 320,
+    height: 240,
+    backgroundColor: '#204060',
+    banner: false,
+    // The engine smooths delta by default, which would hide a time jump. Report it raw.
+    fps: { smoothStep: false },
+    scene: Scene
+});
+</script>

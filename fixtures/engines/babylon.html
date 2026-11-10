@@ -1,0 +1,41 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Engine: Babylon.js (WebGL 2)</title>
+<style>body { margin: 0; background: #111; } canvas { display: block; }</style>
+<canvas id="scene" width="320" height="240"></canvas>
+<script src="/node_modules/babylonjs/babylon.js"></script>
+<script>
+const engine = new BABYLON.Engine(document.getElementById('scene'), false);
+const scene = new BABYLON.Scene(engine);
+
+scene.clearColor = new BABYLON.Color4(32 / 255, 64 / 255, 96 / 255, 1);
+
+const camera = new BABYLON.FreeCamera('camera', new BABYLON.Vector3(0, 0, -8), scene);
+
+camera.setTarget(BABYLON.Vector3.Zero());
+
+const boxes = ['RedBox', 'GreenBox', 'BlueBox'].map((name, i) =>
+{
+    const box = BABYLON.MeshBuilder.CreateBox(name, { size: 1 }, scene);
+    const material = new BABYLON.StandardMaterial(name + 'Material', scene);
+
+    material.emissiveColor = new BABYLON.Color3(i === 0 ? 1 : 0, i === 1 ? 1 : 0, i === 2 ? 1 : 0);
+    material.disableLighting = true;
+    box.material = material;
+    box.position.x = (i - 1) * 2;
+
+    return box;
+});
+
+const state = window.fixture = { name: 'babylon-webgl2', frames: 0, elapsed: 0, lastDelta: 0 };
+
+engine.runRenderLoop(() =>
+{
+    state.lastDelta = engine.getDeltaTime();
+    state.elapsed += state.lastDelta;
+    state.frames++;
+
+    boxes[1].position.y = Math.sin(state.elapsed / 500);
+    scene.render();
+});
+</script>
