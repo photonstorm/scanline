@@ -139,7 +139,19 @@ pub struct Session {
     key: String,
     binding: String,
     source: String,
+    /// The hidden page captures are replayed in, once one has been needed.
+    replay: tokio::sync::Mutex<Option<ReplayPage>>,
 }
+
+/// The replay page: a second, hidden target in the session's browser, on the same GPU.
+struct ReplayPage {
+    cdp_session: String,
+    /// Captures whose stream and blobs it already holds.
+    loaded: HashSet<String>,
+}
+
+/// The replay page's script, built by `npm run build:replay`.
+const REPLAY: &str = include_str!("../../../replay/dist/replay.js");
 
 const CONSOLE_LIMIT: usize = 2000;
 const EVENT_LIMIT: usize = 5000;
@@ -220,6 +232,7 @@ impl Session {
             key,
             binding,
             source,
+            replay: tokio::sync::Mutex::new(None),
         });
 
         // Listen before anything can happen.
@@ -496,6 +509,121 @@ impl Session {
     pub async fn page_command(&self, method: &str, params: Value) -> Result<Value> {
         self.check_alive()?;
         self.client.send_with_timeout(method, params, Some(&self.page), Duration::from_secs(10)).await
+    }
+
+    /// Calls a method of the replay page, opening the page first if this is the first call.
+    pub async fn replay(&self, method: &str, args: &Value, timeout: Duration) -> Result<Value> {
+        let mut page = self.replay.lock().await;
+
+        self.replay_on(&mut page, method, args, timeout).await
+    }
+
+    async fn replay_on(&self, page: &mut Option<ReplayPage>, method: &str, args: &Value, timeout: Duration) -> Result<Value> {
+        self.check_alive()?;
+
+        if page.is_none() {
+            // Hidden: it is seen through the protocol but has no window or tab.
+            let target =
+                self.client.send("Target.createTarget", json!({ "url": "about:blank", "hidden": true }), None).await.context("opening the replay page")?;
+            let target = target["targetId"].as_str().ok_or_else(|| anyhow!("The browser gave no target for the replay page."))?;
+            let attached = self.client.send("Target.attachToTarget", json!({ "targetId": target, "flatten": true }), None).await?;
+            let cdp_session = attached["sessionId"].as_str().ok_or_else(|| anyhow!("The browser gave no session for the replay page."))?.to_string();
+
+            self.client.send("Runtime.evaluate", json!({ "expression": REPLAY }), Some(&cdp_session)).await.context("loading the replay script")?;
+
+            *page = Some(ReplayPage { cdp_session, loaded: HashSet::new() });
+        }
+
+        let quote = |text: &str| Value::String(text.to_string()).to_string();
+        let expression = format!("__scanlineReplay({}, {})", quote(method), quote(&args.to_string()));
+        let cdp_session = page.as_ref().unwrap().cdp_session.clone();
+
+        let reply = self
+            .client
+            .send_with_timeout(
+                "Runtime.evaluate",
+                json!({ "expression": expression, "awaitPromise": true, "returnByValue": true }),
+                Some(&cdp_session),
+                timeout,
+            )
+            .await;
+
+        let reply = match reply {
+            Ok(reply) => reply,
+            Err(error) => {
+                // The replay page may have crashed running a frame the game survived. Start afresh next time.
+                *page = None;
+
+                return Err(error.context("The replay page did not answer. It has been discarded; the next call opens a new one."));
+            }
+        };
+
+        if let Some(details) = reply.get("exceptionDetails") {
+            let what = details["exception"]["description"].as_str().or(details["text"].as_str()).unwrap_or("unknown error");
+
+            bail!("The replay page failed in {method}: {}", what.lines().next().unwrap_or(what));
+        }
+
+        let text = reply["result"]["value"].as_str().ok_or_else(|| anyhow!("The replay page returned nothing for {method}."))?;
+        let mut parsed: Value = serde_json::from_str(text).with_context(|| format!("reading the replay page's reply to {method}"))?;
+
+        if let Some(error) = parsed.get("error").and_then(Value::as_str) {
+            bail!("{error}");
+        }
+
+        Ok(parsed["ok"].take())
+    }
+
+    /// Gives the replay page a capture, unless it already has it. `stream` is the capture's
+    /// description; `blob` fetches one of its blobs by index.
+    pub async fn replay_load(&self, key: &str, stream: &Value, blob: &(dyn Fn(usize) -> Result<Vec<u8>> + Sync)) -> Result<()> {
+        use base64::Engine;
+        use std::io::Write;
+
+        let mut page = self.replay.lock().await;
+
+        if page.as_ref().is_some_and(|page| page.loaded.contains(key)) {
+            return Ok(());
+        }
+
+        let pack = |bytes: &[u8]| -> Result<String> {
+            let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+
+            encoder.write_all(bytes)?;
+
+            Ok(base64::engine::general_purpose::STANDARD.encode(encoder.finish()?))
+        };
+
+        let body = pack(&serde_json::to_vec(stream)?)?;
+
+        self.replay_on(&mut page, "load", &json!({ "key": key, "body": body }), Duration::from_secs(60)).await?;
+
+        // A few megabytes of blobs to a call.
+        let count = stream["blobs"].as_array().map_or(0, Vec::len);
+        let mut from = 0;
+
+        while from < count {
+            let mut batch = Vec::new();
+            let mut size = 0;
+
+            while from + batch.len() < count && (batch.is_empty() || size < 6_000_000) {
+                let packed = pack(&blob(from + batch.len())?)?;
+
+                size += packed.len();
+                batch.push(packed);
+            }
+
+            let sent = batch.len();
+
+            self.replay_on(&mut page, "blobs", &json!({ "key": key, "from": from, "blobs": batch }), Duration::from_secs(60)).await?;
+            from += sent;
+        }
+
+        if let Some(page) = page.as_mut() {
+            page.loaded.insert(key.to_string());
+        }
+
+        Ok(())
     }
 
     pub fn browser_pid(&self) -> Option<u32> {

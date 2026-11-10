@@ -224,7 +224,7 @@ pub async fn resources(session: &Arc<Session>, params: &Value) -> Result<Value> 
 
 // ---- One object ----
 
-fn gl_name(value: &Value) -> String {
+pub(crate) fn gl_name(value: &Value) -> String {
     let Some(code) = value.as_u64() else { return value.to_string() };
 
     let name = match code {
@@ -310,7 +310,7 @@ fn gl_name(value: &Value) -> String {
 }
 
 /// Blend factors 0 and 1 share their numbers with false and true, so they are named here.
-fn factor(value: &Value) -> String {
+pub(crate) fn factor(value: &Value) -> String {
     match value.as_u64() {
         Some(0) => "ZERO".into(),
         Some(1) => "ONE".into(),
@@ -318,7 +318,7 @@ fn factor(value: &Value) -> String {
     }
 }
 
-fn list(value: &Value) -> String {
+pub(crate) fn list(value: &Value) -> String {
     value.as_array().map(|items| items.iter().map(|item| item.to_string()).collect::<Vec<_>>().join(", ")).unwrap_or_default()
 }
 

@@ -1,0 +1,1217 @@
+// The replay page. Scanline opens it as a second, hidden target in the browser the game is
+// running in, gives it a capture, and has it run the captured frame again on the same GPU
+// (02-ARCHITECTURE.md, section 4.4).
+//
+// Every question about a point inside a frame is answered here: the picture after draw N,
+// which draws changed a pixel. There is no mid-frame halt of the game; the capture is run
+// as far as the question needs and the result read back. Answers are `gpu-measured`.
+
+import { METHOD_NAMES } from '../../probe/src/hooks/generated';
+
+type Json = any;
+
+interface CaptureData
+{
+    header: Json;
+    initial: Json;
+    objects: Json[];
+    methods?: string[];
+    commands: Json[];
+    draws: Json[];
+    blobs: number[];
+}
+
+interface Loaded
+{
+    data: CaptureData;
+    blobs: Array<Uint8Array | null>;
+}
+
+const loaded = new Map<string, Loaded>();
+
+// ---- Loading ----
+
+function fromBase64 (text: string): Uint8Array
+{
+    const binary = atob(text);
+    const bytes = new Uint8Array(binary.length);
+
+    for (let i = 0; i < binary.length; i++)
+    {
+        bytes[i] = binary.charCodeAt(i);
+    }
+
+    return bytes;
+}
+
+async function gunzip (bytes: Uint8Array): Promise<Uint8Array>
+{
+    return new Uint8Array(await new Response(new Blob([bytes as BlobPart]).stream().pipeThrough(new DecompressionStream('gzip'))).arrayBuffer());
+}
+
+async function gzip (bytes: Uint8Array): Promise<Uint8Array>
+{
+    return new Uint8Array(await new Response(new Blob([bytes as BlobPart]).stream().pipeThrough(new CompressionStream('gzip'))).arrayBuffer());
+}
+
+function toBase64 (bytes: Uint8Array): string
+{
+    let binary = '';
+
+    for (let i = 0; i < bytes.length; i += 0x8000)
+    {
+        binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000) as unknown as number[]);
+    }
+
+    return btoa(binary);
+}
+
+// ---- Running a capture ----
+
+const TYPED: Record<string, any> = {
+    Int8Array, Uint8Array, Uint8ClampedArray, Int16Array, Uint16Array, Int32Array, Uint32Array, Float32Array, Float64Array, BigInt64Array, BigUint64Array
+};
+
+const TEXTURE_2D = 0x0DE1;
+const TEXTURE_CUBE_MAP = 0x8513;
+const TEXTURE_3D = 0x806F;
+const TEXTURE_2D_ARRAY = 0x8C1A;
+
+// How RGBA data read back from a texture is uploaded into a texture of each internal
+// format: [format, channels]. The type comes from the kind of data (bytes or floats).
+const UPLOAD: Record<number, [number, number]> = {
+    0x1908: [0x1908, 4], 0x8058: [0x1908, 4], 0x8C43: [0x1908, 4], 0x8056: [0x1908, 4], 0x8057: [0x1908, 4], 0x881A: [0x1908, 4], 0x8814: [0x1908, 4],
+    0x1907: [0x1907, 3], 0x8051: [0x1907, 3], 0x8C41: [0x1907, 3], 0x8D62: [0x1907, 3], 0x881B: [0x1907, 3], 0x8815: [0x1907, 3], 0x8C3A: [0x1907, 3], 0x8C3D: [0x1907, 3],
+    0x8229: [0x1903, 1], 0x822D: [0x1903, 1], 0x822E: [0x1903, 1],
+    0x822B: [0x8227, 2], 0x822F: [0x8227, 2], 0x8230: [0x8227, 2]
+};
+
+class Run
+{
+    capture: Loaded;
+    canvas: OffscreenCanvas | HTMLCanvasElement;
+    gl: any;
+    gl2: boolean;
+    objects = new Map<string, any>();
+    locations = new Map<string, WebGLUniformLocation | null>();
+    extensions = new Map<string, any>();
+    notes: string[] = [];
+
+    // What the run has bound, tracked as commands go by, so readbacks can put it back.
+    drawFramebuffer: any = null;
+    readFramebuffer: any = null;
+    packBuffer: any = null;
+
+    constructor (capture: Loaded)
+    {
+        const header = capture.data.header;
+
+        this.capture = capture;
+        this.gl2 = header.api === 'webgl2';
+        this.canvas = document.createElement('canvas');
+        this.canvas.width = header.width;
+        this.canvas.height = header.height;
+
+        // The page's own attributes, but the drawing buffer is kept so it can be read at any point.
+        this.gl = this.canvas.getContext(header.api, { ...(header.attributes ?? {}), preserveDrawingBuffer: true });
+
+        if (!this.gl)
+        {
+            throw new Error(`The browser would not create a ${header.api} context for the replay.`);
+        }
+
+        for (const name of header.extensions ?? [])
+        {
+            this.extensions.set(name, this.gl.getExtension(name));
+        }
+    }
+
+    note (text: string): void
+    {
+        if (!this.notes.includes(text))
+        {
+            this.notes.push(text);
+        }
+    }
+
+    object (kind: string, id: number | null): any
+    {
+        return id ? this.objects.get(`${kind}:${id}`) ?? null : null;
+    }
+
+    blob (index: number): Uint8Array
+    {
+        const bytes = this.capture.blobs[index];
+
+        if (!bytes)
+        {
+            throw new Error(`Blob ${index} of the capture was not delivered to the replay page.`);
+        }
+
+        return bytes;
+    }
+
+    // A blob as a typed array of the kind the page passed. Copied, so views are aligned.
+    typed (name: string, bytes: Uint8Array): any
+    {
+        const copy = bytes.slice().buffer;
+
+        if (name === 'ArrayBuffer')
+        {
+            return copy;
+        }
+
+        if (name === 'DataView')
+        {
+            return new DataView(copy);
+        }
+
+        return new (TYPED[name] ?? Uint8Array)(copy);
+    }
+
+    decode (value: Json): any
+    {
+        if (value === null || typeof value !== 'object')
+        {
+            return value;
+        }
+
+        if ('o' in value)
+        {
+            return this.object(value.o, value.i);
+        }
+
+        if ('u' in value)
+        {
+            return this.location(value.u, value.n);
+        }
+
+        if ('f' in value)
+        {
+            return Number(value.f);
+        }
+
+        if ('img' in value)
+        {
+            return new ImageData(new Uint8ClampedArray(this.blob(value.img).slice().buffer), value.w, value.h);
+        }
+
+        if ('b' in value)
+        {
+            return this.typed(value.t, this.blob(value.b));
+        }
+
+        if ('a' in value)
+        {
+            const items = value.a.map((item: Json) => (typeof item === 'string' ? Number(item) : this.decode(item)));
+
+            return value.t ? new (TYPED[value.t] ?? Float32Array)(items) : items;
+        }
+
+        return null;
+    }
+
+    location (program: number, name: string): WebGLUniformLocation | null
+    {
+        const key = `${program}:${name}`;
+
+        if (!this.locations.has(key))
+        {
+            const object = this.object('program', program);
+
+            this.locations.set(key, object ? this.gl.getUniformLocation(object, name) : null);
+        }
+
+        return this.locations.get(key) ?? null;
+    }
+
+    // ---- Objects ----
+
+    createObjects (): void
+    {
+        const gl = this.gl;
+        const objects = this.capture.data.objects;
+
+        // Made empty first, so that anything can refer to anything.
+        for (const object of objects)
+        {
+            if (object.createdInFrame || this.wasCreatedInFrame(object))
+            {
+                continue;
+            }
+
+            let made: any = null;
+
+            switch (object.kind)
+            {
+                case 'texture': made = gl.createTexture(); break;
+                case 'buffer': made = gl.createBuffer(); break;
+                case 'shader': made = gl.createShader(object.type); break;
+                case 'program': made = gl.createProgram(); break;
+                case 'framebuffer': made = gl.createFramebuffer(); break;
+                case 'renderbuffer': made = gl.createRenderbuffer(); break;
+                case 'sampler': made = this.gl2 ? gl.createSampler() : null; break;
+                case 'vertex_array': made = this.createVertexArray(); break;
+                case 'query': made = this.gl2 ? (object.transformFeedback ? gl.createTransformFeedback() : gl.createQuery()) : null; break;
+            }
+
+            this.objects.set(`${object.kind}:${object.id}`, made);
+        }
+
+        const of = (kind: string): Json[] => objects.filter((object) => object.kind === kind && this.objects.get(`${kind}:${object.id}`));
+
+        for (const buffer of of('buffer'))
+        {
+            this.fillBuffer(buffer);
+        }
+
+        for (const texture of of('texture'))
+        {
+            this.fillTexture(texture);
+        }
+
+        for (const renderbuffer of of('renderbuffer'))
+        {
+            if (renderbuffer.width && renderbuffer.height)
+            {
+                gl.bindRenderbuffer(0x8D41, this.object('renderbuffer', renderbuffer.id));
+
+                if (renderbuffer.samples > 0 && this.gl2)
+                {
+                    gl.renderbufferStorageMultisample(0x8D41, renderbuffer.samples, renderbuffer.internalFormat, renderbuffer.width, renderbuffer.height);
+                }
+                else
+                {
+                    gl.renderbufferStorage(0x8D41, renderbuffer.internalFormat, renderbuffer.width, renderbuffer.height);
+                }
+            }
+        }
+
+        gl.bindRenderbuffer(0x8D41, null);
+
+        for (const shader of of('shader'))
+        {
+            const object = this.object('shader', shader.id);
+
+            gl.shaderSource(object, shader.source ?? '');
+            gl.compileShader(object);
+        }
+
+        for (const program of of('program'))
+        {
+            this.buildProgram(program);
+        }
+
+        for (const sampler of of('sampler'))
+        {
+            const object = this.object('sampler', sampler.id);
+
+            for (const pname of Object.keys(sampler.params ?? {}))
+            {
+                gl.samplerParameterf(object, Number(pname), sampler.params[pname]);
+            }
+        }
+
+        for (const framebuffer of of('framebuffer'))
+        {
+            this.buildFramebuffer(framebuffer);
+        }
+
+        gl.bindFramebuffer(0x8D40, null);
+    }
+
+    // An object the frame itself creates is made when its create call is replayed.
+    wasCreatedInFrame (object: Json): boolean
+    {
+        return object.created >= this.capture.data.header.frame;
+    }
+
+    createVertexArray (): any
+    {
+        if (this.gl2)
+        {
+            return this.gl.createVertexArray();
+        }
+
+        return this.extensions.get('OES_vertex_array_object')?.createVertexArrayOES() ?? null;
+    }
+
+    bindVertexArray (vao: any): void
+    {
+        if (this.gl2)
+        {
+            this.gl.bindVertexArray(vao);
+        }
+        else
+        {
+            this.extensions.get('OES_vertex_array_object')?.bindVertexArrayOES(vao);
+        }
+    }
+
+    fillBuffer (buffer: Json): void
+    {
+        const gl = this.gl;
+        const target = buffer.element ? 0x8893 : 0x8892;
+
+        gl.bindBuffer(target, this.object('buffer', buffer.id));
+
+        if (typeof buffer.data === 'number')
+        {
+            gl.bufferData(target, this.blob(buffer.data), buffer.usage || 0x88E4);
+        }
+        else if (buffer.size > 0)
+        {
+            gl.bufferData(target, buffer.size, buffer.usage || 0x88E4);
+
+            if (buffer.unreadable)
+            {
+                this.note(`A buffer's contents could not be captured: ${buffer.unreadable}`);
+            }
+        }
+
+        gl.bindBuffer(target, null);
+    }
+
+    fillTexture (texture: Json): void
+    {
+        const gl = this.gl;
+        const target = texture.target;
+
+        if (!target)
+        {
+            return;
+        }
+
+        const object = this.object('texture', texture.id);
+
+        gl.bindTexture(target, object);
+
+        // The page's unpack settings are applied later with the rest of the initial state.
+        // Here the data is exactly what was read back: one byte alignment, no flips.
+        gl.pixelStorei(0x0CF5, 1);
+
+        for (const pname of Object.keys(texture.params ?? {}))
+        {
+            gl.texParameterf(target, Number(pname), texture.params[pname]);
+        }
+
+        if (!texture.width || !texture.height)
+        {
+            return;
+        }
+
+        const three = target === TEXTURE_3D || target === TEXTURE_2D_ARRAY;
+        const data: Json[] = texture.data ?? [];
+        const kind: string = data[0]?.kind ?? 'unorm8';
+        const upload = UPLOAD[texture.internalFormat];
+        const levels = texture.levels || 1;
+
+        // Storage first.
+        if (texture.immutable && this.gl2)
+        {
+            if (three)
+            {
+                gl.texStorage3D(target, levels, texture.internalFormat, texture.width, texture.height, texture.depth);
+            }
+            else
+            {
+                gl.texStorage2D(target, levels, texture.internalFormat, texture.width, texture.height);
+            }
+        }
+
+        if (texture.unreadable || !upload || kind === 'int')
+        {
+            // Contents unknown. Allocate what can be allocated so the frame still runs.
+            this.note(texture.unreadable
+                ? `A ${texture.format} texture's contents could not be captured (${texture.unreadable}), so replay shows it empty.`
+                : `Replaying ${texture.format} textures is not built yet, so one is empty in the replay.`);
+
+            if (!texture.immutable && upload && !three)
+            {
+                const faces = target === TEXTURE_CUBE_MAP ? [0x8515, 0x8516, 0x8517, 0x8518, 0x8519, 0x851A] : [TEXTURE_2D];
+
+                for (const face of faces)
+                {
+                    gl.texImage2D(face, 0, texture.internalFormat, texture.width, texture.height, 0, upload[0], texture.type || 0x1401, null);
+                }
+            }
+
+            return;
+        }
+
+        const [format, channels] = upload;
+        const type = kind === 'float' ? 0x1406 : 0x1401;
+
+        for (const part of data)
+        {
+            const width = Math.max(1, texture.width >> part.level);
+            const height = Math.max(1, texture.height >> part.level);
+            const rgba = kind === 'float' ? new Float32Array(this.blob(part.blob).slice().buffer) : this.blob(part.blob);
+
+            // The readback is always four channels; the upload is what the format takes.
+            let pixels: Float32Array | Uint8Array = rgba;
+
+            if (channels < 4)
+            {
+                pixels = new (rgba.constructor as any)(width * height * channels);
+
+                for (let i = 0, o = 0; i < width * height; i++)
+                {
+                    for (let channel = 0; channel < channels; channel++)
+                    {
+                        pixels[o++] = rgba[i * 4 + channel];
+                    }
+                }
+            }
+
+            if (three)
+            {
+                if (texture.immutable)
+                {
+                    gl.texSubImage3D(target, part.level, 0, 0, part.layer, width, height, 1, format, type, pixels);
+                }
+                else
+                {
+                    if (part.layer === 0)
+                    {
+                        gl.texImage3D(target, part.level, texture.internalFormat, width, height, texture.depth, 0, format, type, null);
+                    }
+
+                    gl.texSubImage3D(target, part.level, 0, 0, part.layer, width, height, 1, format, type, pixels);
+                }
+            }
+            else
+            {
+                const face = target === TEXTURE_CUBE_MAP ? 0x8515 + part.layer : TEXTURE_2D;
+
+                if (texture.immutable)
+                {
+                    gl.texSubImage2D(face, part.level, 0, 0, width, height, format, type, pixels);
+                }
+                else
+                {
+                    gl.texImage2D(face, part.level, texture.internalFormat, width, height, 0, format, type, pixels);
+                }
+            }
+        }
+
+        if (texture.generatedMips && data.length)
+        {
+            gl.generateMipmap(target);
+        }
+
+        gl.bindTexture(target, null);
+    }
+
+    buildProgram (program: Json): void
+    {
+        const gl = this.gl;
+        const object = this.object('program', program.id);
+
+        for (const shader of program.shaders ?? [])
+        {
+            const attached = this.object('shader', shader);
+
+            if (attached)
+            {
+                gl.attachShader(object, attached);
+            }
+        }
+
+        // The same attribute locations the page's program had.
+        for (const name of Object.keys(program.attributes ?? {}))
+        {
+            if (program.attributes[name] >= 0)
+            {
+                gl.bindAttribLocation(object, program.attributes[name], name);
+            }
+        }
+
+        if (!(program.shaders ?? []).length)
+        {
+            return;
+        }
+
+        gl.linkProgram(object);
+
+        if (!gl.getProgramParameter(object, 0x8B82))
+        {
+            this.note(`A program did not link in the replay: ${gl.getProgramInfoLog(object)}`);
+
+            return;
+        }
+
+        for (const index of Object.keys(program.blockBindings ?? {}))
+        {
+            gl.uniformBlockBinding(object, Number(index), program.blockBindings[index]);
+        }
+
+        // Uniforms as they stood when the frame began, set by each one's declared type.
+        const values: Record<string, number[]> = program.uniforms ?? {};
+        const count: number = gl.getProgramParameter(object, 0x8B86);
+
+        gl.useProgram(object);
+
+        for (let i = 0; i < count; i++)
+        {
+            const active = gl.getActiveUniform(object, i);
+
+            if (!active)
+            {
+                continue;
+            }
+
+            const base = active.name.replace(/\[0\]$/, '');
+
+            for (const name of new Set([active.name, base]))
+            {
+                if (values[name])
+                {
+                    this.setUniform(gl.getUniformLocation(object, name), active.type, values[name]);
+                }
+            }
+
+            // Elements of an array the page set one at a time.
+            for (let element = 1; element < active.size; element++)
+            {
+                const name = `${base}[${element}]`;
+
+                if (values[name])
+                {
+                    this.setUniform(gl.getUniformLocation(object, name), active.type, values[name]);
+                }
+            }
+        }
+
+        gl.useProgram(null);
+    }
+
+    setUniform (location: WebGLUniformLocation | null, type: number, values: number[]): void
+    {
+        const gl = this.gl;
+
+        if (!location)
+        {
+            return;
+        }
+
+        switch (type)
+        {
+            case 0x1406: gl.uniform1fv(location, values); break;
+            case 0x8B50: gl.uniform2fv(location, values); break;
+            case 0x8B51: gl.uniform3fv(location, values); break;
+            case 0x8B52: gl.uniform4fv(location, values); break;
+            case 0x8B5A: gl.uniformMatrix2fv(location, false, values); break;
+            case 0x8B5B: gl.uniformMatrix3fv(location, false, values); break;
+            case 0x8B5C: gl.uniformMatrix4fv(location, false, values); break;
+            case 0x8B65: gl.uniformMatrix2x3fv(location, false, values); break;
+            case 0x8B66: gl.uniformMatrix2x4fv(location, false, values); break;
+            case 0x8B67: gl.uniformMatrix3x2fv(location, false, values); break;
+            case 0x8B68: gl.uniformMatrix3x4fv(location, false, values); break;
+            case 0x8B69: gl.uniformMatrix4x2fv(location, false, values); break;
+            case 0x8B6A: gl.uniformMatrix4x3fv(location, false, values); break;
+            case 0x1405: gl.uniform1uiv(location, values); break;
+            case 0x8DC6: gl.uniform2uiv(location, values); break;
+            case 0x8DC7: gl.uniform3uiv(location, values); break;
+            case 0x8DC8: gl.uniform4uiv(location, values); break;
+            case 0x8B53: case 0x8B57: gl.uniform2iv(location, values); break;
+            case 0x8B54: case 0x8B58: gl.uniform3iv(location, values); break;
+            case 0x8B55: case 0x8B59: gl.uniform4iv(location, values); break;
+            // Integers, booleans and every kind of sampler.
+            default: gl.uniform1iv(location, values); break;
+        }
+    }
+
+    buildFramebuffer (framebuffer: Json): void
+    {
+        const gl = this.gl;
+
+        gl.bindFramebuffer(0x8D40, this.object('framebuffer', framebuffer.id));
+
+        for (const point of Object.keys(framebuffer.attachments ?? {}))
+        {
+            const attached = framebuffer.attachments[point];
+
+            if (attached.renderbuffer)
+            {
+                gl.framebufferRenderbuffer(0x8D40, Number(point), 0x8D41, this.object('renderbuffer', attached.renderbuffer));
+            }
+            else if (attached.layer !== undefined)
+            {
+                gl.framebufferTextureLayer(0x8D40, Number(point), this.object('texture', attached.texture), attached.level ?? 0, attached.layer);
+            }
+            else
+            {
+                gl.framebufferTexture2D(0x8D40, Number(point), attached.face ?? TEXTURE_2D, this.object('texture', attached.texture), attached.level ?? 0);
+            }
+        }
+
+        if (framebuffer.drawBuffers && this.gl2)
+        {
+            gl.drawBuffers(framebuffer.drawBuffers);
+        }
+
+        if (framebuffer.readBuffer && this.gl2)
+        {
+            gl.readBuffer(framebuffer.readBuffer);
+        }
+    }
+
+    // ---- State ----
+
+    applyLayout (layout: Json): void
+    {
+        const gl = this.gl;
+        const instancing = this.gl2 ? null : this.extensions.get('ANGLE_instanced_arrays');
+
+        for (const attrib of layout.attribs ?? [])
+        {
+            if (attrib.buffer)
+            {
+                gl.bindBuffer(0x8892, this.object('buffer', attrib.buffer));
+
+                if (attrib.integer && this.gl2)
+                {
+                    gl.vertexAttribIPointer(attrib.index, attrib.size, attrib.type, attrib.stride, attrib.offset);
+                }
+                else
+                {
+                    gl.vertexAttribPointer(attrib.index, attrib.size, attrib.type, attrib.normalized, attrib.stride, attrib.offset);
+                }
+            }
+
+            if (attrib.enabled)
+            {
+                gl.enableVertexAttribArray(attrib.index);
+            }
+
+            if (attrib.divisor)
+            {
+                if (this.gl2)
+                {
+                    gl.vertexAttribDivisor(attrib.index, attrib.divisor);
+                }
+                else
+                {
+                    instancing?.vertexAttribDivisorANGLE(attrib.index, attrib.divisor);
+                }
+            }
+        }
+
+        gl.bindBuffer(0x8893, this.object('buffer', layout.element));
+    }
+
+    applyInitialState (): void
+    {
+        const gl = this.gl;
+        const state = this.capture.data.initial;
+        const caps = [0x0BE2, 0x0B44, 0x0B71, 0x0BD0, 0x8037, 0x809E, 0x80A0, 0x0C11, 0x0B90, 0x8C89];
+
+        for (const vao of state.vertexArrays ?? [])
+        {
+            const object = this.object('vertex_array', vao.id);
+
+            if (object)
+            {
+                this.bindVertexArray(object);
+                this.applyLayout(vao);
+            }
+        }
+
+        this.bindVertexArray(null);
+        this.applyLayout(state.defaultVertexArray);
+        this.bindVertexArray(this.object('vertex_array', state.vertexArray));
+
+        gl.bindBuffer(0x8892, this.object('buffer', state.arrayBuffer));
+
+        for (const target of Object.keys(state.otherBuffers ?? {}))
+        {
+            if (this.gl2)
+            {
+                gl.bindBuffer(Number(target), this.object('buffer', state.otherBuffers[target]));
+            }
+        }
+
+        state.units.forEach((unit: Json, index: number) =>
+        {
+            gl.activeTexture(0x84C0 + index);
+            gl.bindTexture(TEXTURE_2D, this.object('texture', unit.t2d));
+            gl.bindTexture(TEXTURE_CUBE_MAP, this.object('texture', unit.cube));
+
+            if (this.gl2)
+            {
+                gl.bindTexture(TEXTURE_3D, this.object('texture', unit.t3d));
+                gl.bindTexture(TEXTURE_2D_ARRAY, this.object('texture', unit.array));
+                gl.bindSampler(index, this.object('sampler', unit.sampler));
+            }
+        });
+
+        gl.activeTexture(0x84C0 + state.unit);
+
+        caps.forEach((cap, index) =>
+        {
+            if (cap === 0x8C89 && !this.gl2)
+            {
+                return;
+            }
+
+            if (state.caps[index])
+            {
+                gl.enable(cap);
+            }
+            else
+            {
+                gl.disable(cap);
+            }
+        });
+
+        gl.viewport(...(state.viewport as [number, number, number, number]));
+        gl.scissor(...(state.scissor as [number, number, number, number]));
+        gl.clearColor(...(state.clearColor as [number, number, number, number]));
+        gl.clearDepth(state.clearDepth);
+        gl.clearStencil(state.clearStencil);
+        gl.colorMask(...(state.colorMask as [boolean, boolean, boolean, boolean]));
+        gl.depthMask(state.depthMask);
+        gl.depthFunc(state.depthFunc);
+        gl.depthRange(state.depthRange[0], state.depthRange[1]);
+        gl.blendColor(...(state.blendColor as [number, number, number, number]));
+        gl.blendEquationSeparate(state.blendEquationRgb, state.blendEquationAlpha);
+        gl.blendFuncSeparate(state.blendSrcRgb, state.blendDstRgb, state.blendSrcAlpha, state.blendDstAlpha);
+        gl.cullFace(state.cullFace);
+        gl.frontFace(state.frontFace);
+        gl.lineWidth(state.lineWidth);
+        gl.polygonOffset(state.polygonOffset[0], state.polygonOffset[1]);
+        gl.sampleCoverage(state.sampleCoverage[0], state.sampleCoverage[1]);
+
+        for (const [face, side] of [[0x0404, state.stencilFront], [0x0405, state.stencilBack]] as Array<[number, Json]>)
+        {
+            gl.stencilFuncSeparate(face, side.func, side.ref, side.mask);
+            gl.stencilMaskSeparate(face, side.writeMask);
+            gl.stencilOpSeparate(face, side.fail, side.zfail, side.zpass);
+        }
+
+        // The page's pack and unpack settings, which its own uploads in the frame rely on.
+        gl.pixelStorei(0x0CF5, 4);
+
+        for (const pname of Object.keys(state.pixelStore ?? {}))
+        {
+            gl.pixelStorei(Number(pname), state.pixelStore[pname]);
+        }
+
+        gl.bindRenderbuffer(0x8D41, this.object('renderbuffer', state.renderbuffer));
+
+        if (this.gl2)
+        {
+            gl.bindFramebuffer(0x8CA9, null);
+            gl.drawBuffers(state.drawBuffers);
+            gl.readBuffer(state.readBuffer);
+            gl.bindFramebuffer(0x8CA9, this.object('framebuffer', state.drawFramebuffer));
+            gl.bindFramebuffer(0x8CA8, this.object('framebuffer', state.readFramebuffer));
+        }
+        else
+        {
+            gl.bindFramebuffer(0x8D40, this.object('framebuffer', state.drawFramebuffer));
+        }
+
+        this.drawFramebuffer = this.object('framebuffer', state.drawFramebuffer);
+        this.readFramebuffer = this.object('framebuffer', state.readFramebuffer);
+        this.packBuffer = this.object('buffer', (state.otherBuffers ?? {})[0x88EB] ?? null);
+
+        gl.useProgram(this.object('program', state.program));
+    }
+
+    // ---- Commands ----
+
+    execute (command: Json): void
+    {
+        const [method, encoded, made] = command;
+
+        // The capture's own table of method names, if it has one.
+        const qualified = (this.capture.data.methods ?? METHOD_NAMES)[method];
+        const dot = qualified.indexOf('.');
+        const owner = qualified.slice(0, dot);
+        const name = qualified.slice(dot + 1);
+
+        if (name === 'getUniformLocation')
+        {
+            return;
+        }
+
+        const receiver = owner === 'gl' ? this.gl : this.extension(owner);
+
+        if (!receiver || typeof receiver[name] !== 'function')
+        {
+            this.note(`The replay has no ${qualified}: the extension it belongs to is not available.`);
+
+            return;
+        }
+
+        const args = encoded.map((value: Json) => this.decode(value));
+        const result = receiver[name](...args);
+
+        if (made && 'o' in made)
+        {
+            this.objects.set(`${made.o}:${made.i}`, result);
+        }
+
+        // Keep track of what a readback will have to put back.
+        if (name === 'bindFramebuffer')
+        {
+            if (args[0] === 0x8D40 || args[0] === 0x8CA9)
+            {
+                this.drawFramebuffer = args[1];
+            }
+
+            if (args[0] === 0x8D40 || args[0] === 0x8CA8)
+            {
+                this.readFramebuffer = args[1];
+            }
+        }
+        else if (name === 'bindBuffer' && args[0] === 0x88EB)
+        {
+            this.packBuffer = args[1];
+        }
+        else if (name === 'deleteFramebuffer')
+        {
+            if (this.drawFramebuffer === args[0]) { this.drawFramebuffer = null; }
+            if (this.readFramebuffer === args[0]) { this.readFramebuffer = null; }
+        }
+    }
+
+    extension (name: string): any
+    {
+        if (!this.extensions.has(name))
+        {
+            this.extensions.set(name, this.gl.getExtension(name));
+        }
+
+        return this.extensions.get(name);
+    }
+
+    // Runs the capture from its start up to, but not including, command `end`.
+    play (end: number, each?: (index: number) => void): void
+    {
+        this.createObjects();
+        this.applyInitialState();
+
+        const commands = this.capture.data.commands;
+        const stop = Math.min(end, commands.length);
+
+        for (let i = 0; i < stop; i++)
+        {
+            this.execute(commands[i]);
+            each?.(i);
+        }
+    }
+
+    // ---- Reading back ----
+
+    // Reads pixels of a framebuffer into client memory and puts back what that disturbed.
+    // `y` counts from the bottom, as WebGL does.
+    read (framebuffer: any, x: number, y: number, width: number, height: number, float: boolean): Uint8Array | Float32Array
+    {
+        const gl = this.gl;
+        const out = float ? new Float32Array(width * height * 4) : new Uint8Array(width * height * 4);
+
+        if (this.gl2)
+        {
+            gl.bindFramebuffer(0x8CA8, framebuffer);
+            gl.bindBuffer(0x88EB, null);
+        }
+        else
+        {
+            gl.bindFramebuffer(0x8D40, framebuffer);
+        }
+
+        // The page's pack settings would bend the result; they are saved, zeroed and put back.
+        const names = this.gl2 ? [0x0D05, 0x0D02, 0x0D03, 0x0D04] : [0x0D05];
+        const saved = names.map((pname) => gl.getParameter(pname));
+
+        gl.pixelStorei(0x0D05, 1);
+
+        for (const pname of names.slice(1))
+        {
+            gl.pixelStorei(pname, 0);
+        }
+
+        gl.readPixels(x, y, width, height, 0x1908, float ? 0x1406 : 0x1401, out);
+
+        names.forEach((pname, index) => gl.pixelStorei(pname, saved[index]));
+
+        if (this.gl2)
+        {
+            gl.bindFramebuffer(0x8CA8, this.readFramebuffer);
+            gl.bindBuffer(0x88EB, this.packBuffer);
+        }
+        else
+        {
+            gl.bindFramebuffer(0x8D40, this.drawFramebuffer);
+        }
+
+        return out;
+    }
+
+    // The framebuffer to read for a target: the canvas, or one holding the given texture level.
+    targetFramebuffer (target: Json): { framebuffer: any; width: number; height: number; float: boolean; scratch: any }
+    {
+        const gl = this.gl;
+        const header = this.capture.data.header;
+
+        if (!target || !target.texture)
+        {
+            return { framebuffer: null, width: header.width, height: header.height, float: false, scratch: null };
+        }
+
+        const texture = this.capture.data.objects.find((object) => object.kind === 'texture' && object.id === target.texture);
+        const object = this.object('texture', target.texture);
+
+        if (!texture || !object)
+        {
+            throw new Error(`Texture ${target.texture} is not part of this capture.`);
+        }
+
+        const level = target.level ?? 0;
+        const scratch = gl.createFramebuffer();
+        const point = this.gl2 ? 0x8CA8 : 0x8D40;
+
+        gl.bindFramebuffer(point, scratch);
+        gl.framebufferTexture2D(point, 0x8CE0, texture.target === TEXTURE_CUBE_MAP ? 0x8515 + (target.layer ?? 0) : TEXTURE_2D, object, level);
+
+        const complete = gl.checkFramebufferStatus(point) === 0x8CD5;
+
+        gl.bindFramebuffer(point, this.gl2 ? this.readFramebuffer : this.drawFramebuffer);
+
+        if (!complete)
+        {
+            gl.deleteFramebuffer(scratch);
+
+            throw new Error(`The ${texture.format} texture cannot be read back as a colour target.`);
+        }
+
+        const float = [0x881A, 0x8814, 0x881B, 0x8815, 0x822D, 0x822E, 0x822F, 0x8230, 0x8C3A].includes(texture.internalFormat) || texture.type === 0x1406;
+
+        return { framebuffer: scratch, width: Math.max(1, texture.width >> level), height: Math.max(1, texture.height >> level), float, scratch };
+    }
+
+    // A target as RGBA8 rows, top to bottom.
+    image (target: Json): { width: number; height: number; data: Uint8Array; float: boolean }
+    {
+        const { framebuffer, width, height, float, scratch } = this.targetFramebuffer(target);
+        const raw = this.read(framebuffer, 0, 0, width, height, float);
+        const data = new Uint8Array(width * height * 4);
+        const stride = width * 4;
+
+        for (let y = 0; y < height; y++)
+        {
+            const row = raw.subarray((height - 1 - y) * stride, (height - y) * stride);
+
+            if (float)
+            {
+                for (let i = 0; i < stride; i++)
+                {
+                    const value = row[i] * 255;
+
+                    data[y * stride + i] = value > 255 ? 255 : (value > 0 ? value : 0);
+                }
+            }
+            else
+            {
+                data.set(row as Uint8Array, y * stride);
+            }
+        }
+
+        if (scratch)
+        {
+            this.gl.deleteFramebuffer(scratch);
+        }
+
+        return { width, height, data, float };
+    }
+
+    dispose (): void
+    {
+        // Browsers allow only a handful of live contexts. Give this one back at once.
+        this.gl.getExtension('WEBGL_lose_context')?.loseContext();
+        this.canvas.width = 1;
+        this.canvas.height = 1;
+    }
+}
+
+function capture (key: string): Loaded
+{
+    const found = loaded.get(key);
+
+    if (!found)
+    {
+        throw new Error(`Capture ${key} is not loaded in the replay page.`);
+    }
+
+    return found;
+}
+
+// The command index just past an event (a draw, clear or blit), or the whole frame.
+function endOf (data: CaptureData, draw: number | null | undefined): number
+{
+    if (draw === null || draw === undefined)
+    {
+        return data.commands.length;
+    }
+
+    const row = data.draws[draw];
+
+    if (!row)
+    {
+        throw new Error(`The capture has ${data.draws.length} draws, numbered from 0; there is no draw ${draw}.`);
+    }
+
+    return row.command + 1;
+}
+
+function sameTarget (row: Json, target: Json): boolean
+{
+    return (row.target || 0) === (target?.texture || 0) && (!target?.texture || (row.targetLevel || 0) === (target.level || 0));
+}
+
+async function packed (image: { width: number; height: number; data: Uint8Array }): Promise<Json>
+{
+    return { width: image.width, height: image.height, encoding: 'rgba8+gzip+base64', data: toBase64(await gzip(image.data)) };
+}
+
+const api = {
+
+    // Receives a capture's description. Blobs follow with `blobs`.
+    async load (args: { key: string; body: string }): Promise<Json>
+    {
+        const data: CaptureData = JSON.parse(new TextDecoder().decode(await gunzip(fromBase64(args.body))));
+
+        loaded.set(args.key, { data, blobs: new Array(data.blobs.length).fill(null) });
+
+        return { commands: data.commands.length, draws: data.draws.length, blobs: data.blobs.length };
+    },
+
+    async blobs (args: { key: string; from: number; blobs: string[] }): Promise<Json>
+    {
+        const target = capture(args.key);
+
+        for (let i = 0; i < args.blobs.length; i++)
+        {
+            target.blobs[args.from + i] = await gunzip(fromBase64(args.blobs[i]));
+        }
+
+        return { have: target.blobs.filter(Boolean).length, of: target.blobs.length };
+    },
+
+    has (args: { key: string }): boolean
+    {
+        const found = loaded.get(args.key);
+
+        return Boolean(found && found.blobs.every(Boolean));
+    },
+
+    unload (args: { key: string }): void
+    {
+        loaded.delete(args.key);
+    },
+
+    // The picture of a target after an event (or after the whole frame).
+    async image (args: { key: string; draw?: number | null; target?: Json }): Promise<Json>
+    {
+        const item = capture(args.key);
+        const run = new Run(item);
+        const started = performance.now();
+
+        try
+        {
+            run.play(endOf(item.data, args.draw));
+
+            // By default, the target the event itself drew to.
+            const row = args.draw === null || args.draw === undefined ? null : item.data.draws[args.draw];
+            const target = args.target ?? (row && row.target ? { texture: row.target, level: row.targetLevel } : null);
+            const image = run.image(target);
+
+            return { ...(await packed(image)), target, float: image.float, error: run.gl.getError(), notes: run.notes, ms: performance.now() - started };
+        }
+        finally
+        {
+            run.dispose();
+        }
+    },
+
+    // Every event that changed one pixel of a target, in order, with the value before and
+    // after. The last is the draw that produced the pixel's final value.
+    trace (args: { key: string; x: number; y: number; target?: Json }): Json
+    {
+        const item = capture(args.key);
+        const run = new Run(item);
+        const started = performance.now();
+
+        try
+        {
+            const byCommand = new Map<number, number>();
+
+            item.data.draws.forEach((row, index) => byCommand.set(row.command, index));
+
+            const changes: Json[] = [];
+
+            let geometry: { framebuffer: any; width: number; height: number; float: boolean; scratch: any } | null = null;
+            let before: number[] | null = null;
+            let touched = 0;
+
+            run.play(item.data.commands.length, (index) =>
+            {
+                const draw = byCommand.get(index);
+
+                if (draw === undefined || !sameTarget(item.data.draws[draw], args.target))
+                {
+                    return;
+                }
+
+                // The target exists by now: an event has just drawn to it.
+                if (geometry === null)
+                {
+                    geometry = run.targetFramebuffer(args.target);
+
+                    if (args.x < 0 || args.y < 0 || args.x >= geometry.width || args.y >= geometry.height)
+                    {
+                        throw new Error(`(${args.x}, ${args.y}) is outside the target, which is ${geometry.width}×${geometry.height}.`);
+                    }
+                }
+
+                touched++;
+
+                const value = Array.from(run.read(geometry.framebuffer, args.x, geometry.height - 1 - args.y, 1, 1, geometry.float));
+
+                if (before === null || value.some((channel, i) => channel !== before![i]))
+                {
+                    changes.push({ draw, before, after: value });
+                    before = value;
+                }
+            });
+
+            return { changes, events: touched, float: Boolean(geometry && (geometry as { float: boolean }).float), final: before, error: run.gl.getError(), notes: run.notes, ms: performance.now() - started };
+        }
+        finally
+        {
+            run.dispose();
+        }
+    }
+};
+
+(globalThis as any).__scanlineReplay = async (method: keyof typeof api, argsJson?: string): Promise<string> =>
+{
+    try
+    {
+        const handler = api[method] as (args: Json) => unknown;
+
+        if (!handler)
+        {
+            return JSON.stringify({ error: `Unknown replay method "${String(method)}"` });
+        }
+
+        return JSON.stringify({ ok: (await handler(argsJson ? JSON.parse(argsJson) : {})) ?? null });
+    }
+    catch (error: any)
+    {
+        return JSON.stringify({ error: String(error?.message ?? error) });
+    }
+};

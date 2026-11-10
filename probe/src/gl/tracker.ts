@@ -75,8 +75,19 @@ interface StencilSide
 export interface UniformSlot
 {
     name: string;
+    program: number; // the program's registry ID
     values: number[];
     set: number; // frame it was last set in
+}
+
+export function slotOf (location: object | null | undefined): UniformSlot | undefined
+{
+    return location ? locationTag.get(location) : undefined;
+}
+
+export function vaoStateOf (vao: object): Vao | undefined
+{
+    return vaoTag.get(vao);
 }
 
 const vaoTag: Tag<Vao> = vertexArrayStateTag;
@@ -147,6 +158,9 @@ export class GlTracker
 {
     info: ContextInfo;
     gl2: boolean;
+
+    // Extensions the page has enabled, by name. A replay must enable the same ones.
+    extensions = new G.Set() as Set<string>;
 
     // Bindings
     unit = 0;
@@ -464,6 +478,12 @@ function byteLength (data: any, srcOffset: number | undefined, length: number | 
     }
 
     return (data.byteLength ?? 0) - (srcOffset ?? 0) * element;
+}
+
+// The bytes of whatever buffer source a page hands to WebGL.
+function bytesOf (data: any): Uint8Array
+{
+    return G.ArrayBuffer.isView(data) ? new G.Uint8Array(data.buffer, data.byteOffset, data.byteLength) : new G.Uint8Array(data);
 }
 
 function attachment (t: GlTracker, target: number, point: number, value: Record<string, any> | null): void
@@ -1507,10 +1527,22 @@ const handlers: Record<string, H> = {
             entry.p.usage = usage;
             entry.bytes = entry.p.size;
             entry.written = currentFrame();
+
+            if (t && !t.gl2)
+            {
+                // WebGL 1 has no call that reads a buffer back, so a copy of what the page
+                // uploads is the only record of its contents (03-INSPECTION.md, section 1.2).
+                entry.p.mirror = new G.Uint8Array(entry.p.size);
+
+                if (data && typeof data !== 'number')
+                {
+                    entry.p.mirror.set(bytesOf(data));
+                }
+            }
         }
     },
 
-    bufferSubData (c, _s, _r, target: number)
+    bufferSubData (c, _s, _r, target: number, offset: number, data: any)
     {
         const t = tracker(c);
         const entry = t ? bufOf(t.boundBuffer(target)) : undefined;
@@ -1518,6 +1550,18 @@ const handlers: Record<string, H> = {
         if (entry)
         {
             entry.written = currentFrame();
+
+            const mirror: Uint8Array | undefined = entry.p.mirror;
+
+            if (mirror && data)
+            {
+                const bytes = bytesOf(data);
+
+                if (offset >= 0 && offset + bytes.length <= mirror.length)
+                {
+                    mirror.set(bytes, offset);
+                }
+            }
         }
     },
 
@@ -1627,7 +1671,7 @@ const handlers: Record<string, H> = {
 
         if (!slot)
         {
-            slot = { name: key, values: [], set: -1 };
+            slot = { name: key, program: entry.id, values: [], set: -1 };
             entry.p.uniforms.set(key, slot);
         }
 

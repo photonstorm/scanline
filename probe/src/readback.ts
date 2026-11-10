@@ -55,7 +55,7 @@ export function halfToFloat (half: number): number
 
 // What a readback produces before it is packaged: four channels per pixel, rows in the
 // order asked for, as numbers in the target's own range.
-interface Pixels
+export interface Pixels
 {
     width: number;
     height: number;
@@ -140,7 +140,7 @@ export function prepareRead (info: ContextInfo, framebuffer: object | null): voi
     n.pixelStorei.call(gl, 0x0D05, 1);
 }
 
-function readGlTexture (entry: Entry, info: ContextInfo, level: number, layer: number, region: Region): Pixels
+export function readGlTexture (entry: Entry, info: ContextInfo, level: number, layer: number, region: Region): Pixels
 {
     const gl = info.ctx;
     const n = info.natives;
@@ -371,7 +371,7 @@ async function readGpuTexture (entry: Entry, level: number, layer: number, regio
 
 // ---- Buffers ----
 
-async function readBuffer (entry: Entry, offset: number, length: number): Promise<Uint8Array>
+export async function readBuffer (entry: Entry, offset: number, length: number): Promise<Uint8Array>
 {
     const object = entry.ref.deref() as any;
 
@@ -387,7 +387,16 @@ async function readBuffer (entry: Entry, offset: number, length: number): Promis
 
         if (!t.gl2)
         {
-            throw new Error('WebGL 1 has no call that reads a buffer back. Its contents are available in a frame capture, which keeps a copy of every upload.');
+            // WebGL 1 has no call that reads a buffer back: this is the tracker's copy of what
+            // the page uploaded.
+            const mirror: Uint8Array | undefined = entry.p.mirror;
+
+            if (!mirror)
+            {
+                throw new Error('This WebGL 1 buffer has had nothing uploaded to it.');
+            }
+
+            return mirror.slice(offset, offset + length);
         }
 
         const gl = info.ctx;

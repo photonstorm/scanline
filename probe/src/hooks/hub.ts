@@ -13,8 +13,8 @@ export type Counters = Record<CounterName, number>;
 // (milestone 2) gives each device its own.
 export interface Rec extends Counters
 {
-    // Set while a capture is recording: (record, methodId, result, argCount, ...args).
-    rec: null | ((record: Rec, method: number, result: unknown, count: number, ...args: any[]) => void);
+    // Set while a capture is recording: (record, methodId, receiver, result, argCount, ...args).
+    rec: null | ((record: Rec, method: number, self: unknown, result: unknown, count: number, ...args: any[]) => void);
 
     // The value of `calls` when this record's image was last kept.
     keptAtCalls: number;

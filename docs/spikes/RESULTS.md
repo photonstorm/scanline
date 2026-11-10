@@ -10,7 +10,7 @@ Run on 10 November 2026 on macOS 27.2, Apple M6, installed Google Chrome 157.0.8
 | S2 | How fast can capture data leave the page? | Not run | |
 | S3 | Do the frame gate and virtual clock hold on real engines? | Run (macOS, headless) | **Pass on 12 pages.** Unity and Emscripten builds not tried. |
 | S4 | Does protocol input behave like real input? | Partly run (headless) | Trusted and activating: **pass**. Two findings change the design. Pointer lock, fullscreen, and "window covered" need a headed run. |
-| S5 | Can replay give GPU-true answers at acceptable cost? | Not run | |
+| S5 | Can replay give GPU-true answers at acceptable cost? | Run for WebGL (macOS, headless) | **Pass on 10 pages:** the replayed frame is identical to the original, pixel for pixel. 2,000 draws replay in 10 ms. WebGPU, pixel history, depth and compressed readback are not done. |
 | S6 | Are GPU timings usable? | Not run as specified | Learned in passing: timer queries exist for WebGL 1 and 2 and `timestamp-query` for WebGPU on this machine, in the stock profile. WebGPU timestamps there move in steps of 65,536 ns. Repeatability, amplified per-draw timing and the shader dump are untested. |
 | S7 | Is the two-window model good enough? | Not run | Needs the host's window. |
 | S8 | Can real GPU memory be attributed to the page? | Not run | |
@@ -33,6 +33,10 @@ node spikes/s3-time.mjs
 
 ```bash
 node spikes/s4-input.mjs
+```
+
+```bash
+node spikes/s5-replay.mjs
 ```
 
 ```bash
@@ -111,6 +115,41 @@ Add `--headed` to any of them for a visible window. `s4-input.mjs --headed` take
 4. A wheel event is acknowledged before the page receives it. "Wait for the acknowledgement, then release the frame" is not enough for wheels; the host should confirm delivery through the probe's recorder.
 
 **Not run: needs a visible window.** Pointer lock (`WrongDocumentError` headless), fullscreen (`not granted` headless), relative motion under pointer lock, whether frames flow when the window is covered or minimised. An explicit `movementX` on `Input.dispatchMouseEvent` is ignored, so if position-derived deltas do not work under lock, the probe shim is the route.
+
+## S5. Replay
+
+The plan asked for a hand-built capture. Instead the real capture path was built for WebGL and tested, since the question (does a replayed frame match?) is the same and the code is kept.
+
+**Method.** `spikes/s5-replay.mjs`. For each page: capture one frame through the probe; open a hidden page in the same browser (`Target.createTarget` with `hidden: true`); give it the capture; run it; compare the replay's final image with the frame's own, byte for byte. Then ask for the picture after the middle event, and for every event that changed the centre pixel.
+
+**Result.**
+
+| Page | Calls | Draws | Capture | Replay | Final image | Trace of one pixel |
+|---|---|---|---|---|---|---|
+| Raw WebGL 1 | 16 | 5 | 50 ms | 6 ms | identical | 3 ms |
+| Raw WebGL 2 | 6 | 1 | 39 ms | 4 ms | identical | 1 ms |
+| WebGL 1 on a timer | 16 | 5 | 12 ms | 6 ms | identical | 8 ms |
+| Inventory (render target, float texture) | 19 | 1 | 42 ms | 5 ms | identical | 2 ms |
+| three.js | 13 | 3 | 68 ms | 6 ms | identical | 4 ms |
+| PixiJS | 8 | 1 | 49 ms | 9 ms | identical | 4 ms |
+| Phaser | 4 | 1 | 40 ms | 6 ms | identical | 3 ms |
+| Babylon.js | 18 | 3 | 43 ms | 6 ms | identical | 4 ms |
+| 2,000 unbatched draws | 10,002 | 2,000 | 68 ms | 10 ms | identical | 641 ms |
+| 10,000 unbatched draws | 50,002 | 10,000 | 126 ms | 15 ms | identical | 3,089 ms |
+
+- **Replay matches.** On the same GPU, driver and ANGLE, running the recorded calls against the recorded contents gives the same image, bit for bit, including multisampled default framebuffers.
+- **Cost is well inside the budgets.** Capture of a 2,000-draw frame takes 68 ms against a budget of 2 s. A replay is a fresh context each time and still takes 10 ms.
+- **"Which draw produced this pixel" needs no shader rewriting.** Reading the pixel after every event on its target finds each event that changed it, with the value before and after, and the last is the answer. It costs about 0.3 ms an event: 0.64 s for 2,000 draws, against a target of 0.5 s. The draw-ID pass the specification describes would be one read instead of 2,000, but has to rewrite fragment shaders; it is worth building only if this proves too slow.
+- **A hidden target works as the replay page.** It has no window and renders with the real GPU.
+
+**What the capture relies on, and where that can fail.**
+
+- Contents are read when the frame ends, not when it starts. An object's contents at the end are its contents at the start plus the frame's own writes, and replay repeats those writes. This is wrong only where a frame reads data left by an earlier frame and overwrites it later in the same frame.
+- Render targets are the common case of that (a frame that samples the last frame's result), so their contents are also read before the frame.
+- A page whose drawing happens in timers is recorded through to the end of the timers that came due with the frame. The first version stopped at the frame boundary and recorded nothing.
+- An image, canvas or video the frame uploads is copied through a 2D canvas, which can change translucent pixels by one step.
+
+**Not tested, from the spike's list.** WebGPU. Pixel history with rejected fragments and `discard`. Readback of depth formats, multisampled samples and compressed textures. Vertex stage output. A frame that samples a texture in a format that cannot be read back (it is replayed empty and the capture's replay check reports the difference).
 
 ## S9. Hook overhead
 

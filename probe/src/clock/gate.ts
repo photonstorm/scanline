@@ -110,6 +110,15 @@ export function onFrameEnd (hook: (stopping: boolean) => void): void
     frameEndHooks.push(hook);
 }
 
+// After a frame and the timers that came due with it. For a page that draws from timers,
+// this is the first moment the whole frame has been issued.
+const settledHooks: Array<(flag: boolean) => void> = [];
+
+export function onFrameSettled (hook: () => void): void
+{
+    settledHooks.push(hook);
+}
+
 export function onPauseChange (hook: (paused: boolean) => void): void
 {
     pauseHooks.push(hook);
@@ -460,6 +469,11 @@ function endFrame (): void
 
 function afterFrame (): void
 {
+    for (const hook of settledHooks)
+    {
+        guarded(hook);
+    }
+
     if (!paused)
     {
         // Callbacks that fired while timers were draining were held. Let them go.

@@ -10,10 +10,12 @@
   "scripts": {
     "gen:hooks": "node probe/tools/gen-hooks.mjs",
     "build:probe": "node probe/build.mjs",
-    "typecheck": "tsc -p probe/tsconfig.json --noEmit",
+    "typecheck": "tsc -p probe/tsconfig.json --noEmit && tsc -p replay/tsconfig.json --noEmit",
     "test:probe": "node --test --test-concurrency=1 --test-timeout=60000 probe/test/*.test.mjs",
     "test:e2e": "node --test --test-concurrency=1 --test-timeout=120000 tests/*.test.mjs",
-    "test": "npm run build:probe && npm run typecheck && npm run test:probe && cargo test && cargo build && npm run test:e2e"
+    "test": "npm run build && npm run typecheck && npm run test:probe && cargo test && cargo build && npm run test:e2e",
+    "build:replay": "node replay/build.mjs",
+    "build": "npm run build:probe && npm run build:replay"
   },
   "devDependencies": {
     "@webgpu/types": "^0.1.74",

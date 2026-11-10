@@ -63,7 +63,7 @@ pub async fn serve() -> Result<()> {
     std::fs::write(runtime_path(), json!({ "socket": socket, "pid": std::process::id(), "version": env!("CARGO_PKG_VERSION") }).to_string())
         .with_context(|| format!("writing {}", runtime_path().display()))?;
 
-    let host = Host::new(home.clone());
+    let host = Host::new(home.clone())?;
     let stop = Arc::new(tokio::sync::Notify::new());
 
     eprintln!("scanline {} serving on {}", env!("CARGO_PKG_VERSION"), socket.display());

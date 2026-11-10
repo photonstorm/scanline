@@ -183,7 +183,7 @@ function wrapper (family, qualified, name, op, entry = {})
         body.push(`h(c, this, r${tail});`);
     }
 
-    body.push(`if (c.rec !== null) { c.rec(c, ${id}, r, arguments.length${tail}); }`);
+    body.push(`if (c.rec !== null) { c.rec(c, ${id}, this, r, arguments.length${tail}); }`);
     body.push('return r;');
 
     return `(N, H, h) => function ${name} (${sig}) { ${body.join(' ')} }`;

@@ -8,6 +8,7 @@
 //! - `data` is the same result, structured, for scripts.
 //! - `images` lists files written for this result; `view` is the one sized for an agent.
 
+mod capture;
 mod commands;
 mod inventory;
 mod keys;
@@ -28,6 +29,8 @@ pub use tools::{TOOLS, Tool, help};
 pub struct Host {
     /// Where artefacts and the runtime file live.
     pub home: PathBuf,
+    /// Captures and their blobs.
+    pub store: scanline_store::Store,
     sessions: Mutex<BTreeMap<String, Arc<Session>>>,
     next_session: AtomicU32,
 }
@@ -54,8 +57,30 @@ pub fn result(summary: impl Into<String>, data: Value) -> Value {
 }
 
 impl Host {
-    pub fn new(home: PathBuf) -> Arc<Self> {
-        Arc::new(Host { home, sessions: Mutex::new(BTreeMap::new()), next_session: AtomicU32::new(1) })
+    pub fn new(home: PathBuf) -> Result<Arc<Self>> {
+        let store = scanline_store::Store::open(home.join("artefacts"))?;
+
+        Ok(Arc::new(Host { home, store, sessions: Mutex::new(BTreeMap::new()), next_session: AtomicU32::new(1) }))
+    }
+
+    /// A session whose browser can replay a capture: the one named, or any that is open.
+    /// A capture outlives its page, but replaying it needs a GPU to run on.
+    pub(crate) fn replayer(&self, params: &Value) -> Result<Arc<Session>> {
+        if params["session"].is_string() {
+            let session = self.session(params)?;
+
+            session.check_alive()?;
+
+            return Ok(session);
+        }
+
+        let sessions = self.sessions.lock().unwrap();
+
+        sessions.values().find(|session| session.check_alive().is_ok()).cloned().ok_or_else(|| {
+            anyhow!(
+                "Replaying a capture needs a browser to run it in, and no session is open. Call launch (any page will do, even about:blank), then ask again."
+            )
+        })
     }
 
     /// Runs one command of the control API.
@@ -87,10 +112,20 @@ impl Host {
             "step" => commands::step(&live()?, &params).await,
             "run_until" => commands::run_until(&live()?, &params).await,
             "input" => commands::input(&live()?, &params).await,
+            "screenshot" if params["capture"].is_string() => capture::screenshot(self, &params).await,
+            "pixels" if params["capture"].is_string() => capture::pixels(self, &params).await,
             "screenshot" => commands::screenshot(&live()?, &params).await,
             "pixels" => commands::pixels(&live()?, &params).await,
             "console" => commands::console(&self.session(&params)?, &params).await,
             "stats" => commands::stats(&live()?, &params).await,
+            "capture" => capture::capture(self, &live()?, &params).await,
+            "captures" => capture::captures(self, &params),
+            "pass_tree" => capture::pass_tree(self, &params),
+            "draw_list" => capture::draw_list(self, &params),
+            "draw" => capture::draw(self, &params).await,
+            "draw_diff" => capture::draw_diff(self, &params),
+            "pixel_source" => capture::pixel_source(self, &params).await,
+            "query" => capture::query(self, &params),
             "resources" => inventory::resources(&live()?, &params).await,
             "resource" => inventory::resource(&live()?, &params).await,
             "memory" => inventory::memory(&live()?, &params).await,

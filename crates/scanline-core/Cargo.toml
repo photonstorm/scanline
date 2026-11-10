@@ -15,3 +15,4 @@ tokio.workspace = true
 scanline-cdp.workspace = true
 scanline-browser.workspace = true
 scanline-image.workspace = true
+scanline-store.workspace = true

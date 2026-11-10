@@ -56,6 +56,39 @@ Decided 10 November 2026, replacing the percentages in the PRD (section 9.1). Th
 
 Also from the milestone's list, not built: WGSL reflection (the plan's `scanline-shader` crate and `naga`), the real memory of the GPU process, and GPU time per pass on WebGL (queries cannot nest, so it needs one query per framebuffer span). WebGL shader reflection comes from the driver (active attributes and uniforms), which needs no parser.
 
+## Milestone 3 so far
+
+Built for WebGL 1 and WebGL 2: the capture, the store (BLAKE3-named, zstd-compressed blobs and one SQLite database per capture), the replay page, and the commands `capture`, `captures`, `draw_list`, `draw`, `draw_diff`, `pixel_source`, `pass_tree`, `query`, with `screenshot` and `pixels` taking a capture and a draw.
+
+"Replay matches the original on every matrix page, or reports why not. An agent diagnoses the 'wrong pixels' class of planted bugs with no hints."
+
+| Criterion | Standing |
+|---|---|
+| Replay matches on every matrix page | Met for the WebGL pages there are (eight, in the tests). **WebGPU frames cannot be captured yet.** |
+| Or reports why not | Met: every capture is replayed once when taken and compared with the frame's own image, the verdict is stored with it, and replay answers carry a warning when it failed. |
+| Planted bugs and the evaluation harness | **Not started.** |
+
+Differences from the specification:
+
+| The specification says | The code does | Why |
+|---|---|---|
+| Start-of-frame contents are recovered from end-of-frame contents and the recorded writes. | End-of-frame contents are used as they are, and the frame's writes are replayed over them. Render targets are also read before the frame. | The same result in the common cases with no reconstruction step. See the spike for where it can fail. |
+| "Which draw produced this pixel" comes from a draw-ID pass with rewritten fragment shaders. | The pixel is read after every event on its target. | No shader rewriting, true values, and it gives before and after for each change. Slower: 0.3 ms an event. |
+| The pass tree uses debug groups, labels, target changes and adapter knowledge. | Passes are runs of events on one target. | WebGL has no debug groups; the rest needs the page protocol and adapters. |
+| The command stream is `stream.bin`. | It is `stream.zst`: the capture as JSON, compressed, with data in the blob store. | Simple, and the replay page takes it as it is. |
+| Full-size intermediate targets are not stored; thumbnails of each target at pass ends are. | Only the frame's final image is stored. Intermediate targets come from replay. | Replay is fast enough that thumbnails have not been needed. |
+| The replay page is at an internal URL. | It is `about:blank`, hidden. | Enough for WebGL. WebGPU needs a secure context, so this will change. |
+
+Also true of what is built:
+
+- A capture carries its own table of method names, so it stays readable when a later version numbers methods differently.
+- The `draws` table holds clears and blits as well as draws, since all three change pixels. `kind` tells them apart.
+- `draw_list`'s filter is a SQL condition on the `draws` table, not a language of its own. The database is opened read-only.
+- Replaying a capture needs a live browser, and any open session's will do. Reading what the capture says needs none.
+- Textures in formats that cannot be read back (luminance and alpha formats, compressed, depth, integer) are replayed empty. The capture's replay check then fails and says why. A sampling pass would fix the first two.
+- Each replay makes a fresh context and recreates every object. Keeping one context per capture and running forwards from where it stands would make repeated questions cheaper.
+- WebGL 1 buffers now have a copy kept of every upload, as the specification asks, so they can be read and captured. This doubles the memory of WebGL 1 buffers while Scanline is attached.
+
 ## Added, not in the specification
 
 - **A page that draws from timers alone still steps.** A frame is "the clock moves, the frame callbacks run, then the timers that have come due run", so a loop on `setTimeout` pauses and steps like any other.

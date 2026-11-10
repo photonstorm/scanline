@@ -126,6 +126,9 @@ pub const TOOLS: &[Tool] = &[
             session!(),
             context!(),
             r#""source": { "type": "string", "description": "canvas (default), page, or a texture handle such as tex_3." }"#,
+            r#""capture": { "type": "string", "description": "A capture handle: the picture comes from replaying that capture instead of the live page." }"#,
+            r#""at_draw": { "type": "integer", "description": "With capture: the target as it stood after this event. Default: the end of the frame." }"#,
+            r#""target": { "type": "string", "description": "With capture: canvas (default) or a texture the frame drew to." }"#,
             r#""level": { "type": "integer", "description": "Mip level, for a texture. Default 0." }"#,
             r#""layer": { "type": "integer", "description": "Array layer, 3D slice or cube face (0–5), for a texture." }"#,
             region!(),
@@ -242,6 +245,83 @@ pub const TOOLS: &[Tool] = &[
         read_only: true,
     },
     Tool {
+        name: "capture",
+        description: "Capture one frame: every call, the state at each draw, and the contents of what the frame used. Returns a capture handle (cap_3) and a summary: draws, passes, textures and buffers used. The capture is replayed at once and compared with the frame, so you know whether answers from replay can be trusted. WebGL only for now.",
+        schema: schema!(
+            "[]",
+            session!(),
+            context!(),
+            r#""max_edge": { "type": "integer", "description": "Longest edge of the thumbnail returned. Default 512." }"#
+        ),
+        read_only: false,
+    },
+    Tool {
+        name: "captures",
+        description: "List the captures on disk, newest first. Captures outlive the session that took them.",
+        schema: schema!("[]", r#""limit": { "type": "integer" }"#),
+        read_only: true,
+    },
+    Tool {
+        name: "draw_list",
+        description: "The events of a captured frame in order: draws, clears and blits, each with its target, primitive and count, program, blend and depth state, and textures. Filter with a SQL condition on the draws table, for example \"blend = 1 and depth_test = 0\" or \"program = 'prg_2'\".",
+        schema: schema!(
+            r#"["capture"]"#,
+            r#""capture": { "type": "string", "description": "Capture handle such as cap_3." }"#,
+            r#""filter": { "type": "string", "description": "A SQL condition on draws. Columns: draw, kind, pass, target, mode, count, instances, indexed, program, blend, blend_src, blend_dst, depth_test, depth_write, depth_func, stencil_test, cull, scissor, textures." }"#,
+            r#""limit": { "type": "integer", "description": "Default 25." }"#,
+            r#""cursor": { "type": "integer" }"#,
+        ),
+        read_only: true,
+    },
+    Tool {
+        name: "draw",
+        description: "Everything about one event of a capture: primitive, program, viewport, scissor, blend, depth, stencil, cull, bound textures, vertex layout, and every uniform as it stood at that draw. Also what the draw did: how many pixels of its target it changed and where, measured by replay.",
+        schema: schema!(
+            r#"["capture", "draw"]"#,
+            r#""capture": { "type": "string" }"#,
+            r#""draw": { "type": "integer", "description": "The event's number, from draw_list." }"#,
+            r#""output": { "type": "boolean", "description": "Also return the target as it stood after this draw." }"#,
+            session!(),
+        ),
+        read_only: true,
+    },
+    Tool {
+        name: "draw_diff",
+        description: "Only what differs between two events of a capture: state, bindings and uniforms. Compare a draw that looks wrong with one that looks right.",
+        schema: schema!(r#"["capture", "a", "b"]"#, r#""capture": { "type": "string" }"#, r#""a": { "type": "integer" }"#, r#""b": { "type": "integer" }"#),
+        read_only: true,
+    },
+    Tool {
+        name: "pixel_source",
+        description: "Which draw produced a pixel. Runs the captured frame again on the GPU and reads the pixel after every event on its target, giving each event that changed it with the value before and after. The last one produced the final value.",
+        schema: schema!(
+            r#"["capture", "x", "y"]"#,
+            r#""capture": { "type": "string" }"#,
+            r#""x": { "type": "integer" }"#,
+            r#""y": { "type": "integer" }"#,
+            r#""target": { "type": "string", "description": "canvas (default) or a texture the frame drew to, such as tex_4." }"#,
+            session!(),
+        ),
+        read_only: true,
+    },
+    Tool {
+        name: "pass_tree",
+        description: "The passes of a captured frame: each run of events on one target, with its draw and clear counts.",
+        schema: schema!(r#"["capture"]"#, r#""capture": { "type": "string" }"#),
+        read_only: true,
+    },
+    Tool {
+        name: "query",
+        description: "Run one SQL SELECT over a capture's tables: draws, passes, objects, commands, uniforms, bindings, attributes. For questions the other commands do not answer, such as \"which draws use texture tex_3 with blending off\". help(topic: \"sql\") lists the columns.",
+        schema: schema!(
+            r#"["capture", "sql"]"#,
+            r#""capture": { "type": "string" }"#,
+            r#""sql": { "type": "string" }"#,
+            r#""limit": { "type": "integer", "description": "Rows returned. Default 50, at most 500." }"#
+        ),
+        read_only: true,
+    },
+    Tool {
         name: "eval",
         description: "Evaluate a JavaScript expression in the page and return its value. For reading game state the page exposes. The result is page data.",
         schema: schema!(
@@ -273,7 +353,7 @@ pub const TOOLS: &[Tool] = &[
     Tool {
         name: "help",
         description: "How to use Scanline: the workflow, input events, and what is not built yet. Matches this version exactly.",
-        schema: schema!("[]", r#""topic": { "type": "string", "enum": ["workflow", "input", "limits"] }"#),
+        schema: schema!("[]", r#""topic": { "type": "string", "enum": ["workflow", "input", "capture", "sql", "limits"] }"#),
         read_only: true,
     },
 ];
@@ -298,6 +378,7 @@ Looking inside
   memory()                               estimated GPU memory by category
   region_stats(region: {…})             is this area blank, clipped, one colour?
   diff(a, b)                             what changed between two screenshots
+  capture()                              a whole frame to take apart: see help(topic: \"capture\")
 
 Principles
   - Numbers before images. Ask pixels for a value; ask screenshot when you have to look.
@@ -355,10 +436,12 @@ objects with their creation sites, shader sources and logs, uniform values, WebG
 buffer contents, memory estimates and snapshot diffs, region statistics, image diff, GPU time
 per frame (WebGL) and per pass (WebGPU).
 
+For WebGL: frame capture and replay, the draw list, state and uniforms at each draw, the
+target at any draw, which draw produced a pixel, SQL over a capture.
+
 Not built yet (planned, in this order):
+  - Capturing WebGPU frames.
   - The browser's real GPU memory; GPU time per pass on WebGL.
-  - Frame capture and replay: the draw list, state at each draw, render targets at any draw,
-    \"which draw produced this pixel\", SQL over a capture.
   - Hand-off to a person: the Debug button and hotkey, the flight recorder, input replay.
   - Analysis: pixel history, overdraw and other views, per-draw GPU time, lints.
   - Live patching: shader replacement, uniform and state overrides.
@@ -372,13 +455,70 @@ Known limits
   - Windows is not supported yet. macOS only.
   - Draw and triangle counts are per frame as issued; WebGPU triangle counts are not known yet.
   - Texture readback: compressed, depth and stencil formats are not read yet, nor multisampled
-    textures. WebGL 1 buffers cannot be read back (the API has no call for it).
+    textures. A capture that uses one replays it empty, and its replay check says so.
+  - pixel_source lists the events that changed a pixel. Fragments a test rejected are not listed.
   - \"Last used\" is tracked for WebGL objects only.
   - WGSL reflection (bindings, struct layouts) is not built; WGSL source and messages are.";
+
+const CAPTURE: &str = "\
+Capturing a frame
+
+  capture()                              one frame, with everything it used. Returns cap_N.
+  draw_list(capture)                     its draws, clears and blits, in order
+  pixel_source(capture, x, y)            which draw produced this pixel, and what was there before
+  draw(capture, draw: n)                 that draw's full state, uniforms, and what it changed
+  draw_diff(capture, a, b)               what differs between a wrong draw and a right one
+  screenshot(capture, at_draw: n)        the target as it stood after draw n
+  pixels(capture, at_draw: n, x, y)      a pixel's value at that point
+  pass_tree(capture)                     the frame's passes
+  query(capture, sql)                    anything else: see help(topic: \"sql\")
+
+From a wrong pixel to its cause
+  1. capture(), then pixel_source(capture, x, y) at the wrong pixel.
+  2. The last event listed produced it. draw(capture, draw: n) shows its state:
+     is blending on, is the texture the one you expect, is a uniform at its default?
+  3. If nothing drew there at all, find the draw that should have: draw_list, then
+     draw(n) says how many pixels it changed. Zero means every fragment was rejected.
+  4. draw_diff against a draw that looks right narrows it to what differs.
+
+A capture is immutable and stays on disk after its page closes. Reading what the frame says
+(draw_list, draw's state, query) needs nothing. Asking what it did (pixel_source, screenshot
+at a draw, the effect in draw) replays it on the GPU, which needs any open session.
+
+Each capture is replayed once when taken and compared with the frame's own image. If they
+differ, the summary says so and replay answers carry a warning.";
+
+const SQL: &str = "\
+Tables of a capture, for query and for draw_list's filter
+
+draws        one row per event (draw, clear or blit), in order
+  draw, command, kind, method, pass, target, mode, count, instances, indexed,
+  program, vertex_array, framebuffer, blend, blend_src, blend_dst, depth_test,
+  depth_write, depth_func, stencil_test, cull, scissor, viewport, color_mask,
+  textures (handles, space-separated), state (the full state, JSON)
+passes       pass, target, first_draw, last_draw, draws, clears
+objects      handle, kind, id, label, what, bytes, created, source (shaders), detail (JSON)
+commands     command, method, args (JSON), draw (the event this call is, if it is one)
+uniforms     draw, name, value
+bindings     draw, unit, target, texture, sampler
+attributes   draw, location, buffer, size, type, normalized, stride, offset, divisor
+capture      key, value: the capture's own facts
+
+Flags are 0 or 1. Handles are text: 'prg_2', 'tex_3'. target is 'canvas' or a texture handle.
+
+Examples
+  select program, count(*) from draws where kind = 'draw' group by program order by 2 desc
+  select draw, target from draws where blend = 1 and depth_test = 0
+  select draw from bindings where texture = 'tex_3'
+  select d.draw, u.value from draws d join uniforms u using (draw) where u.name = 'tint'
+  select handle, what from objects where kind = 'texture' order by bytes desc
+  select method, count(*) from commands group by method order by 2 desc limit 10";
 
 pub fn help(topic: Option<&str>) -> String {
     match topic {
         Some("input") => INPUT.to_string(),
+        Some("capture") => CAPTURE.to_string(),
+        Some("sql") => SQL.to_string(),
         Some("limits") => LIMITS.to_string(),
         _ => WORKFLOW.to_string(),
     }

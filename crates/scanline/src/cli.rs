@@ -24,6 +24,11 @@ fn positional(command: &str) -> &'static [&'static str] {
         "pixels" => &["x", "y", "w", "h"],
         "eval" => &["expression"],
         "resources" => &["kind"],
+        "draw_list" | "pass_tree" => &["capture"],
+        "draw" => &["capture", "draw"],
+        "draw_diff" => &["capture", "a", "b"],
+        "pixel_source" => &["capture", "x", "y"],
+        "query" => &["capture", "sql"],
         "resource" => &["handle"],
         "diff" => &["a", "b"],
         "help" => &["topic"],
@@ -114,8 +119,13 @@ fn parse(args: Vec<String>) -> Result<Parsed> {
             };
 
             // An expression or a URL is text even when it happens to parse as JSON.
-            params[*place] =
-                if matches!(*place, "url" | "expression" | "topic" | "kind" | "handle" | "a" | "b") { Value::String(arg.clone()) } else { value(arg) };
+            params[*place] = if matches!(*place, "url" | "expression" | "topic" | "kind" | "handle" | "capture" | "sql")
+                || (command == "diff" && matches!(*place, "a" | "b"))
+            {
+                Value::String(arg.clone())
+            } else {
+                value(arg)
+            };
             placed += 1;
 
             continue;

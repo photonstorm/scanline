@@ -54,6 +54,21 @@ Sizes are estimates from dimensions and formats, and results say so.
 
 `gfx_screenshot` returns the path of a lossless original. `gfx_diff(a, b)` on two of those says how many pixels changed, where, and by how much, and returns a heat map. `gfx_region_stats(region: {…})` answers "is this area blank or one colour?" without an image.
 
+## Taking a frame apart (WebGL)
+
+`gfx_capture()` records one frame: every call, the state at each draw, and what the frame used. It returns a handle, `cap_1`, that never goes stale.
+
+From a wrong pixel to its cause:
+
+1. `gfx_capture()`, then `gfx_pixel_source(capture, x, y)` at the wrong pixel. It lists each event that changed the pixel, with the value before and after. The last one produced it.
+2. `gfx_draw(capture, draw: n)` gives that draw's state and every uniform: is blending on, is the texture the one you expect, is a uniform at its default? It also says how many pixels the draw changed. Zero means every fragment was rejected.
+3. `gfx_draw_diff(capture, a, b)` against a draw that looks right narrows it to what differs.
+4. `gfx_screenshot(capture, at_draw: n)` shows the target as it stood after any draw.
+
+`gfx_draw_list(capture, filter: "blend = 1 and depth_test = 0")` lists events; the filter is a SQL condition. `gfx_query(capture, sql)` answers anything else; `gfx_help(topic: "sql")` lists the tables.
+
+The capture's summary says whether replaying it matched the original frame. If it did not, treat answers from replay with suspicion.
+
 ## What it cannot do yet
 
-No draw-call list, frame capture, "which draw produced this pixel", pixel history, per-draw timing or live shader editing. `gfx_help(topic: "limits")` has the current list. If the bug needs those, say so rather than guessing from screenshots.
+No capture of WebGPU frames, no full pixel history (fragments a test rejected), no per-draw timing or live shader editing. `gfx_help(topic: "limits")` has the current list. If the bug needs those, say so rather than guessing from screenshots.

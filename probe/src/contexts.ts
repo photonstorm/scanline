@@ -248,6 +248,7 @@ export const contextHandlers: Handlers = {
         if (extension && typeof extension === 'object')
         {
             hookExtension(G.String(name), extension, record);
+            (record.x as { extensions?: Set<string> } | null)?.extensions?.add(G.String(name));
         }
     },
 

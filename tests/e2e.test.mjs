@@ -445,6 +445,140 @@ describe('the live inventory', () =>
     });
 });
 
+describe('frame capture', () =>
+{
+    test('capture a frame, list its draws, ask what one did and which produced a pixel', async () =>
+    {
+        await scanline('launch', server.url('fixtures/matrix/inventory-webgl2.html'), '--headless');
+        await scanline('step', '5');
+
+        const captured = await scanline('capture', '--json');
+
+        assert.equal(captured.code, 0, captured.out);
+
+        const cap = captured.json.data.capture;
+
+        assert.match(cap, /^cap_\d+$/);
+        assert.equal(captured.json.data.replay, 'identical');
+        assert.equal(captured.json.data.replay_matches, true);
+        assert.deepEqual([captured.json.data.counts.draws, captured.json.data.counts.clears, captured.json.data.counts.passes], [1, 3, 2]);
+        assert.match(captured.json.summary, /Replay check: replaying the capture gives an image identical to the frame's own/);
+        assert.deepEqual(readFileSync(captured.json.images[0].original).subarray(0, 4), PNG);
+
+        // What the frame says.
+        const list = await scanline('draw_list', cap, '--json');
+
+        assert.deepEqual(list.json.data.events.map((event) => [event.kind, event.target]), [['clear', 'tex_4'], ['clear', 'tex_4'], ['clear', 'canvas'], ['draw', 'canvas']]);
+        assert.match(list.out, /3 {2}TRIANGLES ×6 indexed {2}prg_1 → canvas {2}blend SRC_ALPHA\/ONE_MINUS_SRC_ALPHA {2}textures tex_1/);
+
+        const filtered = await scanline('draw_list', cap, '--filter', 'blend = 1 and depth_test = 0', '--json');
+
+        assert.deepEqual(filtered.json.data.events.map((event) => event.draw), [3]);
+
+        const draw = await scanline('draw', cap, '3', '--json');
+
+        assert.deepEqual(draw.json.data.state.uniforms, { map: [0], scale: [0.5], tint: [0.25, 0.5, 0.75, 1] });
+        assert.match(draw.json.summary, /TRIANGLES × 6, indexed \(UNSIGNED_SHORT from buf_2 at byte 0\)/);
+        assert.match(draw.json.summary, /unit 0: 2D tex_1/);
+        assert.match(draw.json.summary, /attribute 0: 2 × FLOAT from buf_1/);
+
+        // What it did: the quad is half the canvas each way, centred.
+        assert.deepEqual(draw.json.data.effect, { changed: 160 * 120, bounds: { x: 80, y: 60, w: 160, h: 120 } });
+
+        const difference = await scanline('draw_diff', cap, '0', '1');
+
+        assert.match(difference.out, /clearColor: \[1,0,1,1\] → \[0,1,1,1\]/);
+        assert.match(difference.out, /scissor: null → \[0,0,32,8\]/);
+        assert.match(difference.out, /enabled: \[BLEND, DITHER\] → \[BLEND, DITHER, SCISSOR_TEST\]/);
+
+        const sql = await scanline('query', cap, "select name, value from uniforms where draw = 3 order by name", '--json');
+
+        assert.deepEqual(sql.json.data.rows, [['map', '0'], ['scale', '0.5'], ['tint', '0.25, 0.5, 0.75, 1']]);
+
+        const refused = await scanline('query', cap, 'delete from draws');
+
+        assert.equal(refused.code, 1);
+        assert.match(refused.out, /SQL error/);
+
+        // What the frame did, by replay.
+        const source = await scanline('pixel_source', cap, '160', '120', '--json');
+
+        assert.deepEqual(source.json.data.changes.map((change) => change.draw), [2, 3]);
+        assert.deepEqual(source.json.data.changes[0].after, [32, 64, 96, 255]);
+        assert.match(source.json.summary, /was produced by event 3\. gpu-measured\./);
+
+        const corner = await scanline('pixel_source', cap, '5', '5', '--json');
+
+        assert.deepEqual(corner.json.data.changes.map((change) => change.draw), [2], 'outside the quad, only the clear');
+
+        const target = await scanline('pixel_source', cap, '3', '12', '--target', 'tex_4', '--json');
+
+        assert.deepEqual(target.json.data.changes.map((change) => [change.draw, change.after]), [[0, [255, 0, 255, 255]], [1, [0, 255, 255, 255]]]);
+
+        // The render target part-way through the frame.
+        const before = await scanline('pixels', '0', '15', '--capture', cap, '--at-draw', '0', '--target', 'tex_4', '--json');
+        const after = await scanline('pixels', '0', '15', '--capture', cap, '--at-draw', '1', '--target', 'tex_4', '--json');
+
+        assert.deepEqual(before.json.data.rgba8, [255, 0, 255, 255]);
+        assert.deepEqual(after.json.data.rgba8, [0, 255, 255, 255]);
+
+        const shot = await scanline('screenshot', '--capture', cap, '--at-draw', '2', '--json');
+
+        assert.equal(shot.json.images[0].width, 320);
+
+        // The capture outlives its session. What it says is still readable; what it did needs a browser.
+        await scanline('close');
+
+        const later = await scanline('draw_list', cap, '--filter', "kind = 'draw'", '--json');
+
+        assert.equal(later.json.data.total, 1);
+
+        const noBrowser = await scanline('pixel_source', cap, '160', '120');
+
+        assert.equal(noBrowser.code, 1);
+        assert.match(noBrowser.out, /needs a browser to run it in, and no session is open\. Call launch/);
+
+        // Any session's browser will do.
+        await scanline('launch', server.url('fixtures/spikes/blank.html'), '--headless');
+
+        const elsewhere = await scanline('pixel_source', cap, '160', '120', '--json');
+
+        assert.deepEqual(elsewhere.json.data.changes.map((change) => change.draw), [2, 3]);
+        assert.match((await scanline('captures')).out, new RegExp(`${cap} {2}frame \\d+ of webgl2 320×240, 1 draws, replay identical`));
+    });
+
+    test('mistakes with captures are explained', async () =>
+    {
+        const missing = await scanline('draw_list', 'cap_999');
+
+        assert.match(missing.out, /No capture "cap_999"\./);
+
+        await scanline('launch', server.url('fixtures/matrix/webgl2.html'), '--headless');
+
+        const cap = (await scanline('capture', '--json')).json.data.capture;
+        const badDraw = await scanline('draw', cap, '77');
+
+        assert.match(badDraw.out, new RegExp(`${cap} has \\d+ events, numbered from 0; there is no draw 77\\.`));
+
+        const badFilter = await scanline('draw_list', cap, '--filter', 'colour = 1');
+
+        assert.match(badFilter.out, /no such column: colour/);
+        assert.match(badFilter.out, /filter is a SQL condition on the draws table/);
+
+        const badTarget = await scanline('pixel_source', cap, '1', '1', '--target', 'tex_99');
+
+        assert.match(badTarget.out, /"tex_99" is not a texture in cap_\d+\. Targets the frame drew to: canvas\./);
+
+        await scanline('close');
+        await scanline('launch', server.url('fixtures/matrix/webgpu.html'), '--headless');
+
+        const webgpu = await scanline('capture');
+
+        assert.equal(webgpu.code, 1);
+        assert.match(webgpu.out, /capturing WebGPU frames is not built yet/);
+    });
+});
+
 describe('the MCP server', () =>
 {
     test('initialize, list tools, and run a session with an inline image', async () =>

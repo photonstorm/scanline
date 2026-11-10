@@ -2,6 +2,7 @@
 // (02-ARCHITECTURE.md, section 3).
 
 import { installAudio } from './audio';
+import { installCapture } from './capture';
 import { clock, installClock } from './clock/clock';
 import { frameAtWall, frameSamples, gateState, installGate, notePageEvent, onFrameEnd, pause, resume, runUntil, setFixedStep, step } from './clock/gate';
 import { installTimers } from './clock/timers';
@@ -115,6 +116,7 @@ function boot (): void
     installReadback();
     installTiming();
     installImage();
+    installCapture();
     installInputRecorder();
     installErrors();
     installAudio();

@@ -8,6 +8,7 @@
 import assert from 'node:assert/strict';
 import { after, before, describe, test } from 'node:test';
 import { gunzipSync } from 'node:zlib';
+import { captureFrame, compare, openReplay } from '../../spikes/lib/replay.mjs';
 import { open, sleep } from '../../spikes/lib/session.mjs';
 import { serve } from '../../spikes/lib/serve.mjs';
 
@@ -484,6 +485,123 @@ describe('the state mirror', () =>
             });
         });
     }
+});
+
+describe('capture and replay', () =>
+{
+    const pages = [
+        ['raw WebGL 1', 'fixtures/matrix/webgl1.html'],
+        ['raw WebGL 2', 'fixtures/matrix/webgl2.html'],
+        ['WebGL 1 on a timer', 'fixtures/matrix/timers.html'],
+        ['inventory WebGL 2', 'fixtures/matrix/inventory-webgl2.html'],
+        ['three.js', 'fixtures/engines/three.html'],
+        ['PixiJS', 'fixtures/engines/pixi.html'],
+        ['Phaser', 'fixtures/engines/phaser.html'],
+        ['Babylon.js', 'fixtures/engines/babylon.html']
+    ];
+
+    for (const [name, path] of pages)
+    {
+        test(`${name}: a captured frame replays to the identical image`, async () =>
+        {
+            await withPage(path, {}, async (session) =>
+            {
+                await sleep(700);
+
+                const capture = await captureFrame(session);
+                const replay = await openReplay(session);
+
+                await replay.load('cap', capture);
+
+                const final = await replay.image('cap');
+
+                assert.ok(capture.data.draws.some((event) => event.kind === 'draw'), 'the frame drew something');
+                assert.deepEqual(compare(capture.original, final), { different: 0, max: 0 }, 'the replayed frame matches the page\'s own, pixel for pixel');
+                assert.equal(final.error, 0, 'the replay raised no GL error');
+                assert.deepEqual(final.notes, []);
+
+                // Capturing must leave the page's own state as it found it.
+                for (const check of await session.probe('registry.verify', {}))
+                {
+                    assert.deepEqual(check.drift, [], 'state mirror after a capture');
+                }
+
+                assert.equal(await session.evaluate(`[...document.querySelectorAll('canvas')].map((c) => c.getContext('webgl2') ?? c.getContext('webgl')).filter(Boolean).map((gl) => gl.getError()).join()`).then((errors) => /[1-9]/.test(errors)), false, 'and no GL error in the page');
+
+                await replay.close();
+            });
+        });
+    }
+
+    test('the picture after one event, and the story of a pixel', async () =>
+    {
+        await withPage('fixtures/matrix/inventory-webgl2.html', {}, async (session) =>
+        {
+            await sleep(500);
+
+            const capture = await captureFrame(session);
+            const replay = await openReplay(session);
+
+            await replay.load('cap', capture);
+
+            // The frame: two clears of the render target, a clear of the canvas, one draw.
+            assert.deepEqual(capture.data.draws.map((event) => event.kind), ['clear', 'clear', 'clear', 'draw']);
+
+            const draw = capture.data.draws[3];
+
+            assert.equal(draw.method, 'drawElements');
+            assert.equal(draw.count, 6);
+            assert.deepEqual(draw.uniforms.tint, [0.25, 0.5, 0.75, 1]);
+            assert.equal(draw.blend.srcRgb, 0x0302);
+            assert.equal(draw.depth, null);
+
+            // After the first clear the render target is all magenta; after the second its lower half is cyan.
+            const pixel = (image, x, y) => [...image.data.subarray((y * image.width + x) * 4, (y * image.width + x) * 4 + 4)];
+            const first = await replay.image('cap', { draw: 0 });
+            const second = await replay.image('cap', { draw: 1 });
+
+            assert.equal(first.width, 32);
+            assert.deepEqual(pixel(first, 0, 15), [255, 0, 255, 255]);
+            assert.deepEqual(pixel(second, 0, 15), [0, 255, 255, 255]);
+            assert.deepEqual(pixel(second, 0, 0), [255, 0, 255, 255]);
+
+            // The canvas after its clear, before the draw.
+            const cleared = await replay.image('cap', { draw: 2 });
+
+            assert.deepEqual(pixel(cleared, 160, 120), [32, 64, 96, 255]);
+
+            // A pixel inside the quad was written by the clear and then by the draw.
+            const inside = await replay.call('trace', { key: 'cap', x: 160, y: 120 });
+
+            assert.deepEqual(inside.changes.map((change) => change.draw), [2, 3]);
+            assert.deepEqual(inside.changes[1].before, [32, 64, 96, 255]);
+            assert.deepEqual(inside.final, inside.changes[1].after);
+
+            // A pixel outside it, by the clear alone.
+            const outside = await replay.call('trace', { key: 'cap', x: 5, y: 5 });
+
+            assert.deepEqual(outside.changes.map((change) => change.draw), [2]);
+
+            // A pixel of the render target.
+            const target = await replay.call('trace', { key: 'cap', x: 3, y: 12, target: { texture: draw.target || capture.data.draws[0].target } });
+
+            assert.deepEqual(target.changes.map((change) => [change.draw, change.after]), [[0, [255, 0, 255, 255]], [1, [0, 255, 255, 255]]]);
+
+            await replay.close();
+        });
+    });
+
+    test('a WebGL 1 buffer is readable from the copy kept of its uploads', async () =>
+    {
+        await withPage('fixtures/matrix/webgl1.html', {}, async (session) =>
+        {
+            await sleep(300);
+
+            const read = await session.probe('registry.readBuffer', { id: 1 });
+
+            assert.deepEqual([...new Float32Array(new Uint8Array(Buffer.from(read.data, 'base64')).buffer)], [0, 0, 1, 0, 0, 1, 1, 1]);
+        });
+    });
 });
 
 describe('GPU time', () =>

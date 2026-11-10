@@ -23,7 +23,7 @@ pub(crate) fn page_text(text: &str, limit: usize) -> String {
     if flat.chars().count() > limit { format!("{}…", flat.chars().take(limit).collect::<String>()) } else { flat }
 }
 
-fn number(value: &Value, digits: usize) -> String {
+pub(crate) fn number(value: &Value, digits: usize) -> String {
     value.as_f64().map(|n| format!("{n:.digits$}")).unwrap_or_else(|| "?".into())
 }
 
@@ -263,7 +263,7 @@ pub async fn navigate(session: &Arc<Session>, params: &Value) -> Result<Value> {
 // ---- Time ----
 
 /// The result that speaks for the page: the top frame's, or failing that the first.
-fn primary(results: &[(Instance, Value)]) -> Result<&Value> {
+pub(crate) fn primary(results: &[(Instance, Value)]) -> Result<&Value> {
     results
         .iter()
         .find(|(instance, _)| instance.top)
@@ -727,7 +727,7 @@ pub async fn input(session: &Arc<Session>, params: &Value) -> Result<Value> {
 // ---- Looking ----
 
 /// The context a looking command is about: the one named, or the largest WebGL or WebGPU canvas.
-async fn choose_context(session: &Arc<Session>, params: &Value) -> Result<ContextRef> {
+pub(crate) async fn choose_context(session: &Arc<Session>, params: &Value) -> Result<ContextRef> {
     let overview = overview(session).await?;
 
     if let Some(handle) = params["context"].as_str() {
@@ -752,7 +752,7 @@ fn region_of(params: &Value) -> Value {
     out
 }
 
-fn decode_grab(grab: &Value) -> Result<Image> {
+pub(crate) fn decode_grab(grab: &Value) -> Result<Image> {
     let packed = base64::engine::general_purpose::STANDARD.decode(grab["data"].as_str().unwrap_or("")).context("decoding the image the probe sent")?;
     let mut bytes = Vec::new();
 
@@ -761,7 +761,7 @@ fn decode_grab(grab: &Value) -> Result<Image> {
     Image::new(grab["region"]["w"].as_u64().unwrap_or(0) as u32, grab["region"]["h"].as_u64().unwrap_or(0) as u32, bytes)
 }
 
-fn save(session: &Session, label: &str, image: &Image) -> Result<std::path::PathBuf> {
+pub(crate) fn save(session: &Session, label: &str, image: &Image) -> Result<std::path::PathBuf> {
     let number = {
         let mut state = session.state.lock().unwrap();
 
