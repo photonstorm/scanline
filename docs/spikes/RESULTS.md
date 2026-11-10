@@ -11,10 +11,10 @@ Run on 10 November 2026 on macOS 27.2, Apple M6, installed Google Chrome 157.0.8
 | S3 | Do the frame gate and virtual clock hold on real engines? | Run (macOS, headless) | **Pass on 12 pages.** Unity and Emscripten builds not tried. |
 | S4 | Does protocol input behave like real input? | Partly run (headless) | Trusted and activating: **pass**. Two findings change the design. Pointer lock, fullscreen, and "window covered" need a headed run. |
 | S5 | Can replay give GPU-true answers at acceptable cost? | Not run | |
-| S6 | Are GPU timings usable? | Not run | |
+| S6 | Are GPU timings usable? | Not run as specified | Learned in passing: timer queries exist for WebGL 1 and 2 and `timestamp-query` for WebGPU on this machine, in the stock profile. WebGPU timestamps there move in steps of 65,536 ns. Repeatability, amplified per-draw timing and the shader dump are untested. |
 | S7 | Is the two-window model good enough? | Not run | Needs the host's window. |
 | S8 | Can real GPU memory be attributed to the page? | Not run | |
-| S9 | What do the hooks cost? | Run (macOS, headless) | 4–8 ns per WebGL call at `observe`; within noise for WebGPU. **Over the 5% budget as the PRD words it** on a frame that is nothing but calls. See below. |
+| S9 | What do the hooks cost? | Run (macOS, headless) | 4–8 ns per WebGL call at `observe`; within noise for WebGPU. Over the PRD's 5% on a frame that is nothing but calls, so the budgets were restated as costs per call. See below. |
 | S10 | Can a pinned browser be shipped? | Not run | The spikes use the installed Chrome, which works with its own profile directory. |
 
 Run them again with:
@@ -131,8 +131,8 @@ Run-to-run spread of the baseline was 0.02–0.08 ms (1.2 ms for the 10,000-draw
 
 - In absolute terms the hooks are cheap: at `observe`, a 2,000-draw WebGL frame pays about 0.08 ms, which is 0.5% of a 60 Hz frame.
 - Against the PRD's wording they fail: "under 5% of CPU frame time" on a frame whose CPU time is *only* graphics calls gives 16–29% for WebGL, because a native WebGL call costs under 30 ns on this machine and the wrapper adds 6–8.
-- **Recommendation:** restate the budgets as absolute costs (nanoseconds per call, or microseconds per 2,000-draw frame), since a percentage of a frame with no game logic in it measures the benchmark, not the tool. This is a decision for the owner.
-- `observe` today is counters only. The registry and shadow state of milestone 2 will add to it; this is the baseline to hold them against.
+- **Decision (10 November 2026):** the budgets are now absolute costs per call: 5 ns at `off`, 25 ns at `observe`, 100 ns at `record`. A percentage of a frame with no game logic in it measures the benchmark, not the tool. The table is in [../DEPARTURES.md](../DEPARTURES.md).
+- That was `observe` as counters only. **With milestone 2's registry and state mirror on, the same 2,000-draw WebGL frame costs about 17 ns a call** (0.450 ms against 0.282 ms with no probe), inside the 25 ns budget. The first version cost 75 ns: every lookup of a probe record went through one shared piece of code that saw textures, buffers, programs and contexts alike, and capabilities lived in a `Map`. One generated class per kind of object and an array for capabilities fixed it.
 - The generated wrappers pass `arguments` straight to the native function, so argument counts are exactly what the page gave.
 
 **Not tested.** `record` level (not built yet). An integrated GPU, Windows.

@@ -24,6 +24,34 @@ pub struct Instance {
     pub kind: String,
     pub top: bool,
     pub url: String,
+    /// 0 for the top frame. Other frames and workers are numbered as they arrive, and the
+    /// number is part of the handles of their objects (`tex_3_w2`).
+    pub tag: u32,
+}
+
+/// The kinds of object the probe's registry holds, with the prefix of their handles.
+pub const OBJECT_KINDS: &[(&str, &str)] = &[
+    ("texture", "tex"),
+    ("buffer", "buf"),
+    ("shader", "shd"),
+    ("program", "prg"),
+    ("pipeline", "pip"),
+    ("framebuffer", "fbo"),
+    ("renderbuffer", "rbo"),
+    ("sampler", "smp"),
+    ("bind_group", "bgr"),
+    ("vertex_array", "vao"),
+    ("layout", "lay"),
+    ("query", "qry"),
+];
+
+/// A live object an agent has been shown: which probe holds it, and its ID there.
+#[derive(Debug, Clone)]
+pub struct ObjectRef {
+    pub handle: String,
+    pub instance: Instance,
+    pub kind: &'static str,
+    pub id: i64,
 }
 
 /// A rendering context an agent can name: `ctx_3`.
@@ -67,6 +95,11 @@ pub struct State {
     pub buttons: u32,
     pub pointer: (f64, f64),
     pub image_seq: u32,
+    /// Object handles shown to an agent, and the probe each came from.
+    pub objects: HashMap<String, Instance>,
+    /// Named memory snapshots: the registry's live objects at an instant.
+    pub snapshots: std::collections::BTreeMap<String, Value>,
+    next_tag: u32,
     pub url: String,
     /// Why the session can no longer be used, once it cannot.
     pub dead: Option<String>,
@@ -155,7 +188,9 @@ impl Session {
             "probeVersion": env!("CARGO_PKG_VERSION"),
         });
 
-        let source = format!("(() => {{ const __SCANLINE_CONFIG__ = {config};\n{PROBE}\n}})();");
+        // The sourceURL names the probe's script, so the probe can tell its own stack frames from
+        // the page's when it records where an object was created.
+        let source = format!("(() => {{ const __SCANLINE_CONFIG__ = {config};\n{PROBE}\n}})();\n//# sourceURL=scanline-probe.js");
 
         // Find the page the browser opened and attach to it.
         let targets = client.send("Target.getTargets", json!({}), None).await?;
@@ -401,6 +436,40 @@ impl Session {
         }
     }
 
+    /// The handle for an object in a probe's registry: `tex_17`, or `tex_17_w2` for one that
+    /// lives in a worker or another frame. Showing a handle is what makes it usable.
+    pub fn object_handle(&self, instance: &Instance, kind: &str, id: i64) -> String {
+        let prefix = OBJECT_KINDS.iter().find(|entry| entry.0 == kind).map(|entry| entry.1).unwrap_or("obj");
+        let handle = if instance.tag == 0 { format!("{prefix}_{id}") } else { format!("{prefix}_{id}_w{}", instance.tag) };
+
+        self.state.lock().unwrap().objects.insert(handle.clone(), instance.clone());
+
+        handle
+    }
+
+    /// Resolves an object handle, or explains why it cannot be.
+    pub fn object(&self, handle: &str) -> Result<ObjectRef> {
+        let mut parts = handle.split('_');
+        let prefix = parts.next().unwrap_or("");
+        let id = parts.next().and_then(|id| id.parse::<i64>().ok());
+        let Some(&(kind, _)) = OBJECT_KINDS.iter().find(|entry| entry.1 == prefix) else {
+            bail!("\"{handle}\" is not an object handle. Handles look like tex_3, buf_7, shd_2, prg_1, pip_4, fbo_2; call resources(kind: …) to list them.");
+        };
+        let Some(id) = id else { bail!("\"{handle}\" is not an object handle: the number is missing. Call resources(kind: \"{kind}\") to list them.") };
+
+        let state = self.state.lock().unwrap();
+
+        match state.objects.get(handle) {
+            Some(instance) if state.instances.contains(instance) => Ok(ObjectRef { handle: handle.to_string(), instance: instance.clone(), kind, id }),
+            Some(_) => bail!("{handle} belongs to an earlier page load of {}. Call resources(kind: \"{kind}\") to list current ones.", self.id),
+            // Not shown before, but a top-frame handle is predictable; accept it if the top frame is there.
+            None => match state.instances.iter().find(|instance| instance.top) {
+                Some(top) if !handle.contains("_w") => Ok(ObjectRef { handle: handle.to_string(), instance: top.clone(), kind, id }),
+                _ => bail!("No object \"{handle}\" in {}. Call resources(kind: \"{kind}\") to list current ones.", self.id),
+            },
+        }
+    }
+
     /// Evaluates an expression in the page's top frame.
     pub async fn evaluate(&self, expression: &str, await_promise: bool) -> Result<Value> {
         self.check_alive()?;
@@ -488,7 +557,16 @@ fn handle(session: &Arc<Session>, event: Event) {
                         payload["url"].as_str().unwrap_or("").to_string()
                     };
 
-                    let instance = Instance { cdp_session, context_id: params["executionContextId"].as_i64(), kind, top: payload["top"] == true, url };
+                    let top = payload["top"] == true;
+
+                    let tag = if top {
+                        0
+                    } else {
+                        state.next_tag += 1;
+                        state.next_tag
+                    };
+
+                    let instance = Instance { cdp_session, context_id: params["executionContextId"].as_i64(), kind, top, url, tag };
 
                     if instance.top {
                         // A new document in the top frame replaces the old one.

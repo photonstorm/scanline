@@ -33,6 +33,27 @@ Use the `gfx_*` MCP tools if you have them, or the `scanline` command in a shell
 - `gfx_run_until(until: {expr: "game.scene === 'level2'"})` skips ahead in real time.
 - `gfx_eval("JSON.stringify(game.state)")` reads state the page exposes, which is a better basis for decisions than pixels.
 
+## Looking inside
+
+- `gfx_resources(kind: "texture")` lists every texture, largest first, with the line of code that created it. Other kinds: buffer, shader, program, pipeline, framebuffer.
+- `gfx_resource(handle: "prg_1")` gives a program's link log and every uniform's current value. A uniform shown as "never set" holds its default, which is a common cause of a black or missing draw.
+- `gfx_resource(handle: "shd_2")` gives a shader's source and compile log.
+- `gfx_resource(handle: "tex_3", preview: true)` shows a texture. `gfx_pixels(source: "tex_3", x, y)` reads its exact values, floats included.
+- `gfx_resource(handle: "ctx_1")` gives the WebGL state a draw would use right now: blend, depth, bound textures, vertex layout.
+- `gfx_stats()` gives frame pacing, CPU time and GPU time.
+
+## Finding a leak
+
+1. `gfx_memory(snapshot: "before")`.
+2. Let the page run: `gfx_step(frames: 300)`, or play the part that leaks.
+3. `gfx_memory(diff: ["before", "now"])`. What was created and never destroyed is grouped by the line that created it.
+
+Sizes are estimates from dimensions and formats, and results say so.
+
+## Comparing frames
+
+`gfx_screenshot` returns the path of a lossless original. `gfx_diff(a, b)` on two of those says how many pixels changed, where, and by how much, and returns a heat map. `gfx_region_stats(region: {…})` answers "is this area blank or one colour?" without an image.
+
 ## What it cannot do yet
 
-No draw-call list, texture or shader inspection, frame capture, pixel history, GPU timing or live shader editing. `gfx_help(topic: "limits")` has the current list. If the bug needs those, say so rather than guessing from screenshots.
+No draw-call list, frame capture, "which draw produced this pixel", pixel history, per-draw timing or live shader editing. `gfx_help(topic: "limits")` has the current list. If the bug needs those, say so rather than guessing from screenshots.

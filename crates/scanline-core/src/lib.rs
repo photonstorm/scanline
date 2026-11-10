@@ -9,6 +9,7 @@
 //! - `images` lists files written for this result; `view` is the one sized for an agent.
 
 mod commands;
+mod inventory;
 mod keys;
 mod session;
 mod tools;
@@ -90,6 +91,12 @@ impl Host {
             "pixels" => commands::pixels(&live()?, &params).await,
             "console" => commands::console(&self.session(&params)?, &params).await,
             "stats" => commands::stats(&live()?, &params).await,
+            "resources" => inventory::resources(&live()?, &params).await,
+            "resource" => inventory::resource(&live()?, &params).await,
+            "memory" => inventory::memory(&live()?, &params).await,
+            "region_stats" => commands::region_stats(&live()?, &params).await,
+            // Two image files can be compared with no session at all.
+            "diff" => commands::diff(self, live().ok().as_ref(), &params).await,
             "eval" => commands::eval(&live()?, &params).await,
             "events" => commands::events(&self.session(&params)?, &params).await,
             "wait" => commands::wait(&self.session(&params)?, &params).await,

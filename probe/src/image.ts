@@ -10,7 +10,8 @@
 import { currentFrame, isPaused, onFrameBegin, onFrameEnd, requestGrab } from './clock/gate';
 import { allContexts, contextById, type ContextInfo } from './contexts';
 import { natives } from './hooks/install';
-import { G, nBtoa, nFromCharCode, nSetTimeout } from './natives';
+import { G, nSetTimeout } from './natives';
+import { base64, gzip, halfToFloat, prepareRead, restoreReadState } from './readback';
 import { emit, expose } from './transport';
 
 type Format = 'rgba8unorm' | 'bgra8unorm' | 'rgba16float';
@@ -36,16 +37,6 @@ const kept = new Map<number, Kept>();
 let grabWaiters: Array<() => void> = [];
 
 const GL = {
-    FRAMEBUFFER: 0x8D40,
-    READ_FRAMEBUFFER: 0x8CA8,
-    FRAMEBUFFER_BINDING: 0x8CA6,
-    READ_FRAMEBUFFER_BINDING: 0x8CAA,
-    PIXEL_PACK_BUFFER: 0x88EB,
-    PIXEL_PACK_BUFFER_BINDING: 0x88ED,
-    PACK_ALIGNMENT: 0x0D05,
-    PACK_ROW_LENGTH: 0x0D02,
-    PACK_SKIP_ROWS: 0x0D03,
-    PACK_SKIP_PIXELS: 0x0D04,
     RGBA: 0x1908,
     UNSIGNED_BYTE: 0x1401
 };
@@ -72,64 +63,18 @@ function keepGl (info: ContextInfo): void
         return;
     }
 
-    const gl2 = info.api === 'webgl2';
-    const get = (name: number): any => n.getParameter.call(gl, name);
-    const store = (name: number, value: number): void => n.pixelStorei.call(gl, name, value);
-
-    // Save what the copy disturbs. Milestone 2's shadow state replaces these queries.
-    const readTarget = gl2 ? GL.READ_FRAMEBUFFER : GL.FRAMEBUFFER;
-    const boundFramebuffer = get(gl2 ? GL.READ_FRAMEBUFFER_BINDING : GL.FRAMEBUFFER_BINDING);
-    const alignment = get(GL.PACK_ALIGNMENT);
-    const packBuffer = gl2 ? get(GL.PIXEL_PACK_BUFFER_BINDING) : null;
-    const rowLength = gl2 ? get(GL.PACK_ROW_LENGTH) : 0;
-    const skipRows = gl2 ? get(GL.PACK_SKIP_ROWS) : 0;
-    const skipPixels = gl2 ? get(GL.PACK_SKIP_PIXELS) : 0;
-
     const flipped = new G.Uint8Array(width * height * 4) as Uint8Array;
 
+    // The default framebuffer, into client memory. What this disturbs is put back from the
+    // tracker's mirror of the context's state, with no questions asked of the context.
     try
     {
-        if (boundFramebuffer !== null)
-        {
-            n.bindFramebuffer.call(gl, readTarget, null);
-        }
-
-        if (gl2)
-        {
-            if (packBuffer !== null)
-            {
-                n.bindBuffer.call(gl, GL.PIXEL_PACK_BUFFER, null);
-            }
-
-            store(GL.PACK_ROW_LENGTH, 0);
-            store(GL.PACK_SKIP_ROWS, 0);
-            store(GL.PACK_SKIP_PIXELS, 0);
-        }
-
-        store(GL.PACK_ALIGNMENT, 1);
-
+        prepareRead(info, null);
         n.readPixels.call(gl, 0, 0, width, height, GL.RGBA, GL.UNSIGNED_BYTE, flipped);
     }
     finally
     {
-        store(GL.PACK_ALIGNMENT, alignment);
-
-        if (gl2)
-        {
-            store(GL.PACK_ROW_LENGTH, rowLength);
-            store(GL.PACK_SKIP_ROWS, skipRows);
-            store(GL.PACK_SKIP_PIXELS, skipPixels);
-
-            if (packBuffer !== null)
-            {
-                n.bindBuffer.call(gl, GL.PIXEL_PACK_BUFFER, packBuffer);
-            }
-        }
-
-        if (boundFramebuffer !== null)
-        {
-            n.bindFramebuffer.call(gl, readTarget, boundFramebuffer);
-        }
+        restoreReadState(info);
     }
 
     // readPixels returns rows bottom to top. Everything Scanline reports is top to bottom.
@@ -284,25 +229,6 @@ function keepAll (): void
     }
 }
 
-function halfToFloat (half: number): number
-{
-    const exponent = (half >> 10) & 0x1F;
-    const mantissa = half & 0x3FF;
-    const sign = half & 0x8000 ? -1 : 1;
-
-    if (exponent === 0)
-    {
-        return sign * G.Math.pow(2, -14) * (mantissa / 1024);
-    }
-
-    if (exponent === 31)
-    {
-        return mantissa ? NaN : sign * Infinity;
-    }
-
-    return sign * G.Math.pow(2, exponent - 15) * (1 + mantissa / 1024);
-}
-
 // One pixel as [r, g, b, a] in 8-bit and in float.
 function pixelAt (image: Kept, x: number, y: number): { u8: number[]; f: number[] }
 {
@@ -380,27 +306,6 @@ function clip (image: Kept, region: Region): { x: number; y: number; w: number; 
     const h = G.Math.max(0, G.Math.min(image.height - y, G.Math.floor(region.h ?? image.height - y)));
 
     return { x, y, w, h };
-}
-
-function base64 (bytes: Uint8Array): string
-{
-    const CHUNK = 0x8000;
-
-    let binary = '';
-
-    for (let i = 0; i < bytes.length; i += CHUNK)
-    {
-        binary += nFromCharCode.apply(null, bytes.subarray(i, i + CHUNK) as unknown as number[]);
-    }
-
-    return nBtoa(binary);
-}
-
-async function gzip (bytes: Uint8Array): Promise<Uint8Array>
-{
-    const stream = new G.Blob([bytes]).stream().pipeThrough(new G.CompressionStream('gzip'));
-
-    return new G.Uint8Array(await new G.Response(stream).arrayBuffer());
 }
 
 export function installImage (): void

@@ -14,10 +14,10 @@ use serde_json::{Value, json};
 use crate::session::{ContextRef, Instance, Session, SessionOptions};
 use crate::{Host, keys, result};
 
-const SHORT: Duration = Duration::from_secs(10);
+pub(crate) const SHORT: Duration = Duration::from_secs(10);
 
 /// Text from the page is data, never instructions. It is cut to a length and marked.
-fn page_text(text: &str, limit: usize) -> String {
+pub(crate) fn page_text(text: &str, limit: usize) -> String {
     let flat: String = text.chars().map(|c| if c == '\n' || c == '\r' { ' ' } else { c }).collect();
 
     if flat.chars().count() > limit { format!("{}…", flat.chars().take(limit).collect::<String>()) } else { flat }
@@ -806,23 +806,7 @@ pub async fn screenshot(session: &Arc<Session>, params: &Value) -> Result<Value>
         return Ok(value);
     }
 
-    if source != "canvas" {
-        bail!("source must be \"canvas\" or \"page\". Textures and render targets come with the inventory and capture milestones.");
-    }
-
-    let context = choose_context(session, params).await?;
-    let mut args = region_of(params);
-
-    args["context"] = json!(context.local);
-
-    let grab = session.probe(&context.instance, "image.grab", args, Duration::from_secs(20)).await?;
-    let original = decode_grab(&grab)?;
-    let region = grab["region"].clone();
-    let frame = grab["frame"].clone();
-
-    if original.width == 0 || original.height == 0 {
-        bail!("The region is empty. {} is {}×{} canvas pixels.", context.handle, grab["size"]["width"], grab["size"]["height"]);
-    }
+    let Grab { image: original, what, label, region, space, mut data } = grab(session, params).await?;
 
     // The view is what an agent looks at: opaque, and sized on purpose.
     let (view, scale, how) = if zoom > 1 {
@@ -847,45 +831,245 @@ pub async fn screenshot(session: &Arc<Session>, params: &Value) -> Result<Value>
         (view, 1.0 / factor as f64, if factor > 1 { format!("shown at 1/{factor} scale") } else { "at full size".to_string() })
     };
 
-    let label = format!("{}-frame{}", context.handle, frame);
     let original_path = save(session, &label, &original)?;
     let transparent = original.data.chunks_exact(4).any(|pixel| pixel[3] != 255);
 
     // When the view is the original, pixel for pixel, one file serves as both.
     let view_path = if view == original { original_path.clone() } else { save(session, &format!("{label}-view"), &view)? };
+    let unit = if space == "canvas_px" { "canvas pixels" } else { "texels" };
 
     let mut summary = format!(
-        "{} at frame {frame}: region x {} y {} {}×{} canvas pixels (origin top-left), {how}. Image is {}×{}.",
-        context.handle, region["x"], region["y"], region["w"], region["h"], view.width, view.height
+        "{what}: region x {} y {} {}×{} {unit} (origin top-left), {how}. Image is {}×{}.",
+        region["x"], region["y"], region["w"], region["h"], view.width, view.height
     );
 
     if transparent {
-        summary.push_str(" The canvas has transparent pixels; the view shows them opaque.");
+        summary.push_str(" It has transparent pixels; the view shows them opaque.");
+    }
+
+    if let Some(note) = data["note"].as_str() {
+        summary.push_str(&format!(" {note}"));
     }
 
     summary.push_str(&format!(" Lossless original: {}", original_path.display()));
 
-    let mut value = result(
-        summary,
-        json!({
-            "context": context.handle,
-            "frame": frame,
-            "region": region,
-            "canvas": grab["size"],
-            "scale": scale,
-            "space": "canvas_px",
-            "source_format": grab["sourceFormat"],
-            "premultiplied_alpha": grab["premultipliedAlpha"],
-            "provenance": "gpu-measured",
-        }),
-    );
+    data["scale"] = json!(scale);
+    data["space"] = json!(space);
+    data["provenance"] = json!("gpu-measured");
 
-    value["images"] = json!([{ "view": view_path, "original": original_path, "width": view.width, "height": view.height, "scale": scale, "space": "canvas_px", "region": region }]);
+    let mut value = result(summary, data);
+
+    value["images"] =
+        json!([{ "view": view_path, "original": original_path, "width": view.width, "height": view.height, "scale": scale, "space": space, "region": region }]);
 
     Ok(value)
 }
 
+/// An image read back from the GPU: a canvas's final frame, or a texture's contents.
+pub(crate) struct Grab {
+    pub image: Image,
+    /// What it is, for a summary: "ctx_1 at frame 31", "tex_3 level 0".
+    pub what: String,
+    /// For the file name.
+    pub label: String,
+    pub region: Value,
+    pub space: &'static str,
+    pub data: Value,
+}
+
+/// Reads the image a looking command is about. `source` is "canvas" (the default) or a
+/// texture handle.
+pub(crate) async fn grab(session: &Arc<Session>, params: &Value) -> Result<Grab> {
+    let source = params["source"].as_str().unwrap_or("canvas");
+
+    if source.starts_with("tex_") {
+        let object = session.object(source)?;
+
+        if object.kind != "texture" {
+            bail!("{source} is a {}, not a texture.", object.kind);
+        }
+
+        let mut args = region_of(params);
+
+        args["id"] = json!(object.id);
+        args["level"] = json!(params["level"].as_u64().unwrap_or(0));
+        args["layer"] = json!(params["layer"].as_u64().unwrap_or(0));
+
+        if let Some(flip) = params["flip"].as_bool() {
+            args["flip"] = json!(flip);
+        }
+
+        let read = session.probe(&object.instance, "registry.readTexture", args, Duration::from_secs(20)).await?;
+        let image = decode_grab(&read)?;
+
+        if image.width == 0 || image.height == 0 {
+            bail!("The region is empty. {source} level {} is {}×{} texels.", read["level"], read["size"]["width"], read["size"]["height"]);
+        }
+
+        let mut what = format!("{source} level {}", read["level"]);
+
+        if read["layer"].as_u64().unwrap_or(0) > 0 {
+            what.push_str(&format!(" layer {}", read["layer"]));
+        }
+
+        what.push_str(&format!(" ({}, {}×{})", read["format"].as_str().unwrap_or("?"), read["size"]["width"], read["size"]["height"]));
+
+        let note = match (read["kind"].as_str(), read["flipped"].as_bool()) {
+            (Some("float"), _) => Some("Float values are shown clamped to 0–1; pixels gives them exactly."),
+            (Some("int"), _) => Some("Integer values are shown clamped to 0–255; pixels gives them exactly."),
+            (_, Some(true)) => Some("Shown the way it was rendered: a WebGL render target's first row is its bottom. Pass flip: false for storage order."),
+            _ => None,
+        };
+
+        return Ok(Grab {
+            image,
+            what,
+            label: format!("{source}-level{}", read["level"]),
+            region: read["region"].clone(),
+            space: "texel",
+            data: json!({ "source": source, "level": read["level"], "layer": read["layer"], "format": read["format"], "size": read["size"], "region": read["region"], "flipped": read["flipped"], "note": note }),
+        });
+    }
+
+    if source != "canvas" {
+        bail!("source must be \"canvas\", \"page\" or a texture handle such as tex_3 (from resources(kind: \"texture\")). Got \"{source}\".");
+    }
+
+    let context = choose_context(session, params).await?;
+    let mut args = region_of(params);
+
+    args["context"] = json!(context.local);
+
+    let grab = session.probe(&context.instance, "image.grab", args, Duration::from_secs(20)).await?;
+    let image = decode_grab(&grab)?;
+
+    if image.width == 0 || image.height == 0 {
+        bail!("The region is empty. {} is {}×{} canvas pixels.", context.handle, grab["size"]["width"], grab["size"]["height"]);
+    }
+
+    Ok(Grab {
+        image,
+        what: format!("{} at frame {}", context.handle, grab["frame"]),
+        label: format!("{}-frame{}", context.handle, grab["frame"]),
+        region: grab["region"].clone(),
+        space: "canvas_px",
+        data: json!({
+            "context": context.handle,
+            "frame": grab["frame"],
+            "region": grab["region"],
+            "canvas": grab["size"],
+            "source_format": grab["sourceFormat"],
+            "premultiplied_alpha": grab["premultipliedAlpha"],
+        }),
+    })
+}
+
+/// Exact values of a few texels of a texture, in the texture's own number type.
+async fn texture_pixels(session: &Arc<Session>, handle: &str, params: &Value) -> Result<Value> {
+    let object = session.object(handle)?;
+
+    if object.kind != "texture" {
+        bail!("{handle} is a {}, not a texture.", object.kind);
+    }
+
+    let mut args = region_of(params);
+    let (w, h) = (args["w"].as_f64().unwrap_or(1.0).max(1.0) as u64, args["h"].as_f64().unwrap_or(1.0).max(1.0) as u64);
+
+    if w * h > 256 {
+        bail!("{w}×{h} is too many texels to list (the limit is 256, for example 16×16). Use screenshot with a region and zoom to look at an area.");
+    }
+
+    args["w"] = json!(w);
+    args["h"] = json!(h);
+    args["id"] = json!(object.id);
+    args["level"] = json!(params["level"].as_u64().unwrap_or(0));
+    args["layer"] = json!(params["layer"].as_u64().unwrap_or(0));
+    args["values"] = json!(true);
+
+    if let Some(flip) = params["flip"].as_bool() {
+        args["flip"] = json!(flip);
+    }
+
+    let read = session.probe(&object.instance, "registry.readTexture", args, Duration::from_secs(20)).await?;
+    let region = &read["region"];
+    let (rx, ry, rw, rh) =
+        (region["x"].as_u64().unwrap_or(0), region["y"].as_u64().unwrap_or(0), region["w"].as_u64().unwrap_or(0), region["h"].as_u64().unwrap_or(0));
+
+    if rw == 0 || rh == 0 {
+        bail!("That point is outside {handle} level {}, which is {}×{} texels.", read["level"], read["size"]["width"], read["size"]["height"]);
+    }
+
+    let values = read["values"].as_array().cloned().unwrap_or_default();
+    let float = read["kind"] == "float";
+
+    // JSON has no NaN or Infinity: the probe's serialiser turns them into null.
+    let one = |value: &Value| match value.as_f64() {
+        None => "NaN/Inf".to_string(),
+        Some(n) if float => format!("{}", (n * 1e6).round() / 1e6),
+        Some(n) => format!("{n}"),
+    };
+
+    let at = |index: usize| -> String {
+        let p = &values[index * 4..index * 4 + 4];
+
+        format!("({}, {}, {}, {})", one(&p[0]), one(&p[1]), one(&p[2]), one(&p[3]))
+    };
+
+    let format = read["format"].as_str().unwrap_or("?");
+    let kind = match read["kind"].as_str() {
+        Some("float") => "float",
+        Some("int") => "integer",
+        _ => "8-bit",
+    };
+
+    let mut lines = Vec::new();
+
+    if rw * rh == 1 {
+        lines.push(format!("{handle} ({rx}, {ry}) level {}: rgba {kind} {}. Format {format}. gpu-measured.", read["level"], at(0)));
+    } else {
+        lines.push(format!("{handle} x {rx}–{} y {ry}–{} level {}, rgba {kind}, format {format}, gpu-measured:", rx + rw - 1, ry + rh - 1, read["level"]));
+
+        for row in 0..rh {
+            let mut cells: Vec<(String, u64)> = Vec::new();
+
+            for column in 0..rw {
+                let text = at((row * rw + column) as usize);
+
+                match cells.last_mut() {
+                    Some((last, count)) if *last == text => *count += 1,
+                    _ => cells.push((text, 1)),
+                }
+            }
+
+            let folded: Vec<String> = cells.iter().map(|(text, count)| if *count > 1 { format!("{text}×{count}") } else { text.clone() }).collect();
+
+            lines.push(format!("  y {}: {}", ry + row, folded.join(" ")));
+        }
+    }
+
+    lines.push("Channels a format lacks read as 0, and a missing alpha as fully opaque.".into());
+
+    if read["flipped"] == true {
+        lines.push(
+            "y counts from the top of the picture as rendered (a WebGL render target's first row is its bottom). Pass flip: false for storage order.".into(),
+        );
+    }
+
+    Ok(result(
+        lines.join("\n"),
+        json!({ "source": handle, "level": read["level"], "format": format, "kind": read["kind"], "region": region, "values": values, "space": "texel", "provenance": "gpu-measured" }),
+    ))
+}
+
 pub async fn pixels(session: &Arc<Session>, params: &Value) -> Result<Value> {
+    if let Some(handle) = params["source"].as_str().filter(|source| source.starts_with("tex_")) {
+        if params["x"].is_null() && params["region"].is_null() {
+            bail!("pixels needs x and y (and optionally w and h, up to 16×16), in texels from the top-left.");
+        }
+
+        return texture_pixels(session, handle, params).await;
+    }
+
     if params["x"].is_null() && params["region"].is_null() {
         bail!("pixels needs x and y (and optionally w and h, up to 16×16), in canvas pixels from the top-left.");
     }
@@ -895,7 +1079,7 @@ pub async fn pixels(session: &Arc<Session>, params: &Value) -> Result<Value> {
 
     args["context"] = json!(context.local);
 
-    let (w, h) = (args["w"].as_u64().unwrap_or(1), args["h"].as_u64().unwrap_or(1));
+    let (w, h) = (args["w"].as_f64().unwrap_or(1.0).max(1.0) as u64, args["h"].as_f64().unwrap_or(1.0).max(1.0) as u64);
 
     if w * h > 256 {
         bail!("{w}×{h} is too many pixels to list (the limit is 256, for example 16×16). Use screenshot with a region and zoom to look at an area.");
@@ -1081,6 +1265,44 @@ pub async fn stats(session: &Arc<Session>, params: &Value) -> Result<Value> {
         number(&figures["cpuMs"]["max"], 2)
     ));
 
+    // GPU time, where the browser offers timer queries. Results arrive a few frames late.
+    let gpu = &figures["gpu"];
+    let measured = gpu["frames"].as_u64().unwrap_or(0);
+
+    if measured > 0 {
+        lines.push(format!(
+            "  GPU time: mean {} ms, p95 {} ms, worst {} ms, over the {measured} frames measured. gpu-measured ({} profile).",
+            number(&gpu["ms"]["mean"], 3),
+            number(&gpu["ms"]["p95"], 3),
+            number(&gpu["ms"]["max"], 3),
+            session.profile.name()
+        ));
+
+        let mut passes: Vec<&Value> = gpu["passes"].as_array().into_iter().flatten().collect();
+
+        passes.sort_by(|a, b| b["mean"].as_f64().unwrap_or(0.0).total_cmp(&a["mean"].as_f64().unwrap_or(0.0)));
+
+        for pass in passes.iter().take(8) {
+            lines.push(format!("    {} ms  «{}»", number(&pass["mean"], 3), page_text(pass["label"].as_str().unwrap_or(""), 60)));
+        }
+
+        if passes.len() > 8 {
+            lines.push(format!("    … and {} more passes.", passes.len() - 8));
+        }
+
+        if !passes.is_empty() && session.profile.name() != "deep" {
+            lines.push("    The browser coarsens WebGPU timestamps outside the deep profile (steps of about 0.07 ms here); launch with profile: \"deep\" for fine ones.".into());
+        }
+    } else if session.unmodified {
+        lines.push("  GPU time: not measured in unmodified mode.".into());
+    } else if gpu["notes"].as_array().is_none_or(|notes| notes.is_empty()) {
+        lines.push("  GPU time: no results yet. They arrive a few frames after the frame they measure; run a few more frames.".into());
+    }
+
+    for note in gpu["notes"].as_array().into_iter().flatten() {
+        lines.push(format!("  {}", note.as_str().unwrap_or("")));
+    }
+
     lines.push(format!(
         "  Per frame: {} draws, {} instances, {} triangles, {} API calls.",
         per_frame("draws"),
@@ -1108,6 +1330,199 @@ pub async fn eval(session: &Arc<Session>, params: &Value) -> Result<Value> {
     let text = if let Value::String(text) = &value { text.clone() } else { value.to_string() };
 
     Ok(result(format!("«{}»", page_text(&text, 4000)), json!({ "value": value })))
+}
+
+// ---- Measuring images ----
+
+pub async fn region_stats(session: &Arc<Session>, params: &Value) -> Result<Value> {
+    let Grab { image, what, region, space, data, .. } = grab(session, params).await?;
+    let stats = image.stats();
+    let unit = if space == "canvas_px" { "canvas pixels" } else { "texels" };
+    let share = |count: u64| if stats.pixels > 0 { format!("{count} ({:.1}%)", count as f64 * 100.0 / stats.pixels as f64) } else { "0".into() };
+
+    let mut lines = vec![format!(
+        "{what}: region x {} y {} {}×{} {unit}, {} pixels, as 8-bit RGBA. gpu-measured.",
+        region["x"], region["y"], region["w"], region["h"], stats.pixels
+    )];
+
+    for (index, name) in ["red", "green", "blue", "alpha"].iter().enumerate() {
+        let channel = &stats.channels[index];
+
+        lines.push(format!(
+            "  {name:<5} min {:>3}  max {:>3}  mean {:>6.1}  histogram (0–31 … 224–255): {}",
+            channel.min,
+            channel.max,
+            channel.mean,
+            channel.histogram.iter().map(u64::to_string).collect::<Vec<_>>().join(" ")
+        ));
+    }
+
+    lines.push(format!(
+        "  {} distinct colour{}; saturated (a colour channel at 255) {}; black {}; fully transparent {}.",
+        if stats.distinct >= scanline_image::DISTINCT_LIMIT { format!("more than {}", scanline_image::DISTINCT_LIMIT) } else { stats.distinct.to_string() },
+        if stats.distinct == 1 { "" } else { "s" },
+        share(stats.saturated),
+        share(stats.black),
+        share(stats.transparent)
+    ));
+
+    if stats.distinct == 1 {
+        let c = &stats.channels;
+
+        lines.push(format!("  The whole region is one colour: ({}, {}, {}, {}).", c[0].min, c[1].min, c[2].min, c[3].min));
+    }
+
+    if data["kind"] == "float" || data["format"].as_str().is_some_and(|format| format.contains("float") || format.ends_with('F')) {
+        lines.push("  This is a float target shown clamped to 0–1. Counts of NaN and Inf, and the true range, are not built yet; pixels gives exact values for small regions.".into());
+    }
+
+    Ok(result(
+        lines.join("\n"),
+        json!({
+            "source": data,
+            "region": region,
+            "pixels": stats.pixels,
+            "channels": stats.channels.iter().zip(["red", "green", "blue", "alpha"]).map(|(channel, name)| json!({ "channel": name, "min": channel.min, "max": channel.max, "mean": channel.mean, "histogram": channel.histogram })).collect::<Vec<_>>(),
+            "distinct": stats.distinct,
+            "saturated": stats.saturated,
+            "black": stats.black,
+            "transparent": stats.transparent,
+            "provenance": "gpu-measured",
+        }),
+    ))
+}
+
+/// One side of a diff: an image file, or something to read back now.
+async fn diff_side(session: Option<&Arc<Session>>, spec: &Value, params: &Value) -> Result<(Image, String)> {
+    let Some(spec) = spec.as_str() else {
+        bail!("diff needs a and b: each an image file (the \"original\" path of an earlier screenshot), \"canvas\", a context handle, or a texture handle.");
+    };
+
+    if spec.ends_with(".png") || spec.contains('/') || spec.contains('\\') {
+        let bytes = std::fs::read(spec).with_context(|| format!("Could not read the image {spec}"))?;
+
+        return Ok((Image::from_png(&bytes)?, spec.rsplit(['/', '\\']).next().unwrap_or(spec).to_string()));
+    }
+
+    let Some(session) = session else {
+        bail!("\"{spec}\" is read from a session, and no session is open or named. Pass session, or give image files.");
+    };
+
+    let mut options = json!({ "region": params["region"] });
+
+    if spec.starts_with("ctx_") {
+        options["context"] = json!(spec);
+    } else if spec != "canvas" {
+        options["source"] = json!(spec);
+    }
+
+    let grabbed = grab(session, &options).await?;
+
+    Ok((grabbed.image, grabbed.what))
+}
+
+pub async fn diff(host: &Arc<Host>, session: Option<&Arc<Session>>, params: &Value) -> Result<Value> {
+    let (a, a_name) = diff_side(session, &params["a"], params).await?;
+    let (b, b_name) = diff_side(session, &params["b"], params).await?;
+    let threshold = params["threshold"].as_u64().unwrap_or(0).min(255) as u8;
+    let difference = a.difference(&b, threshold)?;
+    let percent = if difference.pixels > 0 { difference.changed as f64 * 100.0 / difference.pixels as f64 } else { 0.0 };
+
+    let mut lines = Vec::new();
+
+    if difference.changed == 0 {
+        lines.push(format!(
+            "No difference: {a_name} and {b_name} are identical{} ({}×{}).",
+            if threshold > 0 { format!(" within a threshold of {threshold}") } else { String::new() },
+            a.width,
+            a.height
+        ));
+
+        if threshold > 0 && difference.max > 0 {
+            lines.push(format!("The largest difference in any channel is {}, under the threshold.", difference.max));
+        }
+
+        return Ok(result(lines.join("\n"), json!({ "changed": 0, "pixels": difference.pixels, "max": difference.max, "mean": difference.mean })));
+    }
+
+    let (x, y, w, h) = difference.bounds.unwrap();
+
+    lines.push(format!("{a_name} against {b_name} ({}×{}): {} of {} pixels differ ({percent:.2}%).", a.width, a.height, difference.changed, difference.pixels));
+    lines.push(format!(
+        "Largest difference in a channel {} of 255; mean difference per channel {:.3}. All changes lie within x {x} y {y} {w}×{h}.",
+        difference.max, difference.mean
+    ));
+
+    if difference.areas.len() > 1 {
+        lines.push(format!("{} separate areas, largest first (x, y, width × height, changed pixels):", difference.areas.len()));
+        lines.extend(difference.areas.iter().take(8).map(|(x, y, w, h, count)| format!("  x {x} y {y} {w}×{h}: {count}")));
+
+        if difference.areas.len() > 8 {
+            lines.push(format!("  … and {} more.", difference.areas.len() - 8));
+        }
+    }
+
+    // The heat map: the first image dimmed to grey, changed pixels from dark red to yellow.
+    static COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+
+    let max_edge = params["max_edge"].as_u64().unwrap_or(512).clamp(16, 4096) as u32;
+    let (view, factor) = difference.heat.fit(max_edge);
+
+    let (original_path, view_path) = match session {
+        Some(session) => {
+            let original = save(session, "diff", &difference.heat)?;
+            let view_path = if factor == 1 { original.clone() } else { save(session, "diff-view", &view)? };
+
+            (original, view_path)
+        }
+        None => {
+            let dir = host.artefacts().join("images");
+
+            std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+
+            let number = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let original = dir.join(format!("diff-{number:04}.png"));
+
+            std::fs::write(&original, difference.heat.to_png()?).with_context(|| format!("writing {}", original.display()))?;
+
+            let view_path = if factor == 1 {
+                original.clone()
+            } else {
+                let path = dir.join(format!("diff-{number:04}-view.png"));
+
+                std::fs::write(&path, view.to_png()?)?;
+
+                path
+            };
+
+            (original, view_path)
+        }
+    };
+
+    lines.push(format!(
+        "Heat map{}: unchanged pixels are the first image dimmed to grey; changed ones run from dark red (small) to yellow (large). Full size: {}",
+        if factor > 1 { format!(" at 1/{factor} scale") } else { String::new() },
+        original_path.display()
+    ));
+    lines.push("A perceptual score is not built yet; these are exact per-pixel differences.".into());
+
+    let mut value = result(
+        lines.join("\n"),
+        json!({
+            "changed": difference.changed,
+            "pixels": difference.pixels,
+            "percent": percent,
+            "max": difference.max,
+            "mean": difference.mean,
+            "bounds": { "x": x, "y": y, "w": w, "h": h },
+            "areas": difference.areas.iter().take(50).map(|(x, y, w, h, count)| json!({ "x": x, "y": y, "w": w, "h": h, "changed": count })).collect::<Vec<_>>(),
+            "threshold": threshold,
+        }),
+    );
+
+    value["images"] = json!([{ "view": view_path, "original": original_path, "width": view.width, "height": view.height, "scale": 1.0 / factor as f64, "space": "image_px" }]);
+
+    Ok(value)
 }
 
 // ---- Events ----

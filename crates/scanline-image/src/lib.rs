@@ -170,9 +170,266 @@ impl Image {
     }
 }
 
+/// What one channel of a region holds.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChannelStats {
+    pub min: u8,
+    pub max: u8,
+    pub mean: f64,
+    /// Eight equal buckets from 0–31 to 224–255.
+    pub histogram: [u64; 8],
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Stats {
+    pub pixels: u64,
+    /// Red, green, blue, alpha.
+    pub channels: [ChannelStats; 4],
+    /// Pixels with a colour channel at 255: clipped highlights.
+    pub saturated: u64,
+    /// Pixels whose colour channels are all 0.
+    pub black: u64,
+    /// Pixels with alpha 0.
+    pub transparent: u64,
+    /// Distinct RGBA values, counted up to `DISTINCT_LIMIT`.
+    pub distinct: usize,
+}
+
+pub const DISTINCT_LIMIT: usize = 4096;
+
+/// How two images of the same size differ.
+#[derive(Debug, Clone)]
+pub struct Difference {
+    pub pixels: u64,
+    pub changed: u64,
+    /// Largest difference in any channel of any pixel.
+    pub max: u8,
+    /// Mean absolute difference per channel, over every pixel.
+    pub mean: f64,
+    /// The rectangle containing every changed pixel: x, y, width, height.
+    pub bounds: Option<(u32, u32, u32, u32)>,
+    /// Separate changed areas, largest first: x, y, width, height, changed pixels.
+    pub areas: Vec<(u32, u32, u32, u32, u64)>,
+    /// The first image dimmed to grey, with changed pixels from dark red (small) to yellow (large).
+    pub heat: Image,
+}
+
+impl Image {
+    pub fn stats(&self) -> Stats {
+        let empty = ChannelStats { min: 255, max: 0, mean: 0.0, histogram: [0; 8] };
+        let mut channels = [empty.clone(), empty.clone(), empty.clone(), empty];
+        let mut sums = [0u64; 4];
+        let mut distinct = std::collections::HashSet::new();
+        let (mut saturated, mut black, mut transparent) = (0u64, 0u64, 0u64);
+
+        for pixel in self.data.chunks_exact(4) {
+            for (channel, value) in pixel.iter().enumerate() {
+                let stats = &mut channels[channel];
+
+                stats.min = stats.min.min(*value);
+                stats.max = stats.max.max(*value);
+                stats.histogram[(*value >> 5) as usize] += 1;
+                sums[channel] += *value as u64;
+            }
+
+            saturated += (pixel[0] == 255 || pixel[1] == 255 || pixel[2] == 255) as u64;
+            black += (pixel[0] == 0 && pixel[1] == 0 && pixel[2] == 0) as u64;
+            transparent += (pixel[3] == 0) as u64;
+
+            if distinct.len() < DISTINCT_LIMIT {
+                distinct.insert([pixel[0], pixel[1], pixel[2], pixel[3]]);
+            }
+        }
+
+        let pixels = (self.data.len() / 4) as u64;
+
+        for (channel, stats) in channels.iter_mut().enumerate() {
+            stats.mean = if pixels > 0 { sums[channel] as f64 / pixels as f64 } else { 0.0 };
+
+            if pixels == 0 {
+                stats.min = 0;
+            }
+        }
+
+        Stats { pixels, channels, saturated, black, transparent, distinct: distinct.len() }
+    }
+
+    /// Compares this image with another of the same size. A pixel counts as changed when any
+    /// channel differs by more than `threshold`.
+    pub fn difference(&self, other: &Image, threshold: u8) -> Result<Difference> {
+        if self.width != other.width || self.height != other.height {
+            bail!(
+                "The images are different sizes ({}×{} and {}×{}), so they cannot be compared pixel for pixel. Take both with the same region and scale.",
+                self.width,
+                self.height,
+                other.width,
+                other.height
+            );
+        }
+
+        // Changed pixels are gathered into areas on a coarse grid: neighbouring cells with
+        // changes belong to one area.
+        const CELL: u32 = 8;
+
+        let columns = self.width.div_ceil(CELL).max(1);
+        let rows = self.height.div_ceil(CELL).max(1);
+        let mut cells = vec![0u64; (columns * rows) as usize];
+        let mut heat = Vec::with_capacity(self.data.len());
+        let (mut changed, mut max, mut total) = (0u64, 0u8, 0u64);
+        let (mut left, mut top, mut right, mut bottom) = (u32::MAX, u32::MAX, 0u32, 0u32);
+
+        for (index, (a, b)) in self.data.chunks_exact(4).zip(other.data.chunks_exact(4)).enumerate() {
+            let mut largest = 0u8;
+
+            for channel in 0..4 {
+                let delta = a[channel].abs_diff(b[channel]);
+
+                largest = largest.max(delta);
+                total += delta as u64;
+            }
+
+            max = max.max(largest);
+
+            if largest > threshold {
+                let x = index as u32 % self.width;
+                let y = index as u32 / self.width;
+
+                changed += 1;
+                left = left.min(x);
+                top = top.min(y);
+                right = right.max(x);
+                bottom = bottom.max(y);
+                cells[((y / CELL) * columns + x / CELL) as usize] += 1;
+
+                // Dark red for a small change through to yellow for a full-range one.
+                let strength = largest as u32;
+
+                heat.extend_from_slice(&[(128 + strength / 2) as u8, strength as u8, 0, 255]);
+            } else {
+                let grey = ((a[0] as u32 * 3 + a[1] as u32 * 6 + a[2] as u32) / 10 / 4) as u8;
+
+                heat.extend_from_slice(&[grey, grey, grey, 255]);
+            }
+        }
+
+        // Flood-fill the grid to find separate areas.
+        let mut areas = Vec::new();
+        let mut seen = vec![false; cells.len()];
+
+        for start in 0..cells.len() {
+            if cells[start] == 0 || seen[start] {
+                continue;
+            }
+
+            let mut stack = vec![start];
+            let (mut x0, mut y0, mut x1, mut y1, mut count) = (u32::MAX, u32::MAX, 0u32, 0u32, 0u64);
+
+            seen[start] = true;
+
+            while let Some(cell) = stack.pop() {
+                let (cx, cy) = (cell as u32 % columns, cell as u32 / columns);
+
+                x0 = x0.min(cx);
+                y0 = y0.min(cy);
+                x1 = x1.max(cx);
+                y1 = y1.max(cy);
+                count += cells[cell];
+
+                for (dx, dy) in [(-1i64, 0i64), (1, 0), (0, -1), (0, 1), (-1, -1), (1, 1), (-1, 1), (1, -1)] {
+                    let (nx, ny) = (cx as i64 + dx, cy as i64 + dy);
+
+                    if nx < 0 || ny < 0 || nx >= columns as i64 || ny >= rows as i64 {
+                        continue;
+                    }
+
+                    let next = (ny as u32 * columns + nx as u32) as usize;
+
+                    if cells[next] > 0 && !seen[next] {
+                        seen[next] = true;
+                        stack.push(next);
+                    }
+                }
+            }
+
+            let x = x0 * CELL;
+            let y = y0 * CELL;
+
+            areas.push((x, y, ((x1 + 1) * CELL).min(self.width) - x, ((y1 + 1) * CELL).min(self.height) - y, count));
+        }
+
+        areas.sort_by_key(|area| std::cmp::Reverse(area.4));
+
+        let pixels = (self.data.len() / 4) as u64;
+
+        Ok(Difference {
+            pixels,
+            changed,
+            max,
+            mean: if pixels > 0 { total as f64 / (pixels * 4) as f64 } else { 0.0 },
+            bounds: (changed > 0).then(|| (left, top, right - left + 1, bottom - top + 1)),
+            areas,
+            heat: Image { width: self.width, height: self.height, data: heat },
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stats_describe_each_channel() {
+        let stats = checker().stats();
+
+        assert_eq!(stats.pixels, 8);
+        assert_eq!((stats.channels[0].min, stats.channels[0].max), (0, 255));
+        assert_eq!(stats.channels[0].mean, 255.0 * 3.0 / 8.0);
+        assert_eq!(stats.channels[0].histogram, [5, 0, 0, 0, 0, 0, 0, 3]);
+        assert_eq!(stats.channels[3].min, 255);
+        assert_eq!(stats.saturated, 7);
+        assert_eq!(stats.black, 1);
+        assert_eq!(stats.transparent, 0);
+        assert_eq!(stats.distinct, 5);
+    }
+
+    #[test]
+    fn difference_counts_changes_and_finds_separate_areas() {
+        let a = Image::new(40, 20, vec![10; 40 * 20 * 4]).unwrap();
+        let mut b = a.clone();
+
+        // Two changes far apart: a 2×2 block near the top-left, one pixel near the bottom-right.
+        for (x, y, value) in [(1, 1, 200), (2, 1, 200), (1, 2, 200), (2, 2, 200), (38, 18, 13)] {
+            let i = (y * 40 + x) * 4;
+
+            b.data[i] = value;
+        }
+
+        let same = a.difference(&a, 0).unwrap();
+
+        assert_eq!((same.changed, same.max, same.bounds), (0, 0, None));
+        assert!(same.areas.is_empty());
+
+        let diff = a.difference(&b, 0).unwrap();
+
+        assert_eq!(diff.changed, 5);
+        assert_eq!(diff.max, 190);
+        assert_eq!(diff.bounds, Some((1, 1, 38, 18)));
+        assert_eq!(diff.areas.len(), 2);
+        assert_eq!(diff.areas[0], (0, 0, 8, 8, 4));
+        assert_eq!(diff.areas[1], (32, 16, 8, 4, 1));
+        assert_eq!(diff.heat.pixel(1, 1), [223, 190, 0, 255]);
+        assert_eq!(diff.heat.pixel(20, 10), [2, 2, 2, 255]);
+
+        // A threshold ignores the small change.
+        let coarse = a.difference(&b, 8).unwrap();
+
+        assert_eq!(coarse.changed, 4);
+        assert_eq!(coarse.areas.len(), 1);
+
+        let wrong = a.difference(&Image::new(2, 2, vec![0; 16]).unwrap(), 0).unwrap_err().to_string();
+
+        assert!(wrong.contains("different sizes (40×20 and 2×2)"), "{wrong}");
+    }
 
     fn checker() -> Image {
         // 4x2: red, green, blue, white / black, red, green, blue

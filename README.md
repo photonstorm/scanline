@@ -8,20 +8,31 @@ Scanline runs any page in a Chromium it launches and supervises, with instrument
 
 ## Status
 
-Early. The first milestone of the build plan ("eyes and hands") works on macOS:
+Early. The first two milestones of the build plan ("eyes and hands" and "inventory") work on macOS.
 
-| Works | Not built yet |
-|---|---|
-| Launch a URL or local file in a supervised Chromium with a disposable profile | Live inventory of textures, buffers, shaders, pipelines; memory |
-| Probe injected before page script in every frame and every kind of worker | Frame capture and replay; the draw list; state at each draw |
-| Pause, step N frames, resume, time scale, run until a condition | Pixel history, overdraw and other views, per-draw GPU time, lints |
-| One virtual clock behind frame timestamps, `performance.now`, `Date` and timers | Live patching of shaders, uniforms and state |
-| Deterministic sessions: seeded random numbers and a fixed time step | The window: control strip, Debug button and hotkey, capture viewer |
-| Keyboard, mouse, wheel and touch input as trusted events; held keys; frame-exact events | Hand-off to a person; the flight recorder; input replay |
-| Canvas readback for WebGL 1, WebGL 2 and WebGPU: screenshots, zoom with a pixel grid, exact pixel values | The fast binary channel for bulk data |
-| Console, uncaught errors and browser GPU warnings, each with its frame | Windows. Installers. A pinned browser download. |
-| Frame pacing and per-frame draw, instance, triangle and call counts | |
-| The host survives the GPU process or the whole browser being killed, and says what happened | |
+**Works**
+
+- Launch a URL or local file in a supervised Chromium with a disposable profile.
+- The probe is injected before page script in every frame and every kind of worker.
+- Time: pause, step N frames, resume, time scale, run until a condition. One virtual clock behind frame timestamps, `performance.now`, `Date` and timers. Deterministic sessions with seeded random numbers and a fixed time step.
+- Input: keyboard, mouse, wheel and touch as trusted events; held keys; events on exact frames.
+- Looking: canvas readback for WebGL 1, WebGL 2 and WebGPU (screenshots, zoom with a pixel grid, exact pixel values); texture contents the same way, including float and integer formats; region statistics; image diff with a heat map.
+- Inventory: every texture, buffer, shader, program, pipeline, framebuffer and bind group the page creates, with its size, the frame it was created in and the line of code that created it.
+- One object in full: shader source, compile log and the browser's translation; program link log, attributes and every uniform's current value; buffer bytes; WebGPU descriptors.
+- WebGL state: a mirror of the context's whole state, kept by watching every call, checked against the context on request.
+- Memory: estimates by category; named snapshots and diffs grouped by creating line, which is how a leak is found.
+- Timing: frame pacing, CPU time in frame callbacks, GPU time per frame (WebGL) and per pass (WebGPU), per-frame draw, instance, triangle and call counts.
+- Console, uncaught errors and browser GPU warnings, each with its frame.
+- The host survives the GPU process or the whole browser being killed, and says what happened.
+
+**Not built yet**
+
+- Frame capture and replay: the draw list, state at each draw, render targets at any draw.
+- Pixel history, overdraw and other views, per-draw GPU time, lints.
+- Live patching of shaders, uniforms and state.
+- The window: control strip, Debug button and hotkey, capture viewer. Hand-off to a person, the flight recorder, input replay.
+- The browser's real GPU memory. WGSL reflection. Readback of compressed, depth and multisampled textures.
+- The fast binary channel for bulk data. Windows. Installers. A pinned browser download.
 
 It has been run only on macOS (Apple silicon) with the installed Google Chrome 157. Most runs were headless; a session with a visible window has been checked by hand once. Pointer lock and fullscreen are unverified.
 
@@ -60,6 +71,18 @@ scanline step 30 --screenshot 512
 
 ```bash
 scanline pixels 640 600
+```
+
+```bash
+scanline resources texture
+```
+
+```bash
+scanline resource prg_1
+```
+
+```bash
+scanline memory --snapshot before
 ```
 
 ```bash
@@ -115,9 +138,9 @@ The tools are the same commands with a `gfx_` prefix: `gfx_launch`, `gfx_step`, 
 npm test
 ```
 
-That builds the probe, checks its types, runs the probe's browser tests (about 25 s), the Rust unit tests, and the end-to-end tests of the binary (about 5 s). The browser tests launch headless Chromium with throwaway profiles. The parts can be run alone: `npm run test:probe`, `cargo test`, `npm run test:e2e`.
+That builds the probe, checks its types, runs the probe's browser tests (about a minute), the Rust unit tests, and the end-to-end tests of the binary (about 10 s). The browser tests launch headless Chromium with throwaway profiles. The parts can be run alone: `npm run test:probe`, `cargo test`, `npm run test:e2e`.
 
-After changing `probe/tools/method-table.mjs`, run `npm run gen:hooks`.
+After changing `probe/tools/method-table.mjs`, run `npm run gen:hooks`. `node spikes/s9-overhead.mjs` measures what the hooks cost per call, and `node spikes/m2-verify.mjs` checks the WebGL state mirror against the context after 1,000 frames on every WebGL page.
 
 ## The specification
 

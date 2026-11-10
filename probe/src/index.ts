@@ -8,15 +8,20 @@ import { installTimers } from './clock/timers';
 import { config, type Level } from './config';
 import { allContexts, contextHandlers, describe, installContextDiscovery, knownAdapters } from './contexts';
 import { installErrors } from './errors';
+import { glHandlers, installGlTracking } from './gl/tracker';
+import { gpuHandlers, installGpuTracking } from './gpu/tracker';
 import { COUNTERS, IDL_VERSION } from './hooks/generated';
 import { hub, totals, type Counters } from './hooks/hub';
 import { coverage, installHooks } from './hooks/install';
 import { installImage } from './image';
 import { installInputRecorder } from './input';
+import { installInventory } from './inventory';
 import { installMasquerade } from './masquerade';
 import { currentWarnings, declare, modifications } from './mods';
 import { G, isWindow } from './natives';
 import { installSeededRandom } from './random';
+import { gpuSamples, installTiming, timingHandlers, timingNotes } from './timing';
+import { installReadback } from './readback';
 import { bindingLeftBehind, emit, expose, installTransport } from './transport';
 
 // Per-frame counters: the difference between cumulative totals at consecutive frame ends.
@@ -61,6 +66,36 @@ function summarise (values: number[]): { mean: number; p50: number; p95: number;
     };
 }
 
+// GPU time over the frames since `first`: the frames measured, and for WebGPU each pass.
+function gpuReport (first: number): Record<string, unknown>
+{
+    const measured = gpuSamples(FRAMES).filter((sample) => sample.frame >= first);
+    const passes = new G.Map() as Map<string, number[]>;
+
+    for (const sample of measured)
+    {
+        for (const pass of sample.passes ?? [])
+        {
+            let times = passes.get(pass.label);
+
+            if (!times)
+            {
+                times = [];
+                passes.set(pass.label, times);
+            }
+
+            times.push(pass.ms);
+        }
+    }
+
+    return {
+        frames: measured.length,
+        ms: summarise(measured.map((sample) => sample.ms)),
+        passes: [...passes].map(([label, times]) => ({ label, frames: times.length, ...summarise(times) })),
+        notes: timingNotes()
+    };
+}
+
 function boot (): void
 {
     if (!installTransport())
@@ -72,8 +107,13 @@ function boot (): void
     installClock();
     installTimers();
     installGate(config.startPaused);
-    installHooks(contextHandlers);
+    installHooks({ ...contextHandlers, ...glHandlers, ...gpuHandlers, ...timingHandlers });
     installContextDiscovery();
+    installGlTracking();
+    installGpuTracking();
+    installInventory();
+    installReadback();
+    installTiming();
     installImage();
     installInputRecorder();
     installErrors();
@@ -133,7 +173,8 @@ function boot (): void
         const contexts = allContexts().map(describe);
         const warnings = currentWarnings();
 
-        if (!gate.sawRaf && contexts.length > 0)
+        // Only once the page is drawing: before that it may simply not have started its loop.
+        if (!gate.sawRaf && totals(records()).draws > 0)
         {
             warnings.push({
                 id: 'no-raf',
@@ -159,7 +200,8 @@ function boot (): void
             hooks: {
                 interfaces: coverage.interfaces,
                 unknownMethods: coverage.unknown,
-                missingMethods: coverage.missing.length
+                missingMethods: coverage.missing.length,
+                unhandled: coverage.unhandled
             }
         };
     });
@@ -205,6 +247,7 @@ function boot (): void
             // Real milliseconds, measured in the page: provenance cpu-measured.
             intervalMs: summarise(timing.slice(1).map((sample) => sample.interval)),
             cpuMs: summarise(timing.map((sample) => sample.cpu)),
+            gpu: gpuReport(timing.length ? timing[0].frame : 0),
             counters
         };
     });

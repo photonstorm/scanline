@@ -439,6 +439,145 @@ describe('observing', () =>
     });
 });
 
+describe('the state mirror', () =>
+{
+    const pages = [
+        ['raw WebGL 1', 'fixtures/matrix/webgl1.html'],
+        ['raw WebGL 2', 'fixtures/matrix/webgl2.html'],
+        ['inventory WebGL 2', 'fixtures/matrix/inventory-webgl2.html'],
+        ['three.js', 'fixtures/engines/three.html'],
+        ['PixiJS', 'fixtures/engines/pixi.html'],
+        ['Phaser', 'fixtures/engines/phaser.html'],
+        ['Babylon.js', 'fixtures/engines/babylon.html']
+    ];
+
+    for (const [name, path] of pages)
+    {
+        test(`${name}: the mirror of WebGL state matches the context after 150 frames`, async () =>
+        {
+            await withPage(path, {}, async (session) =>
+            {
+                await sleep(600);
+                await session.probe('step', { frames: 150 });
+
+                const status = await session.probe('status');
+
+                assert.deepEqual(status.hooks.unhandled, [], 'every tracked method has its handler');
+
+                const checks = await session.probe('registry.verify', {});
+                const live = checks.filter((check) => check.checked > 0);
+
+                assert.ok(live.length > 0, 'at least one WebGL context was checked');
+
+                for (const check of live)
+                {
+                    assert.deepEqual(check.drift, [], `context ${check.context}: ${check.checked} values`);
+                }
+
+                // Reading a frame back must leave the state as it found it.
+                await session.probe('image.pixels', { context: live[live.length - 1].context, x: 1, y: 1 });
+
+                for (const check of await session.probe('registry.verify', {}))
+                {
+                    assert.deepEqual(check.drift, [], 'after a canvas readback');
+                }
+            });
+        });
+    }
+});
+
+describe('GPU time', () =>
+{
+    test('webgl2: a timer query around each frame gives GPU time, and leaves no GL error', async () =>
+    {
+        await withPage('fixtures/matrix/webgl2.html', {}, async (session) =>
+        {
+            await sleep(900);
+
+            const stats = await session.probe('stats', { frames: 60 });
+
+            assert.ok(stats.gpu.frames > 10, `most frames were measured (${stats.gpu.frames})`);
+            assert.ok(stats.gpu.ms.mean > 0 && stats.gpu.ms.mean < 50, `a plausible time (${stats.gpu.ms.mean} ms)`);
+            assert.deepEqual(stats.gpu.passes, []);
+            assert.equal(await session.evaluate('document.getElementById("scene").getContext("webgl2").getError()'), 0);
+
+            const active = (await session.probe('status')).modifications.filter((entry) => entry.active).map((entry) => entry.id);
+
+            assert.ok(active.includes('webgl-timer-query'), 'the query is declared as a change the page could notice');
+        });
+    });
+
+    test('webgpu: every pass is timed, by its label', async () =>
+    {
+        await withPage('fixtures/matrix/inventory-webgpu.html', {}, async (session) =>
+        {
+            await sleep(1200);
+
+            const stats = await session.probe('stats', { frames: 120 });
+
+            assert.ok(stats.gpu.frames > 3, `some frames were measured (${stats.gpu.frames})`);
+            assert.equal(stats.gpu.passes.length, 2, 'the offscreen pass and the canvas pass');
+            assert.ok(stats.gpu.passes.every((pass) => pass.mean > 0 && pass.mean < 50));
+            assert.equal(stats.counters.passes.last, 2);
+        });
+    });
+
+    test('unmodified mode measures nothing and changes nothing', async () =>
+    {
+        await withPage('fixtures/matrix/webgpu.html', { unmodified: true }, async (session) =>
+        {
+            await sleep(700);
+
+            const stats = await session.probe('stats', { frames: 60 });
+            const status = await session.probe('status');
+
+            assert.equal(stats.gpu.frames, 0);
+            assert.deepEqual(status.modifications.filter((entry) => entry.active && entry.optional), []);
+            assert.equal(await session.evaluate('navigator.gpu.requestAdapter().then((a) => a.requestDevice()).then((d) => d.features.has("timestamp-query"))'), false);
+        });
+    });
+
+    test('a page that uses timer queries itself keeps them, and Scanline steps aside', async () =>
+    {
+        await withPage('fixtures/matrix/webgl2.html', {}, async (session) =>
+        {
+            await sleep(500);
+
+            // The page times a clear of its own, mid-frame, as an engine's profiler would.
+            const result = JSON.parse(await session.evaluate(`new Promise((resolve) =>
+            {
+                const gl = document.getElementById('scene').getContext('webgl2');
+                const ext = gl.getExtension('EXT_disjoint_timer_query_webgl2');
+                const query = gl.createQuery();
+
+                requestAnimationFrame(() =>
+                {
+                    gl.beginQuery(ext.TIME_ELAPSED_EXT, query);
+                    gl.clear(gl.COLOR_BUFFER_BIT);
+                    gl.endQuery(ext.TIME_ELAPSED_EXT);
+
+                    const error = gl.getError();
+                    const poll = () => gl.getQueryParameter(query, gl.QUERY_RESULT_AVAILABLE)
+                        ? resolve(JSON.stringify({ error, ns: gl.getQueryParameter(query, gl.QUERY_RESULT) }))
+                        : requestAnimationFrame(poll);
+
+                    poll();
+                });
+            })`));
+
+            assert.equal(result.error, 0, 'the page\'s query raised no GL error');
+            assert.ok(result.ns >= 0);
+
+            await sleep(300);
+
+            const stats = await session.probe('stats', { frames: 10 });
+
+            assert.match(stats.gpu.notes.join(' '), /the page uses timer queries itself/);
+            assert.equal(await session.evaluate('document.getElementById("scene").getContext("webgl2").getError()'), 0);
+        });
+    });
+});
+
 describe('the page cannot tell', () =>
 {
     test('wrapped functions look native and nothing is added to the global', async () =>

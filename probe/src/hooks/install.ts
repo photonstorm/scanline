@@ -5,7 +5,7 @@
 
 import { G, nDefineProperty, nGetOwnPropertyDescriptor, nGetOwnPropertyNames, nGetPrototypeOf, type Fn } from '../natives';
 import { disguise } from '../masquerade';
-import { GL_EXTENSION_WRAPPERS, GL_WRAPPERS, GPU_WRAPPERS, type Factory } from './generated';
+import { GL_EXTENSION_WRAPPERS, GL_WRAPPERS, GPU_WRAPPERS, HANDLED, type Factory } from './generated';
 import { bindExtension, hub, type Rec } from './hub';
 
 // The unwrapped functions, by interface then method. The probe's own GPU work goes through
@@ -18,6 +18,8 @@ export const coverage = {
     unknown: [] as string[],
     // In the definitions, absent from this browser.
     missing: [] as string[],
+    // The method table promises a handler that nobody registered. A build fault.
+    unhandled: [] as string[],
     interfaces: [] as string[]
 };
 
@@ -80,7 +82,10 @@ function installOn (proto: any, iface: string, factories: Record<string, Factory
 
         if (factory)
         {
-            wrapper = factory(native, hub, handlers[`${iface}.${name}`] ?? none);
+            // WebGL 1 and WebGL 2 share one handler per method, registered as `gl.<name>`.
+            const handler = handlers[`${iface}.${name}`] ?? (family === 'gl' ? handlers[`gl.${name}`] : undefined);
+
+            wrapper = factory(native, hub, handler ?? none);
         }
         else
         {
@@ -121,6 +126,14 @@ export function hookExtension (name: string, extension: object, record: Rec): vo
 export function installHooks (handlers: Handlers): void
 {
     extensionHandlers = handlers;
+
+    for (const key of HANDLED)
+    {
+        if (typeof handlers[key] !== 'function')
+        {
+            coverage.unhandled.push(key);
+        }
+    }
 
     for (const iface of G.Object.keys(GL_WRAPPERS))
     {

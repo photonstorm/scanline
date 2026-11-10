@@ -11,7 +11,7 @@ export function wrapProbe (config)
 {
     const body = readFileSync(join(repoRoot, 'probe', 'dist', 'probe.js'), 'utf8');
 
-    return `(() => { const __SCANLINE_CONFIG__ = ${JSON.stringify(config)};\n${body}\n})();`;
+    return `(() => { const __SCANLINE_CONFIG__ = ${JSON.stringify(config)};\n${body}\n})();\n//# sourceURL=scanline-probe.js`;
 }
 
 export async function open ({

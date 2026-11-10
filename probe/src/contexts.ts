@@ -2,7 +2,9 @@
 
 import { config } from './config';
 import { currentFrame } from './clock/gate';
+import { attachTracker, contextLost, contextRestored } from './gl/tracker';
 import { hookExtension, natives, type Handlers } from './hooks/install';
+import { withTimestampFeature } from './timing';
 import { hub, recordFor, type Rec } from './hooks/hub';
 import { patch } from './masquerade';
 import { declare } from './mods';
@@ -113,15 +115,19 @@ function register (canvas: any, type: unknown, ctx: any): void
 
     if (isGl)
     {
+        attachTracker(info);
+
         nAddEventListener.call(canvas, 'webglcontextlost', () =>
         {
             info.lost = true;
+            contextLost(info);
             emit('context-lost', { context: info.id, frame: currentFrame() });
         });
 
         nAddEventListener.call(canvas, 'webglcontextrestored', () =>
         {
             info.lost = false;
+            contextRestored(info);
             emit('context-restored', { context: info.id, frame: currentFrame() });
         });
     }
@@ -237,15 +243,7 @@ const TEXTURE_RENDER_ATTACHMENT = 0x10;
 
 export const contextHandlers: Handlers = {
 
-    'WebGLRenderingContext.getExtension': (record: Rec, name: unknown, extension: unknown) =>
-    {
-        if (extension && typeof extension === 'object')
-        {
-            hookExtension(G.String(name), extension, record);
-        }
-    },
-
-    'WebGL2RenderingContext.getExtension': (record: Rec, name: unknown, extension: unknown) =>
+    'gl.getExtension': (record: Rec, _self: unknown, extension: unknown, name: unknown) =>
     {
         if (extension && typeof extension === 'object')
         {
@@ -265,7 +263,10 @@ export const contextHandlers: Handlers = {
 
     'GPUAdapter.requestDevice': (self: any, native: Fn, args: IArguments) =>
     {
-        return native.apply(self, args as any).then((device: any) =>
+        // With the timestamp feature added where the adapter has it, for GPU time per pass.
+        const amended = withTimestampFeature(self, args);
+
+        return native.apply(self, (amended ?? args) as any).then((device: any) =>
         {
             const facts = adapterFacts.get(self);
 

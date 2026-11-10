@@ -11,7 +11,7 @@ import { execFile, spawn } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { after, before, describe, test } from 'node:test';
+import { after, afterEach, before, describe, test } from 'node:test';
 import { repoRoot, serve } from '../spikes/lib/serve.mjs';
 
 const binary = join(repoRoot, 'target', 'debug', 'scanline');
@@ -52,6 +52,22 @@ after(async () =>
     await scanline('stop');
     await server.close();
     rmSync(home, { recursive: true, force: true });
+});
+
+// A test that fails part-way must not leave its session open for the next one to trip over.
+afterEach(async () =>
+{
+    if (!existsSync(join(home, 'control.sock')))
+    {
+        return;
+    }
+
+    const open = (await scanline('sessions', '--json')).json?.data.sessions ?? [];
+
+    for (const { session } of open)
+    {
+        await scanline('close', '--session', session);
+    }
 });
 
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
@@ -251,6 +267,181 @@ describe('the command line', () =>
 
         assert.equal((await scanline('sessions')).code, 0, 'the host still answers');
         assert.match((await scanline('close')).out, new RegExp(`${session} closed`));
+    });
+});
+
+describe('the live inventory', () =>
+{
+    const MAGENTA = [255, 0, 255, 255];
+    const CYAN = [0, 255, 255, 255];
+
+    // The row of a listing whose description contains `text`.
+    const find = (listing, text) =>
+    {
+        const row = listing.json.data.rows.find((entry) => entry.what.includes(text));
+
+        assert.ok(row, `a row describing "${text}" in: ${listing.json.data.rows.map((entry) => entry.what).join(' | ')}`);
+
+        return row;
+    };
+
+    for (const api of ['webgl2', 'webgpu'])
+    {
+        test(`${api}: objects, their contents, and a leak`, async () =>
+        {
+            const launched = await scanline('launch', server.url(`fixtures/matrix/inventory-${api}.html`), '--headless', '--json');
+
+            assert.equal(launched.code, 0, launched.out);
+
+            await scanline('step', '5');
+
+            // Textures: sizes are computed from dimensions, format and mip chain.
+            const textures = await scanline('resources', 'texture', '--json');
+
+            assert.equal(textures.json.data.total, 4);
+            assert.equal(find(textures, '64×64').bytes, 21844, '64×64 RGBA8 with seven mip levels');
+            assert.equal(find(textures, '4×4').bytes, 64);
+            assert.equal(find(textures, '2×2').bytes, 64, '2×2 of sixteen bytes a texel');
+            assert.match(find(textures, '64×64').site, new RegExp(`inventory-${api}\\.html:\\d+:\\d+`), 'created at a line of the page');
+            assert.equal(textures.json.data.rows[0].what.startsWith('64×64'), true, 'largest first');
+
+            if (api === 'webgpu')
+            {
+                assert.equal(find(textures, '4×4').label, 'checker');
+            }
+
+            // Contents, exactly.
+            const checker = find(textures, '4×4').handle;
+            const floaty = find(textures, '2×2').handle;
+            const target = find(textures, '32×16').handle;
+            const texel = async (handle, x, y) => (await scanline('pixels', String(x), String(y), '--source', handle, '--json')).json.data.values;
+
+            assert.deepEqual(await texel(checker, 1, 2), [60, 120, 128, 255]);
+            assert.deepEqual(await texel(checker, 3, 0), [180, 0, 128, 255]);
+            assert.deepEqual(await texel(floaty, 0, 0), [0.25, 1.5, -2, 1], 'float values outside 0 to 1 come back as they are');
+            assert.deepEqual(await texel(floaty, 1, 0), [100, 0, 0, 1]);
+            assert.deepEqual(await texel(target, 0, 0), MAGENTA, 'the top of the render target as rendered');
+            assert.deepEqual(await texel(target, 31, 15), CYAN, 'and the bottom');
+
+            const stats = await scanline('region_stats', '--source', target, '--json');
+
+            assert.equal(stats.json.data.distinct, 2);
+            assert.equal(stats.json.data.pixels, 512);
+            assert.deepEqual(stats.json.data.channels[0].histogram, [256, 0, 0, 0, 0, 0, 0, 256]);
+
+            const preview = await scanline('resource', checker, '--preview', '{"zoom":16}', '--json');
+
+            assert.equal(preview.json.images[0].width, 64);
+            assert.deepEqual(readFileSync(preview.json.images[0].view).subarray(0, 4), PNG);
+
+            // Buffers: the bytes the page uploaded.
+            const buffers = await scanline('resources', 'buffer', '--json');
+            const vertices = await scanline('resource', find(buffers, '48 bytes').handle, '--json');
+            const floats = new Float32Array(new Uint8Array(vertices.json.data.head.bytes).buffer);
+
+            assert.deepEqual([...floats], [-1, -1, 1, -1, -1, 1, 1, 1, 0.5, 1.5, 2.5, 3.5]);
+
+            // The shader that does not compile says why.
+            const shaders = await scanline('resources', 'shader', '--sort', 'created', '--json');
+            const broken = await scanline('resource', shaders.json.data.rows[0].handle);
+
+            assert.match(broken.out, /undefinedName/);
+            assert.match(broken.out, api === 'webgl2' ? /COMPILE FAILED/ : /1 compilation message/);
+
+            // A leak: twelve textures from one line, never destroyed.
+            const before = await scanline('memory', '--snapshot', 'before', '--json');
+
+            assert.equal(before.json.data.snapshot.objects, 6);
+
+            await scanline('eval', 'window.leak(12)');
+            await scanline('step', '2');
+
+            const grown = await scanline('memory', '--diff', '["before","now"]', '--json');
+
+            assert.equal(grown.json.data.created, 12);
+            assert.equal(grown.json.data.created_bytes, 12 * 256 * 256 * 4);
+            assert.equal(grown.json.data.destroyed, 0);
+            assert.equal(grown.json.data.groups[0].count, 12);
+            assert.match(grown.json.data.groups[0].site, /leakTexture/);
+            assert.match(grown.json.summary, /Possible leak: one call site created 12 identical textures/);
+
+            // Handles end at a reload, and say so.
+            await scanline('navigate', '--reload');
+
+            const stale = await scanline('pixels', '0', '0', '--source', checker);
+
+            assert.equal(stale.code, 1);
+            assert.match(stale.out, new RegExp(`${checker} belongs to an earlier page load`));
+
+            await scanline('close');
+        });
+    }
+
+    test('webgl2: uniforms as last set, and the state mirror agrees with the context', async () =>
+    {
+        await scanline('launch', server.url('fixtures/matrix/inventory-webgl2.html'), '--headless');
+        await scanline('step', '30');
+
+        const program = await scanline('resource', 'prg_1', '--json');
+        const uniforms = Object.fromEntries(program.json.data.detail.uniforms.map((uniform) => [uniform.name, uniform]));
+
+        assert.equal(program.json.data.detail.linked, true);
+        assert.deepEqual(uniforms.tint.value, [0.25, 0.5, 0.75, 1]);
+        assert.equal(uniforms.tint.type, 'vec4');
+        assert.deepEqual(uniforms.scale.value, [0.5]);
+        assert.deepEqual(uniforms.map.value, [0]);
+        assert.equal(uniforms.bias.value, null, 'a uniform the page never set');
+        assert.match(program.json.summary, /float bias = never set since linking/);
+        assert.deepEqual(program.json.data.detail.attributes, [{ name: 'corner', type: 'vec2', size: 1, location: 0 }]);
+
+        const state = await scanline('resource', 'ctx_1', '--verify', '--json');
+
+        assert.deepEqual(state.json.data.verify.drift, []);
+        assert.ok(state.json.data.verify.checked > 60);
+        assert.match(state.json.summary, /program prg_1, framebuffer none/);
+        assert.match(state.json.summary, /enabled: BLEND, DITHER/);
+        assert.match(state.json.summary, /blend: rgb FUNC_ADD × SRC_ALPHA \+ dst × ONE_MINUS_SRC_ALPHA/);
+        assert.match(state.json.summary, /unit 0: 2D tex_1/);
+        assert.match(state.json.summary, /Verified: all \d+ values match/);
+
+        await scanline('close');
+    });
+
+    test('diff finds what moved between two frames, and only that', async () =>
+    {
+        await scanline('launch', server.url('fixtures/matrix/webgl2.html'), '--paused', '--headless');
+        const moverX = async () => JSON.parse((await scanline('eval', 'JSON.stringify(window.fixture.moverX)', '--json')).json.data.value);
+
+        await scanline('step', '11');
+
+        const first = await scanline('screenshot', '--json');
+        const from = await moverX();
+
+        await scanline('step', '40');
+
+        const second = await scanline('screenshot', '--json');
+        const to = await moverX();
+
+        assert.ok(to - from >= 39, 'the mover went about 40 pixels');
+        const same = await scanline('diff', first.json.images[0].original, first.json.images[0].original, '--json');
+
+        assert.equal(same.json.data.changed, 0);
+        assert.match(same.json.summary, /^No difference/);
+
+        // The mover is 20×20: the square it left and the square it reached are what changed.
+        const moved = await scanline('diff', first.json.images[0].original, second.json.images[0].original, '--json');
+
+        assert.equal(moved.json.data.changed, 800);
+        assert.deepEqual(moved.json.data.bounds, { x: from, y: 200, w: to - from + 20, h: 20 });
+        assert.equal(moved.json.data.max, 223, 'white against the background blue 32');
+        assert.deepEqual(readFileSync(moved.json.images[0].view).subarray(0, 4), PNG);
+
+        // The canvas now against the second screenshot: nothing has run since.
+        const now = await scanline('diff', 'canvas', second.json.images[0].original, '--json');
+
+        assert.equal(now.json.data.changed, 0);
+
+        await scanline('close');
     });
 });
 

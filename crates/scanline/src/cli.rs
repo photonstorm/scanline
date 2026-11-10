@@ -23,6 +23,9 @@ fn positional(command: &str) -> &'static [&'static str] {
         "step" => &["frames"],
         "pixels" => &["x", "y", "w", "h"],
         "eval" => &["expression"],
+        "resources" => &["kind"],
+        "resource" => &["handle"],
+        "diff" => &["a", "b"],
         "help" => &["topic"],
         _ => &[],
     }
@@ -111,7 +114,8 @@ fn parse(args: Vec<String>) -> Result<Parsed> {
             };
 
             // An expression or a URL is text even when it happens to parse as JSON.
-            params[*place] = if matches!(*place, "url" | "expression" | "topic") { Value::String(arg.clone()) } else { value(arg) };
+            params[*place] =
+                if matches!(*place, "url" | "expression" | "topic" | "kind" | "handle" | "a" | "b") { Value::String(arg.clone()) } else { value(arg) };
             placed += 1;
 
             continue;

@@ -1,6 +1,8 @@
 // What every generated wrapper talks to: the overhead level, the record for the object a
 // call was made on, and the frame counters.
 
+import type { Tag } from '../tag';
+import { contextTag, extensionTag } from '../tags.generated';
 import { COUNTERS } from './generated';
 
 type CounterName = typeof COUNTERS[number];
@@ -16,6 +18,9 @@ export interface Rec extends Counters
 
     // The value of `calls` when this record's image was last kept.
     keptAtCalls: number;
+
+    // The tracker for the context this record belongs to (gl/tracker.ts), once it has one.
+    x: unknown;
 }
 
 export interface Hub
@@ -31,7 +36,7 @@ export interface Hub
 
 export function newRecord (): Rec
 {
-    const record: any = { rec: null, keptAtCalls: -1 };
+    const record: any = { rec: null, keptAtCalls: -1, x: null };
 
     for (const name of COUNTERS)
     {
@@ -41,17 +46,16 @@ export function newRecord (): Rec
     return record as Rec;
 }
 
-const contexts = new WeakMap<object, Rec>();
-const extensions = new WeakMap<object, Rec>();
-
-let lastContext: object | null = null;
-let lastRecord: Rec = newRecord();
+// Records ride on the context and extension objects themselves (see tag.ts): finding one
+// costs a property read, not a map lookup, on every graphics call.
+const contexts: Tag<Rec> = contextTag;
+const extensions: Tag<Rec> = extensionTag;
 
 export function recordFor (gl: object): Rec
 {
     let record = contexts.get(gl);
 
-    if (!record)
+    if (record === undefined)
     {
         record = newRecord();
         contexts.set(gl, record);
@@ -74,15 +78,7 @@ export const hub: Hub = {
 
     ctx (gl: object): Rec
     {
-        if (gl === lastContext)
-        {
-            return lastRecord;
-        }
-
-        lastContext = gl;
-        lastRecord = recordFor(gl);
-
-        return lastRecord;
+        return contexts.get(gl) ?? recordFor(gl);
     },
 
     ext (extension: object): Rec
