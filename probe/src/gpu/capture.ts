@@ -769,15 +769,26 @@ function unreadable (p: Record<string, any>): string | null
 async function readLevels (capture: Capture, entry: Entry, levels: number): Promise<Array<Record<string, unknown>>>
 {
     const out: Array<Record<string, unknown>> = [];
+    const reads: Array<{ level: number; layer: number; read: ReturnType<typeof readGpuRaw> }> = [];
 
+    // Every copy is submitted before the first is waited for, so that a texture about to be
+    // destroyed (the flight recorder reads it at that moment) is read whole.
     for (let level = 0; level < levels; level++)
     {
         for (let layer = 0; layer < layersOf(entry.p, level); layer++)
         {
-            const read = await readGpuRaw(entry, level, layer);
+            const read = readGpuRaw(entry, level, layer);
 
-            out.push({ level, layer, blob: blob(capture, read.packed), width: read.width, height: read.height });
+            read.catch(() => undefined);
+            reads.push({ level, layer, read });
         }
+    }
+
+    for (const { level, layer, read } of reads)
+    {
+        const done = await read;
+
+        out.push({ level, layer, blob: blob(capture, done.packed), width: done.width, height: done.height });
     }
 
     return out;
@@ -944,6 +955,12 @@ function closure (entry: Entry, into: Set<Entry>): void
     }
 }
 
+// What a texture or buffer holds, read now: for the flight recorder, just before a destroy.
+export function gpuDescribe (capture: Capture, entry: Entry): Promise<Record<string, unknown>>
+{
+    return describe(capture, entry);
+}
+
 async function describe (capture: Capture, entry: Entry): Promise<Record<string, unknown>>
 {
     const p = entry.p;
@@ -1083,6 +1100,20 @@ export async function gpuFinish (capture: Capture): Promise<void>
 
     for (const entry of entries)
     {
+        // Destroyed while the flight recorder ran, and read just before it was.
+        const early = entry.created < capture.frame ? capture.early?.get(entry) : undefined;
+
+        if (early)
+        {
+            try
+            {
+                capture.objects.push({ ...(await early), alive: false, createdInFrame: false });
+
+                continue;
+            }
+            catch { /* described as a destroyed object, below */ }
+        }
+
         capture.objects.push(await describe(capture, entry));
     }
 

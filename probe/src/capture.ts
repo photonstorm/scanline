@@ -18,7 +18,7 @@
 import { currentFrame, isPaused, onFrameSettled } from './clock/gate';
 import { allContexts, contextById, type ContextInfo } from './contexts';
 import { formatName } from './gl/formats';
-import { gpuBegin, gpuFinish, gpuRecorder, gpuWatchMaps, type GpuState } from './gpu/capture';
+import { gpuBegin, gpuDescribe, gpuFinish, gpuRecorder, gpuWatchMaps, type GpuState } from './gpu/capture';
 import { openGroups, setGroupSink, type GroupOp } from './groups';
 import { hub } from './hooks/hub';
 import { CAP_CODES, slotOf, trackerFor, vaoStateOf, type GlTracker, type UniformSlot } from './gl/tracker';
@@ -70,6 +70,10 @@ export interface Capture
 
     // Left out for the flight recorder: reading render targets back stalls the page.
     light?: boolean;
+
+    // The flight recorder: what a texture or buffer held just before the page deleted it,
+    // read then because it cannot be read afterwards.
+    early?: Map<Entry, Promise<Record<string, unknown>>>;
 }
 
 const captures = new G.Map() as Map<number, Capture>;
@@ -106,22 +110,23 @@ events.set('blitFramebuffer', 'blit');
 const eventKinds: Array<EventKind | undefined> = METHOD_NAMES.map((qualified) => events.get(qualified.slice(qualified.indexOf('.') + 1)));
 const shortNames: string[] = METHOD_NAMES.map((qualified) => qualified.slice(qualified.indexOf('.') + 1));
 
-// Methods whose data argument is followed by an offset into it (and sometimes a length):
-// [index of the data argument, whether a length follows the offset].
-const windows: Record<string, [number, boolean]> = {
-    bufferData: [1, true],
-    bufferSubData: [2, true]
+// Methods that take a window of a typed array: [index of the data argument, index of the
+// offset into it, whether a length follows the offset]. bufferData's usage sits between
+// its data and its offset.
+const windows: Record<string, [number, number, boolean]> = {
+    bufferData: [1, 3, true],
+    bufferSubData: [2, 3, true]
 };
 
 for (const name of shortNames)
 {
     if (/^uniform[1-4](f|i|ui)v$/.test(name))
     {
-        windows[name] = [1, true];
+        windows[name] = [1, 2, true];
     }
     else if (/^uniformMatrix/.test(name))
     {
-        windows[name] = [2, true];
+        windows[name] = [2, 3, true];
     }
 }
 
@@ -259,17 +264,23 @@ function encodeArgs (capture: Capture, name: string, args: any[]): unknown[]
 
     if (window)
     {
-        const [at, hasLength] = window;
+        const [at, from, hasLength] = window;
         const data = args[at];
-        const offset = args[at + 1];
+        const offset = args[from];
 
         if (G.ArrayBuffer.isView(data) && typeof offset === 'number' && offset > 0 && data.constructor.name !== 'DataView')
         {
-            const length = hasLength && typeof args[at + 2] === 'number' && args[at + 2] > 0 ? args[at + 2] : undefined;
+            const length = hasLength && typeof args[from + 1] === 'number' && args[from + 1] > 0 ? args[from + 1] : undefined;
 
             args = args.slice();
             args[at] = (data as any).subarray(offset, length === undefined ? undefined : offset + length);
-            args[at + 1] = 0;
+            args[from] = 0;
+
+            // The length went with the window: what is left is the whole of the array given.
+            if (length !== undefined)
+            {
+                args[from + 1] = 0;
+            }
         }
     }
 
@@ -767,6 +778,23 @@ async function gather (capture: Capture): Promise<void>
         for (const entry of pending)
         {
             described.add(entry);
+
+            // Deleted while the recorder ran, and read just before it was: that reading
+            // is the only one there can be. Only for an object the recording does not
+            // itself create.
+            const early = entry.created < capture.frame ? capture.early?.get(entry) : undefined;
+
+            if (early)
+            {
+                try
+                {
+                    capture.objects.push({ ...(await early), alive: false });
+
+                    continue;
+                }
+                catch { /* described as a deleted object, below */ }
+            }
+
             capture.objects.push(await describe(capture, entry));
         }
     }
@@ -977,6 +1005,53 @@ interface Recorder
 
 let recorder: Recorder | null = null;
 
+// The most of one object's contents the recorder will read at the moment it is deleted.
+const MAX_EARLY = 64 * 1024 * 1024;
+
+// A texture or buffer is about to be deleted while the recorder runs. If a kept frame used
+// it and it was made before this run of frames, its contents are read now: by the time the
+// recording is taken there will be nothing to read. (One made during this run is rebuilt
+// from the calls recorded.)
+function keepBeforeDelete (active: Recorder, object: any): void
+{
+    try
+    {
+        const entry = object && typeof object === 'object' ? entryOf(object) : undefined;
+        const chunk = active.chunks[active.chunks.length - 1];
+
+        if (!entry || !chunk || (entry.kind !== 'texture' && entry.kind !== 'buffer') || !alive(entry) || entry.created >= chunk.frame)
+        {
+            return;
+        }
+
+        // A WebGL frame names the textures and buffers it uses. A WebGPU frame names bind
+        // groups and views, and what they hold is only worked out at the end: there, any
+        // texture or buffer older than this run of frames is read.
+        if (active.info.api !== 'webgpu' && !active.chunks.some((run) => run.used.has(entry)))
+        {
+            return;
+        }
+
+        const p = entry.p;
+        const bytes = entry.kind === 'buffer' ? (p.size ?? 0) : (p.width ?? 0) * (p.height ?? 0) * (p.depth ?? p.depthOrArrayLayers ?? 1) * 4 * 1.34;
+
+        if (bytes > MAX_EARLY)
+        {
+            return;
+        }
+
+        const reading = active.info.api === 'webgpu' ? gpuDescribe(chunk, entry) : describe(chunk, entry);
+
+        // Read when the recording is taken; a failure then is that object's alone.
+        reading.catch(() => undefined);
+        (chunk.early ??= new G.Map()).set(entry, reading);
+    }
+    catch (error: any)
+    {
+        emit('probe-fault', { where: 'recorder', message: G.String(error?.stack ?? error) });
+    }
+}
+
 function heldBytes (active: Recorder): number
 {
     let total = 0;
@@ -1033,11 +1108,13 @@ async function nextChunk (active: Recorder): Promise<void>
     if (info.api === 'webgpu')
     {
         hub.gpu.rec = gpuRecorder(chunk);
+        hub.gpu.before = (_c, self) => keepBeforeDelete(active, self);
         gpuWatchMaps(chunk);
     }
     else
     {
         info.record.rec = (c, method, self, result, count, ...args) => recordInto(chunk, c, method, self, result, count, args);
+        info.record.before = (_c, _self, object) => keepBeforeDelete(active, object);
     }
 }
 
@@ -1117,11 +1194,13 @@ function stopRecorder (): void
     if (active.info.api === 'webgpu')
     {
         hub.gpu.rec = null;
+        hub.gpu.before = null;
         gpuWatchMaps(null);
     }
     else
     {
         active.info.record.rec = null;
+        active.info.record.before = null;
     }
 }
 
@@ -1144,7 +1223,8 @@ function joined (active: Recorder): Capture
         groups: [],
         done: false,
         waiters: [],
-        strong: new G.Set()
+        strong: new G.Set(),
+        early: undefined
     };
 
     for (const chunk of chunks)
@@ -1190,6 +1270,11 @@ function joined (active: Recorder): Capture
         for (const entry of chunk.used)
         {
             capture.used.add(entry);
+        }
+
+        for (const [entry, reading] of chunk.early ?? [])
+        {
+            (capture.early ??= new G.Map()).set(entry, reading);
         }
 
         for (const text of chunk.notes)

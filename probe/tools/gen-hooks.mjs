@@ -165,6 +165,11 @@ function wrapper (family, qualified, name, op, entry = {})
     }
     else
     {
+        if (entry.before)
+        {
+            body.push(`if (c.before !== null) { c.before(c, this${op.max ? ', a0' : ''}); }`);
+        }
+
         body.push('const r = N.apply(this, arguments as any);');
     }
 

@@ -1938,3 +1938,56 @@ describe('an engine Scanline has no adapter for', () =>
         }
     });
 });
+
+describe('the flight recorder and what the page throws away', () =>
+{
+    for (const [api, query] of [['WebGL 2', ''], ['WebGPU', '?api=webgpu']])
+    {
+        test(`${api}: frames before a texture and a buffer were deleted replay with them, and frames after with what replaced them`, async () =>
+        {
+            const launched = await scanline('launch', server.url(`fixtures/history/deleted.html${query}`), '--paused', '--headless', '--json');
+            const session = launched.json.data.session;
+
+            await scanline('step', '5', '--session', session);
+
+            // The page swaps its texture and its vertex buffer at frame 20: inside the frames kept.
+            const taken = await scanline('capture', '--when', '{"frames": 30}', '--flight_frames', '40', '--session', session, '--json');
+
+            assert.equal(taken.code, 0, taken.out);
+            assert.match(taken.json.summary, /Replay check: replaying the capture gives an image identical to the frame's own/);
+            assert.doesNotMatch(taken.json.summary, /raised a (GL|validation) error|could not be (read|captured)/);
+
+            const recording = /(rec_\d+)/.exec(taken.json.summary)[1];
+            const at = async (frame, x, y) =>
+            {
+                const made = await scanline('capture', '--recording', recording, '--frame', String(frame), '--session', session, '--json');
+
+                assert.equal(made.code, 0, made.out);
+                assert.doesNotMatch(made.json.summary, /raised a (GL|validation) error|could not be (read|captured)/, `frame ${frame}`);
+
+                const capture = /^(cap_\d+):/m.exec(made.json.summary)[1];
+
+                return (await scanline('pixels', String(x), String(y), '--capture', capture, '--session', session, '--json')).json.data.rgba8;
+            };
+
+            const orange = [255, 128, 0, 255];
+            const blue = [0, 128, 255, 255];
+            const empty = [26, 26, 26, 255];
+
+            // Before the swap: the square the page has since deleted, where it was.
+            assert.deepEqual(await at(10, 40, 60), orange);
+            assert.deepEqual(await at(10, 120, 60), empty);
+            assert.deepEqual(await at(19, 40, 60), orange);
+
+            // From the swap on: the one made during the recording, from the calls recorded.
+            assert.deepEqual(await at(20, 120, 60), blue);
+            assert.deepEqual(await at(30, 40, 60), empty);
+            assert.deepEqual(await at(30, 120, 60), blue);
+
+            // Reading the old ones before they went raised nothing the page could see.
+            assert.match((await scanline('console', '--level', 'error', '--session', session)).out, /No error console lines/);
+
+            await scanline('close', '--session', session);
+        });
+    }
+});

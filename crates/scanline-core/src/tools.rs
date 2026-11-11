@@ -948,8 +948,9 @@ Known limits
     relies on the browser clearing its drawing buffer between frames, instead of clearing it
     itself, draws over its last frame.
   - The flight recorder costs about 200 ns per graphics call on WebGL and 150 to 450 on
-    WebGPU while it runs (measured; the aim is 100). It does not keep the contents of a
-    texture or buffer the page deletes while it is recording.
+    WebGPU while it runs (measured; the aim is 100). A texture or buffer the page deletes
+    while it records is read just before it goes (up to 64 MB each), so the frames that used
+    it still replay; on WebGL only if a kept frame used it.
   - Capturing WebGPU has been run on raw WebGPU, three.js, PixiJS and Babylon.js, on one device, in a window.
     A device in a worker, and other engines, are untried.
   - WGSL reflection (bindings, struct layouts) is not built; WGSL source and messages are.";

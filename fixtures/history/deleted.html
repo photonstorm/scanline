@@ -1,0 +1,148 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>A texture and a buffer deleted part-way through</title>
+<style>body { margin: 0; background: #111; } canvas { display: block; }</style>
+<canvas id="game" width="160" height="120"></canvas>
+<script type="module">
+// For the flight recorder. A square is drawn with a texture and a vertex buffer made before
+// the first frame. At frame 20 both are deleted and replaced: the texture by one of another
+// colour, the buffer by one that puts the square on the other side. A recording that spans
+// frame 20 has to replay the frames before it with what the page has since thrown away.
+//
+//   frames 1–19: an orange square on the left    (255, 128, 0) at (40, 60)
+//   frame 20 on: a blue square on the right      (0, 128, 255) at (120, 60)
+//
+// ?api=webgpu draws the same thing with WebGPU.
+const canvas = document.getElementById('game');
+const webgpu = new URL(location.href).searchParams.get('api') === 'webgpu';
+const state = window.game = { frame: 0, swapped: false };
+
+const LEFT = new Float32Array([-0.75, -0.5, -0.25, -0.5, -0.75, 0.5, -0.25, 0.5]);
+const RIGHT = new Float32Array([0.25, -0.5, 0.75, -0.5, 0.25, 0.5, 0.75, 0.5]);
+const ORANGE = new Uint8Array([255, 128, 0, 255]);
+const BLUE = new Uint8Array([0, 128, 255, 255]);
+
+if (webgpu)
+{
+    const adapter = await navigator.gpu.requestAdapter();
+    const device = await adapter.requestDevice();
+    const context = canvas.getContext('webgpu');
+    const format = navigator.gpu.getPreferredCanvasFormat();
+
+    context.configure({ device, format, alphaMode: 'opaque' });
+
+    const module = device.createShaderModule({ label: 'square', code: `
+        @group(0) @binding(0) var colour: texture_2d<f32>;
+        @vertex fn vertex (@location(0) at: vec2f) -> @builtin(position) vec4f { return vec4f(at, 0.0, 1.0); }
+        @fragment fn fragment () -> @location(0) vec4f { return textureLoad(colour, vec2i(0, 0), 0); }` });
+    const pipeline = device.createRenderPipeline({
+        label: 'square',
+        layout: 'auto',
+        vertex: { module, entryPoint: 'vertex', buffers: [{ arrayStride: 8, attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x2' }] }] },
+        fragment: { module, entryPoint: 'fragment', targets: [{ format }] },
+        primitive: { topology: 'triangle-strip' }
+    });
+
+    const make = (corners, pixel, name) =>
+    {
+        const buffer = device.createBuffer({ label: `${name} corners`, size: 32, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
+        const texture = device.createTexture({ label: `${name} colour`, size: [1, 1], format: 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
+
+        device.queue.writeBuffer(buffer, 0, corners);
+        device.queue.writeTexture({ texture }, pixel, {}, [1, 1]);
+
+        return { buffer, texture, group: device.createBindGroup({ label: `${name} inputs`, layout: pipeline.getBindGroupLayout(0), entries: [{ binding: 0, resource: texture.createView() }] }) };
+    };
+
+    let square = make(LEFT, ORANGE, 'first');
+
+    const frame = () =>
+    {
+        state.frame++;
+
+        if (state.frame === 20)
+        {
+            square.texture.destroy();
+            square.buffer.destroy();
+            square = make(RIGHT, BLUE, 'second');
+            state.swapped = true;
+        }
+
+        const encoder = device.createCommandEncoder();
+        const pass = encoder.beginRenderPass({ colorAttachments: [{ view: context.getCurrentTexture().createView(), clearValue: [0.1, 0.1, 0.1, 1], loadOp: 'clear', storeOp: 'store' }] });
+
+        pass.setPipeline(pipeline);
+        pass.setBindGroup(0, square.group);
+        pass.setVertexBuffer(0, square.buffer);
+        pass.draw(4);
+        pass.end();
+        device.queue.submit([encoder.finish()]);
+        requestAnimationFrame(frame);
+    };
+
+    requestAnimationFrame(frame);
+}
+else
+{
+    const gl = canvas.getContext('webgl2', { antialias: false, alpha: false });
+    const program = gl.createProgram();
+
+    for (const [type, source] of [
+        [gl.VERTEX_SHADER, '#version 300 es\nin vec2 at;\nvoid main () { gl_Position = vec4(at, 0.0, 1.0); }'],
+        [gl.FRAGMENT_SHADER, '#version 300 es\nprecision mediump float;\nuniform sampler2D colour;\nout vec4 pixel;\nvoid main () { pixel = texelFetch(colour, ivec2(0), 0); }']
+    ])
+    {
+        const shader = gl.createShader(type);
+
+        gl.shaderSource(shader, source);
+        gl.compileShader(shader);
+        gl.attachShader(program, shader);
+    }
+
+    gl.bindAttribLocation(program, 0, 'at');
+    gl.linkProgram(program);
+
+    const make = (corners, pixel) =>
+    {
+        const buffer = gl.createBuffer();
+        const texture = gl.createTexture();
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+        gl.bufferData(gl.ARRAY_BUFFER, corners, gl.STATIC_DRAW);
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, pixel);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+
+        return { buffer, texture };
+    };
+
+    let square = make(LEFT, ORANGE);
+
+    const frame = () =>
+    {
+        state.frame++;
+
+        if (state.frame === 20)
+        {
+            gl.deleteTexture(square.texture);
+            gl.deleteBuffer(square.buffer);
+            square = make(RIGHT, BLUE);
+            state.swapped = true;
+        }
+
+        gl.viewport(0, 0, 160, 120);
+        gl.clearColor(0.1, 0.1, 0.1, 1);
+        gl.clear(gl.COLOR_BUFFER_BIT);
+        gl.useProgram(program);
+        gl.bindTexture(gl.TEXTURE_2D, square.texture);
+        gl.bindBuffer(gl.ARRAY_BUFFER, square.buffer);
+        gl.enableVertexAttribArray(0);
+        gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+        requestAnimationFrame(frame);
+    };
+
+    requestAnimationFrame(frame);
+}
+</script>

@@ -103,7 +103,11 @@ Also true of what is built:
 
 Built: `request_human`, `wait` on a request, `debug`, `recording`, `take_control`, the event queue, the Debug key, the control strip, marking the frozen frame (a point, a box, a note), the flight recorder for WebGL and WebGPU, one owner of the input at a time in both directions, runs (`save_run`, `replay_run`) with divergence detection, stepping that does not wait for the display, recorded network for deterministic sessions, capture triggers (`capture(when)`), a virtual gamepad, a pointer-lock shim, and policies (`policy`).
 
-Not built from the milestone's list: a hotkey registered with the operating system; contact sheets for anything but a recording; audio and worker time control beyond what milestone 1 has; resources destroyed inside the flight recorder's window kept alive.
+Not built from the milestone's list: a hotkey registered with the operating system; contact sheets for anything but a recording; audio and worker time control beyond what milestone 1 has.
+
+"Deferred destruction" is built another way. The specification keeps a resource alive after the page destroys it, until the recorder's window has moved past. Here the page's delete happens when the page asks, and the recorder reads the texture or buffer just before it does (a hook that runs ahead of `deleteTexture`, `deleteBuffer` and WebGPU's `destroy`, set only while the recorder runs). The frames that used it then replay with what it held. This leaves the page's memory and its object lifetimes exactly as the page made them. It costs a readback at each delete of something older than the current run of 30 frames, up to 64 MB an object. `fixtures/history/deleted.html` swaps a texture and a vertex buffer in the middle of a recording, on both APIs, and `tests/e2e.test.mjs` checks the frames on each side of the swap.
+
+Building it found two older faults, both fixed. A `bufferData` call recorded during a capture lost its data: the recorder read the usage argument as an offset into the array, so any buffer filled with `bufferData` inside a captured frame replayed empty. And a WebGPU bind group layout first asked of a pipeline (`getBindGroupLayout`) during a recorded frame could not be found in the replay, which dropped every frame after it.
 
 | The specification says | The code does | Why |
 |---|---|---|

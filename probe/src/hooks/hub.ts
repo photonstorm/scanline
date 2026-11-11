@@ -22,6 +22,10 @@ export interface Rec extends Counters
     gate: null | ((record: Rec, self: any, method: number) => boolean);
     after: null | ((record: Rec, self: any) => void);
 
+    // Set while the flight recorder runs (capture.ts): called just before a texture or a
+    // buffer is deleted or destroyed, with the object, while its contents can still be read.
+    before: null | ((record: Rec, self: any, object?: any) => void);
+
     // The value of `calls` when this record's image was last kept.
     keptAtCalls: number;
 
@@ -42,7 +46,7 @@ export interface Hub
 
 export function newRecord (): Rec
 {
-    const record: any = { rec: null, gate: null, after: null, keptAtCalls: -1, x: null };
+    const record: any = { rec: null, gate: null, after: null, before: null, keptAtCalls: -1, x: null };
 
     for (const name of COUNTERS)
     {

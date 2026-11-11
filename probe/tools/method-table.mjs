@@ -12,6 +12,9 @@
 //   count      Name of a per-frame counter to increment ('clears', 'passes', 'submits', …).
 //   post       A hand-written handler runs after the native call:
 //              handler(record, self, result, ...args).
+//   before     The record's `before` function, when one is set, runs ahead of the native call:
+//              before(record, self, firstArgument). For calls that destroy what something
+//              may still need to read.
 //   intercept  A hand-written handler replaces the wrapper body: handler(self, native, args).
 //              Used where the probe must change arguments (for example adding COPY_SRC).
 //
@@ -84,6 +87,13 @@ export const GL = {
 for (const name of GL_TRACKED)
 {
     GL[name] = { ...GL[name], post: true };
+}
+
+// Calls that end an object's contents. The flight recorder is told before they run, so
+// that it can keep what a recorded frame used.
+for (const name of ['deleteTexture', 'deleteBuffer'])
+{
+    GL[name] = { ...GL[name], before: true };
 }
 
 // Extension objects, keyed by the extension's interface name.
@@ -188,10 +198,10 @@ export const GPU = {
     },
     GPUTexture: {
         createView: { post: true },
-        destroy: { post: true }
+        destroy: { post: true, before: true }
     },
     GPUBuffer: {
-        destroy: { post: true },
+        destroy: { post: true, before: true },
         // A capture reads what the page wrote to a mapped buffer just before it is unmapped.
         getMappedRange: { post: true },
         unmap: { intercept: true }

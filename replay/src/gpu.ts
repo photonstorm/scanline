@@ -379,7 +379,11 @@ export class GpuRun
             throw new Error(`${key} is not part of this capture`);
         }
 
-        if (record.createdInFrame)
+        // A layout asked of a pipeline (getBindGroupLayout) is made by no call the capture
+        // holds, whenever it was first asked for: it is asked of the pipeline again here.
+        const fromPipeline = kind === 'layout' && record.pipeline;
+
+        if (record.createdInFrame && !fromPipeline)
         {
             throw new Error(`${key} is made during the frame and has not been made yet`);
         }
