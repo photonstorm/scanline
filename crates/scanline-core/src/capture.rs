@@ -2287,6 +2287,11 @@ pub async fn draw(host: &Arc<Host>, params: &Value) -> Result<Value> {
     let size = (state["targetSize"][0].as_i64().unwrap_or(0), state["targetSize"][1].as_i64().unwrap_or(0));
     let webgpu = meta["api"] == "webgpu";
 
+    // One of the draws a render bundle makes, by its place among them.
+    if let Some(part) = params["inside"].as_i64() {
+        return draw_inside(host, params, &handle, &meta, index, part, &state).await;
+    }
+
     let mut bindings = Value::Null;
     let mut lines = vec![format!(
         "{} event {index}: {} to {} (pass {}, call {}).",
@@ -2694,13 +2699,13 @@ fn gpu_draw_lines(host: &Host, handle: &str, state: &Value, tag: u64) -> Vec<Str
             if state["bundles"] == 1 { "" } else { "s" }
         ));
 
-        // What is inside, draw by draw.
-        for inner in state["inside"].as_array().into_iter().flatten().take(24) {
+        // What is inside, draw by draw, numbered as draw(inside: n) takes them.
+        for (place, inner) in state["inside"].as_array().into_iter().flatten().enumerate().take(24) {
             lines.push(if inner["bundle"].is_null() {
                 "    a bundle built before Scanline could follow it: what it draws is not known".to_string()
             } else {
                 format!(
-                    "    {}: {}{}{} with {}",
+                    "    {place}  {}: {}{}{} with {}",
                     named("bundle", &inner["bundle"]),
                     inner["method"].as_str().unwrap_or("draw"),
                     if inner["count"].is_number() { format!(" × {}", inner["count"]) } else { " (indirect)".to_string() },
@@ -2713,6 +2718,8 @@ fn gpu_draw_lines(host: &Host, handle: &str, state: &Value, tag: u64) -> Vec<Str
         if state["inside"].as_array().map_or(0, Vec::len) > 24 {
             lines.push(format!("    … and {} more draws.", state["inside"].as_array().map_or(0, Vec::len) - 24));
         }
+
+        lines.push("  draw(draw, inside: n) says what one of them did and, if nothing, why; geometry(draw, inside: n) gives its vertices.".to_string());
     } else if state["indirect"].is_object() {
         lines.push(format!(
             "  {}, counts read from {} at byte {} (indirect)",
@@ -2936,13 +2943,19 @@ async fn unchanged(host: &Arc<Host>, session: &Arc<Session>, handle: &str, index
         return format!(
             "{start} Every fragment was rejected, clipped or wrote what was already there.{}",
             if tried["unsupported"] == "bundle" {
-                " It is a render bundle, whose pipelines were fixed when it was built, so which test rejected it cannot be tried."
+                " It runs render bundles: draw(draw, inside: n) says which test turned each of their draws away."
             } else {
                 ""
             }
         );
     }
 
+    format!("{start}\n  Why: {}", causes_of(host, handle, index, state, &tried))
+}
+
+/// What turned a draw away, in words, from what each test switched off let it change.
+/// `state` is what the draw was drawn with.
+fn causes_of(host: &Host, handle: &str, index: i64, state: &Value, tried: &Value) -> String {
     let mut causes = Vec::new();
 
     for attempt in tried["tried"].as_array().into_iter().flatten() {
@@ -2986,7 +2999,90 @@ async fn unchanged(host: &Arc<Host>, session: &Arc<Session>, handle: &str, index
         });
     }
 
-    format!("{start}\n  Why: {}", causes.join("\n       "))
+    causes.join("\n       ")
+}
+
+/// One draw of those a render bundle makes: what it is, what it did, and if it did nothing, why.
+async fn draw_inside(host: &Arc<Host>, params: &Value, handle: &str, meta: &Value, index: i64, part: i64, state: &Value) -> Result<Value> {
+    let tag = meta["instance_tag"].as_u64().unwrap_or(0);
+    let named = |kind: &str, id: &Value| handle_for(kind, id, tag).unwrap_or_else(|| "none".into());
+    let inside = state["inside"].as_array().cloned().unwrap_or_default();
+
+    if state["method"] != "executeBundles" {
+        bail!(
+            "Event {index} is not a render bundle, so it has no draws inside it. inside is for an event that draw_list shows as \"draws in render bundles\"."
+        );
+    }
+
+    let Some(inner) = usize::try_from(part).ok().and_then(|part| inside.get(part)) else {
+        bail!("Event {index} runs {} from its render bundles, numbered from 0; there is no draw {part} inside it.", plural(inside.len() as i64, "draw"));
+    };
+
+    let session = host.replayer(params)?;
+
+    load_into(host, &session, handle).await?;
+
+    let tried = session.replay("why", &json!({ "key": handle, "draw": index, "part": part }), LONG).await?;
+    let facts = &tried["facts"];
+    let mut lines = vec![format!(
+        "{} event {index}, draw {part} of the {} inside its render bundles: {} in {}, to {}.",
+        about(host, params, handle, meta),
+        inside.len(),
+        inner["method"].as_str().unwrap_or("draw"),
+        named("bundle", &inner["bundle"]),
+        state["targetName"].as_str().unwrap_or("?")
+    )];
+
+    lines.push(format!(
+        "  {}{}",
+        if inner["count"].is_number() { format!("× {}", inner["count"]) } else { "counts read from a buffer (indirect)".to_string() },
+        if inner["instances"].as_i64().unwrap_or(1) != 1 { format!(", {} instances", inner["instances"]) } else { String::new() }
+    ));
+    lines.push(format!("  pipeline {}", named("pipeline", &inner["pipeline"])));
+    lines.push(format!(
+        "  viewport {}; scissor {}; colour mask {}",
+        if facts["viewport"].is_array() { list(&facts["viewport"]) } else { "the whole target".to_string() },
+        if facts["scissor"].is_array() { format!("box {}", list(&facts["scissor"])) } else { "off".to_string() },
+        list(&facts["colorMask"])
+    ));
+    lines.push(format!("  blend: {}", if facts["blend"] == true { "on" } else { "off (the draw replaces what is there)" }));
+    lines.push(match facts["depth"]["func"].as_str() {
+        Some(func) => format!("  depth: test {func}, write {}", facts["depth"]["write"]),
+        None => "  depth: test off".to_string(),
+    });
+    lines.push(match facts["cull"].as_str() {
+        Some(cull) => format!("  cull {cull}, front face {}", facts["frontFace"].as_str().unwrap_or("ccw")),
+        None => "  cull: off".to_string(),
+    });
+
+    let changed = tried["unchanged"].as_i64().unwrap_or(0);
+
+    if changed > 0 {
+        lines.push(format!("  Effect: it changed {changed} pixels of its target (gpu-measured)."));
+    } else {
+        // Worded as for any draw, from what this one was drawn with.
+        let mut drawn = state.clone();
+
+        for key in ["cull", "frontFace", "depth", "scissor", "viewport", "colorMask"] {
+            drawn[key] = facts[key].clone();
+        }
+
+        lines.push("  Effect: it changed no pixels of its target (gpu-measured).".to_string());
+        lines.push(format!("  Why: {}", causes_of(host, handle, index, &drawn, &tried)));
+    }
+
+    lines.push(format!(
+        "geometry(capture: \"{handle}\", draw: {index}, inside: {part}) gives its vertices. What its bind groups hold is in resource(handle) for each; the values in its buffers are not listed for a draw inside a bundle."
+    ));
+
+    if meta["replay_matches"] != true {
+        lines.push("Warning: this capture's replay did not match the original frame, so this may be wrong.".into());
+    }
+
+    Ok(result(
+        lines.join("\n"),
+        json!({ "capture": handle, "draw": index, "inside": part, "of": inside.len(), "changed": changed, "pipeline": named("pipeline", &inner["pipeline"]), "tried": tried["tried"], "facts": facts, "provenance": "gpu-measured" }),
+    ))
 }
 
 /// The value the depth buffer of a draw's target was last cleared to, when the frame did so.

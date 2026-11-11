@@ -1440,7 +1440,7 @@ export const gpuAnalysis = {
 
     // Why a draw changed nothing: it is issued with each test it is subject to switched
     // off in turn, and whichever then lets it change pixels is what rejected it.
-    async why (item: Loaded, methods: string[], args: { draw: number }): Promise<Json>
+    async why (item: Loaded, methods: string[], args: { draw: number; part?: number }): Promise<Json>
     {
         const row = item.data.draws[args.draw];
 
@@ -1449,13 +1449,23 @@ export const gpuAnalysis = {
             throw new Error(`The capture has ${item.data.draws.length} events, numbered from 0; there is no draw ${args.draw}.`);
         }
 
-        if (row.kind !== 'draw' || row.noTarget || !DRAW_CALLS.includes(row.method))
+        // One draw of those a render bundle makes, by its place among them. What a bundle
+        // recorded is issued on the pass draw by draw, so one of them can be issued another way.
+        const bundled = row.method === 'executeBundles' && typeof args.part === 'number';
+        const part = bundled ? args.part! : 0;
+
+        if (row.kind !== 'draw' || row.noTarget || !(DRAW_CALLS.includes(row.method) || bundled))
         {
             return { unsupported: row.method === 'executeBundles' ? 'bundle' : 'not-a-draw' };
         }
 
         const target = targetOf(row);
         const started = performance.now();
+
+        // What the draw is drawn with, for one inside a bundle: the event's row describes
+        // the bundles, not each draw in them.
+        let facts: Json = null;
+        let parts = 0;
 
         const attempt = async (off: string[]): Promise<number> =>
         {
@@ -1465,117 +1475,159 @@ export const gpuAnalysis = {
             {
                 const variants = new Variants(run);
 
-                await run.play(row.command);
-                await run.flush();
+                let seen = 0;
+                let changed = -1;
 
-                const before = await run.read(target);
+                await run.play(row.command);
 
                 run.onDraw = async (index, name, drawn) =>
                 {
-                    if (index !== row.command || off.length === 0)
+                    if (index !== row.command || seen++ !== part)
                     {
                         return false;
                     }
 
+                    // The target just before this draw, and just after it.
+                    await run.flush();
+
+                    const before = await run.read(target);
                     const now = run.now();
                     const raw = variants.raw(now.pipeline);
                     const location = firstColour(run.open!.descriptor);
 
-                    if (!raw || now.pipeline === null)
+                    if (raw && facts === null)
                     {
-                        return false;
+                        const colour = Array.from(raw.fragment?.targets ?? [])[location] as any;
+                        const depth = raw.depthStencil;
+                        const always = (face: any): boolean => (face?.compare ?? 'always') === 'always';
+                        const whole = (box: number[] | null): boolean => !box || (box[0] === 0 && box[1] === 0 && box[2] === before.width && box[3] === before.height);
+                        const mask: number = colour?.writeMask ?? 0xF;
+
+                        facts = {
+                            pipeline: now.pipeline,
+                            method: name,
+                            cull: (raw.primitive?.cullMode ?? 'none') === 'none' ? null : raw.primitive.cullMode,
+                            frontFace: raw.primitive?.frontFace ?? 'ccw',
+                            depth: depth && (depth.depthCompare ?? 'always') !== 'always' ? { func: depth.depthCompare, write: Boolean(depth.depthWriteEnabled) } : null,
+                            stencil: Boolean(depth && !(always(depth.stencilFront) && always(depth.stencilBack))),
+                            blend: Boolean(colour?.blend),
+                            colorMask: [(mask & 1) !== 0, (mask & 2) !== 0, (mask & 4) !== 0, (mask & 8) !== 0],
+                            scissor: whole(now.scissor) ? null : now.scissor,
+                            viewport: whole(now.viewport ? now.viewport.slice(0, 4) : null) ? null : now.viewport!.slice(0, 4)
+                        };
                     }
 
-                    const variant = await variants.make(now.pipeline, `why:${off.join('+')}`, (descriptor) =>
+                    let issued = false;
+
+                    if (off.length > 0 && raw && now.pipeline !== null)
                     {
-                        if (off.includes('cull'))
+                        const variant = await variants.make(now.pipeline, `why:${off.join('+')}`, (descriptor) =>
                         {
-                            descriptor.primitive = { ...(descriptor.primitive ?? {}), cullMode: 'none' };
-                        }
-
-                        if (descriptor.depthStencil && off.includes('depth'))
-                        {
-                            descriptor.depthStencil = { ...descriptor.depthStencil, depthCompare: 'always' };
-                        }
-
-                        if (descriptor.depthStencil && off.includes('stencil'))
-                        {
-                            descriptor.depthStencil = {
-                                ...descriptor.depthStencil,
-                                stencilFront: { ...(descriptor.depthStencil.stencilFront ?? {}), compare: 'always' },
-                                stencilBack: { ...(descriptor.depthStencil.stencilBack ?? {}), compare: 'always' }
-                            };
-                        }
-
-                        if (descriptor.fragment)
-                        {
-                            descriptor.fragment.targets = Array.from(descriptor.fragment.targets ?? [], (found: any, index: number) =>
+                            if (off.includes('cull'))
                             {
-                                if (!found || index !== location)
+                                descriptor.primitive = { ...(descriptor.primitive ?? {}), cullMode: 'none' };
+                            }
+
+                            if (descriptor.depthStencil && off.includes('depth'))
+                            {
+                                descriptor.depthStencil = { ...descriptor.depthStencil, depthCompare: 'always' };
+                            }
+
+                            if (descriptor.depthStencil && off.includes('stencil'))
+                            {
+                                descriptor.depthStencil = {
+                                    ...descriptor.depthStencil,
+                                    stencilFront: { ...(descriptor.depthStencil.stencilFront ?? {}), compare: 'always' },
+                                    stencilBack: { ...(descriptor.depthStencil.stencilBack ?? {}), compare: 'always' }
+                                };
+                            }
+
+                            if (descriptor.fragment)
+                            {
+                                descriptor.fragment.targets = Array.from(descriptor.fragment.targets ?? [], (found: any, index: number) =>
                                 {
-                                    return found;
-                                }
+                                    if (!found || index !== location)
+                                    {
+                                        return found;
+                                    }
 
-                                const next = { ...found };
+                                    const next = { ...found };
 
-                                if (off.includes('blend'))
-                                {
-                                    delete next.blend;
-                                }
+                                    if (off.includes('blend'))
+                                    {
+                                        delete next.blend;
+                                    }
 
-                                if (off.includes('color_mask'))
-                                {
-                                    next.writeMask = 0xF;
-                                }
+                                    if (off.includes('color_mask'))
+                                    {
+                                        next.writeMask = 0xF;
+                                    }
 
-                                return next;
-                            });
+                                    return next;
+                                });
+                            }
+
+                            return {};
+                        });
+                        const pass = run.pass();
+
+                        if (variant && (await variants.use(pass, now, variant)))
+                        {
+                            if (off.includes('scissor'))
+                            {
+                                pass.setScissorRect(0, 0, before.width, before.height);
+                            }
+
+                            if (off.includes('viewport'))
+                            {
+                                pass.setViewport(0, 0, before.width, before.height, 0, 1);
+                            }
+
+                            pass[name](...drawn);
+                            issued = true;
                         }
-
-                        return {};
-                    });
-                    const pass = run.pass();
-
-                    if (!variant || !(await variants.use(pass, now, variant)))
-                    {
-                        variants.restore(pass, now);
-
-                        return false;
+                        else
+                        {
+                            variants.restore(pass, now);
+                        }
                     }
 
-                    if (off.includes('scissor'))
+                    if (!issued)
                     {
-                        pass.setScissorRect(0, 0, before.width, before.height);
+                        run.pass()[name](...drawn);
                     }
 
-                    if (off.includes('viewport'))
-                    {
-                        pass.setViewport(0, 0, before.width, before.height, 0, 1);
-                    }
+                    // A flush puts the pass back as the page had it, for the draws that follow.
+                    await run.flush();
 
-                    pass[name](...drawn);
+                    const after = await run.read(target);
+                    const bytes = after.bytes;
+
+                    changed = 0;
+
+                    for (let i = 0; i < after.width * after.height; i++)
+                    {
+                        for (let k = 0; k < bytes; k++)
+                        {
+                            if (after.data[i * bytes + k] !== before.data[i * bytes + k])
+                            {
+                                changed++;
+                                break;
+                            }
+                        }
+                    }
 
                     return true;
                 };
 
                 await run.execute(row.command);
-                await run.flush();
+                parts = seen;
 
-                const after = await run.read(target);
-                const bytes = after.bytes;
-
-                let changed = 0;
-
-                for (let i = 0; i < after.width * after.height; i++)
+                if (changed < 0)
                 {
-                    for (let k = 0; k < bytes; k++)
-                    {
-                        if (after.data[i * bytes + k] !== before.data[i * bytes + k])
-                        {
-                            changed++;
-                            break;
-                        }
-                    }
+                    throw new Error(bundled
+                        ? `Event ${args.draw} runs ${seen} draw${seen === 1 ? '' : 's'} from its render bundles, numbered from 0; there is no draw ${part} inside it.`
+                        : `Event ${args.draw} did not come to be issued in the replay.`);
                 }
 
                 return changed;
@@ -1586,22 +1638,45 @@ export const gpuAnalysis = {
             }
         };
 
+        const unchanged = await attempt([]);
+
         // Only what this draw is subject to can have rejected it.
         const tests: string[] = [];
-        const mask: boolean[] = row.colorMask ?? [true, true, true, true];
-        const texture = target ? item.data.objects.find((object) => object.kind === 'texture' && object.id === target.texture) : null;
-        const size = texture ? [Math.max(1, texture.width >> (target.level || 0)), Math.max(1, texture.height >> (target.level || 0))] : [item.data.header.width, item.data.header.height];
-        const viewport: number[] = row.viewport ?? [0, 0, size[0], size[1]];
 
-        if (row.cull) { tests.push('cull'); }
-        if (row.depth && row.depth.func !== 'always') { tests.push('depth'); }
-        if (row.scissor) { tests.push('scissor'); }
-        if (row.stencil) { tests.push('stencil'); }
-        if (row.blend) { tests.push('blend'); }
-        if (mask.some((channel) => !channel)) { tests.push('color_mask'); }
-        if (viewport[0] !== 0 || viewport[1] !== 0 || viewport[2] !== size[0] || viewport[3] !== size[1]) { tests.push('viewport'); }
+        if (bundled)
+        {
+            const subject: Json = facts ?? {};
 
-        const unchanged = await attempt([]);
+            if (subject.cull) { tests.push('cull'); }
+            if (subject.depth) { tests.push('depth'); }
+            if (subject.scissor) { tests.push('scissor'); }
+            if (subject.stencil) { tests.push('stencil'); }
+            if (subject.blend) { tests.push('blend'); }
+            if ((subject.colorMask ?? []).some((channel: boolean) => !channel)) { tests.push('color_mask'); }
+            if (subject.viewport) { tests.push('viewport'); }
+
+            // One that drew has nothing to explain.
+            if (unchanged > 0)
+            {
+                return { unchanged, tried: [], together: null, part, parts, facts, ms: performance.now() - started };
+            }
+        }
+        else
+        {
+            const mask: boolean[] = row.colorMask ?? [true, true, true, true];
+            const texture = target ? item.data.objects.find((object) => object.kind === 'texture' && object.id === target.texture) : null;
+            const size = texture ? [Math.max(1, texture.width >> (target.level || 0)), Math.max(1, texture.height >> (target.level || 0))] : [item.data.header.width, item.data.header.height];
+            const viewport: number[] = row.viewport ?? [0, 0, size[0], size[1]];
+
+            if (row.cull) { tests.push('cull'); }
+            if (row.depth && row.depth.func !== 'always') { tests.push('depth'); }
+            if (row.scissor) { tests.push('scissor'); }
+            if (row.stencil) { tests.push('stencil'); }
+            if (row.blend) { tests.push('blend'); }
+            if (mask.some((channel) => !channel)) { tests.push('color_mask'); }
+            if (viewport[0] !== 0 || viewport[1] !== 0 || viewport[2] !== size[0] || viewport[3] !== size[1]) { tests.push('viewport'); }
+        }
+
         const tried: Json[] = [];
 
         for (const what of tests)
@@ -1612,7 +1687,9 @@ export const gpuAnalysis = {
         // Two tests can each be enough to reject a draw; then no single one shows it.
         const together = tried.every((entry) => entry.changed === 0) && tests.length > 1 ? await attempt(tests) : null;
 
-        return { unchanged, tried, together, ms: performance.now() - started };
+        return bundled
+            ? { unchanged, tried, together, part, parts, facts, ms: performance.now() - started }
+            : { unchanged, tried, together, ms: performance.now() - started };
     },
 
     // What one draw is given and what its vertex shader makes of it.
@@ -1625,7 +1702,7 @@ export const gpuAnalysis = {
     // an entry point that calls the page's vertex shader, puts each vertex on a pixel of
     // its own and carries the position the page's shader gave it. This is the first
     // instance only.
-    async geometry (item: Loaded, methods: string[], args: { draw: number; vertices?: number }): Promise<Json>
+    async geometry (item: Loaded, methods: string[], args: { draw: number; vertices?: number; part?: number }): Promise<Json>
     {
         const row = item.data.draws[args.draw];
 
@@ -1634,7 +1711,10 @@ export const gpuAnalysis = {
             throw new Error(`The capture has ${item.data.draws.length} events, numbered from 0; there is no draw ${args.draw}.`);
         }
 
-        if (row.kind !== 'draw' || !DRAW_CALLS.includes(row.method))
+        // One draw of those a render bundle makes, by its place among them.
+        const bundled = row.method === 'executeBundles' && typeof args.part === 'number';
+
+        if (row.kind !== 'draw' || !(DRAW_CALLS.includes(row.method) || bundled))
         {
             return { unsupported: 'not-a-draw', kind: row.method === 'executeBundles' ? 'render bundle' : row.kind };
         }
@@ -1649,9 +1729,36 @@ export const gpuAnalysis = {
 
             // Everything up to the draw, and not the draw itself.
             await run.play(row.command);
+
+            if (bundled)
+            {
+                // What the bundles recorded is issued on the pass draw by draw: the one asked
+                // about is looked at where it stands, with the state the bundle had set for it.
+                let seen = 0;
+                let found: Json = null;
+
+                run.onDraw = async (index, name, drawn) =>
+                {
+                    if (index === row.command && seen++ === args.part)
+                    {
+                        await run.flush();
+                        found = await measure(run.now(), name, drawn);
+                    }
+
+                    return false;
+                };
+
+                await run.execute(row.command);
+
+                return found ?? { unsupported: 'no-such-part', parts: seen };
+            }
+
             await run.flush();
 
-            const now = run.now();
+            return await measure(run.now(), run.name(row.command)[1], item.data.commands[row.command][1].map((encoded: Json) => run.decode(encoded)));
+
+            async function measure (now: PassNow, name: string, given: any[]): Promise<Json>
+            {
             const raw = variants.raw(now.pipeline);
 
             if (!raw || now.pipeline === null || !run.open)
@@ -1659,8 +1766,7 @@ export const gpuAnalysis = {
                 return { unsupported: 'no-program' };
             }
 
-            const [, name] = run.name(row.command);
-            const asked = await drawArgs(run, name, item.data.commands[row.command][1].map((encoded: Json) => run.decode(encoded)));
+            const asked = await drawArgs(run, name, given);
 
             if (!asked)
             {
@@ -1899,6 +2005,7 @@ export const gpuAnalysis = {
                 frontFace: raw.primitive?.frontFace === 'cw' ? 0x0900 : 0x0901,
                 notes: run.notes
             };
+            }
         }
         finally
         {

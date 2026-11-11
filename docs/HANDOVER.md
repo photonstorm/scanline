@@ -109,7 +109,7 @@ Probably the nearest of the unbuilt platforms: the pipe launch is plain Unix, th
 
 Each is described where it bites, in `scanline help limits` and in `DEPARTURES.md`.
 
-- For draws inside a WebGPU render bundle: `geometry`, and which test turned one away. The bundle is one event.
+- For a draw inside a WebGPU render bundle: the values in its uniform buffers, and a line of its own in `pixel_history`. (`draw` and `geometry` take one with `inside: n`.)
 - The wireframe view on a running WebGPU page. A capture has it.
 - Reading back multisampled textures, and the stencil of a depth and stencil texture.
 - More than one WebGPU device in one capture.

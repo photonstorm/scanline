@@ -54,7 +54,7 @@ Every milestone of the build plan up to 1.0 has been worked through on macOS (Ap
 
 **Not built**
 
-- For WebGPU captures: external (video) textures; geometry and "which test rejected it" for a draw inside a render bundle; more than one device in a capture.
+- For WebGPU captures: external (video) textures; uniform values and a pixel-history line of its own for a draw inside a render bundle; more than one device in a capture.
 - The wireframe view on a running WebGPU page (a capture has it). Readback of multisampled textures, and of stencil.
 - The fast binary channel for bulk data.
 - Linux. A WebKit or Firefox mode. WebXR. A single window that holds both the game and the strip.

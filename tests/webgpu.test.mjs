@@ -432,7 +432,7 @@ describe('render bundles', () =>
         const event = await scanline('draw', capture, 1, '--session', session);
 
         assert.match(event.out, /runs 2 render bundles: what they draw was recorded when they were built/);
-        assert.match(event.out, /bnd_1: drawIndexed × 6 with pip_1\n {4}bnd_1: drawIndexed × 6 with pip_2\n {4}bnd_\d+: drawIndexed × 6 with pip_1/);
+        assert.match(event.out, /0 {2}bnd_1: drawIndexed × 6 with pip_1\n {4}1 {2}bnd_1: drawIndexed × 6 with pip_2\n {4}2 {2}bnd_\d+: drawIndexed × 6 with pip_1/);
         assert.doesNotMatch(event.out, /pipeline none/);
 
         assert.match((await scanline('resources', 'bundle', '--session', session)).out, /bnd_1 «early» {2}render bundle of 2 draws/);
@@ -461,6 +461,44 @@ describe('render bundles', () =>
         const profile = await scanline('profile', capture, '--session', session, '--json');
 
         assert.deepEqual(profile.json.data.rows.map((row) => row.draw).sort(), [1, 2], 'the bundle is timed whole');
+    });
+
+    test('one draw inside a bundle: what it did, its vertices, and what turned it away', async () =>
+    {
+        // ?clipped: the pass's scissor box is the left half while the bundles run, so the
+        // green quad (the third draw inside them, x 80–120) draws nothing.
+        const { session, capture } = await captured('fixtures/history/bundles-webgpu.html?clipped');
+        const inside = (part, ...rest) => scanline('draw', capture, 1, '--inside', part, '--session', session, ...rest);
+
+        // The blue quad, drawn with the pipeline of layout auto.
+        const blue = await inside(1, '--json');
+
+        assert.equal(blue.code, 0, blue.out);
+        assert.match(blue.json.summary, /event 1, draw 1 of the 3 inside its render bundles: drawIndexed in bnd_1, to canvas/);
+        assert.match(blue.json.summary, /pipeline pip_2/);
+        assert.match(blue.json.summary, /scissor box 0, 0, 80, 120/);
+        assert.equal(blue.json.data.changed, 4800);
+
+        // The green one: issued, and kept out by the scissor box the pass had set.
+        const green = await inside(2, '--json');
+
+        assert.equal(green.json.data.changed, 0);
+        assert.match(green.json.summary, /Effect: it changed no pixels of its target/);
+        assert.match(green.json.summary, /Why: With the scissor test off it changes 4800 pixels: it falls outside the scissor box \(0, 0, 80, 120\)/);
+
+        // Its vertices, as its vertex shader places them: x 80–120 of 160.
+        const geometry = await scanline('geometry', capture, 1, '--inside', 2, '--session', session, '--json');
+
+        assert.equal(geometry.code, 0, geometry.out);
+        assert.match(geometry.json.summary, /event 1, draw 2 inside its render bundles: TRIANGLES × 6, indexed/);
+        assert.match(geometry.json.summary, /2 of 2 triangles would reach the rasteriser/);
+        assert.match(geometry.json.summary, /span x 0\.000 to 0\.500/);
+
+        // Asked for the bundle as a whole, or for a draw it has not got.
+        assert.match((await scanline('geometry', capture, 1, '--session', session)).out, /Say which of their draws with inside: n/);
+        assert.match((await inside(3)).out, /runs 3 draws from its render bundles, numbered from 0; there is no draw 3 inside it/);
+        assert.match((await scanline('draw', capture, 2, '--inside', 0, '--session', session)).out, /Event 2 is not a render bundle/);
+        await scanline('stop');
     });
 
     test('the inventory says which objects are in use, through bind groups and bundles', async () =>

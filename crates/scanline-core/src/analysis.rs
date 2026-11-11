@@ -720,12 +720,23 @@ pub async fn geometry(host: &Arc<Host>, params: &Value) -> Result<Value> {
 
     load_into(host, &session, &handle).await?;
 
-    let reply = session.replay("geometry", &json!({ "key": handle, "draw": index, "vertices": params["vertices"] }), LONG).await?;
+    let reply =
+        session.replay("geometry", &json!({ "key": handle, "draw": index, "vertices": params["vertices"], "part": params["inside"].as_i64() }), LONG).await?;
 
     match reply["unsupported"].as_str() {
+        Some("not-a-draw") if reply["kind"] == "render bundle" => {
+            bail!(
+                "Event {index} runs render bundles, which draw more than once. Say which of their draws with inside: n, numbered from 0 as draw(draw: {index}) lists them."
+            )
+        }
         Some("not-a-draw") => {
             bail!("Event {index} is a {}, which has no geometry. draw_list shows which events are draws.", reply["kind"].as_str().unwrap_or("clear"))
         }
+        Some("no-such-part") => bail!(
+            "Event {index} runs {} from its render bundles, numbered from 0; there is no draw {} inside it.",
+            plural(reply["parts"].as_i64().unwrap_or(0), "draw"),
+            params["inside"]
+        ),
         Some(_) => bail!(
             "No {} was in use at event {index}, so it drew nothing and has no vertex shader to run.",
             if meta["api"] == "webgpu" { "pipeline" } else { "program" }
@@ -740,8 +751,9 @@ pub async fn geometry(host: &Arc<Host>, params: &Value) -> Result<Value> {
         _ => plural(count as i64, "point"),
     };
     let mut lines = vec![format!(
-        "{} event {index}: {} × {}{}{}.",
+        "{} event {index}{}: {} × {}{}{}.",
         about(host, params, &handle, &meta),
+        params["inside"].as_i64().map(|part| format!(", draw {part} inside its render bundles")).unwrap_or_default(),
         crate::capture::mode_name(&reply["mode"]).unwrap_or_else(|| reply["mode"].to_string()),
         reply["count"],
         if reply["indexed"] == true { ", indexed" } else { "" },

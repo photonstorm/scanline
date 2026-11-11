@@ -333,6 +333,7 @@ pub const TOOLS: &[Tool] = &[
             r#""capture": { "type": "string" }"#,
             r#""draw": { "type": "integer", "description": "The event's number, from draw_list." }"#,
             r#""output": { "type": "boolean", "description": "Also return the target as it stood after this draw." }"#,
+            r#""inside": { "type": "integer", "description": "WebGPU: one draw of those a render bundle event makes, numbered from 0 as draw lists them." }"#,
             session!(),
         ),
         read_only: true,
@@ -436,6 +437,7 @@ pub const TOOLS: &[Tool] = &[
             r#""capture": { "type": "string" }"#,
             r#""draw": { "type": "integer", "description": "The event's number, as draw_list gives it." }"#,
             r#""vertices": { "type": "integer", "description": "How many vertices to show values for. Default 8." }"#,
+            r#""inside": { "type": "integer", "description": "WebGPU: one draw of those a render bundle event makes, numbered from 0 as draw lists them." }"#,
         ),
         read_only: true,
     },
@@ -941,9 +943,11 @@ Not built:
     key held system-wide on macOS and Windows while a request is open, the flight recorder, runs, one
     owner of the input): the browser's own pointer lock (a shim stands in:
     launch(pointer_lock: \"shim\")).
-  - For the draws inside a WebGPU render bundle: geometry, and which test turned one away
-    (in draw and in pixel_history). The bundle is one event; draw lists what it draws, and
-    the views, profile and live patches reach inside it.
+  - A WebGPU render bundle is one event. draw lists the draws inside it, and
+    draw(draw, inside: n) and geometry(draw, inside: n) take one of them: what it did, which
+    test turned it away, its vertices. Not for a draw inside a bundle: the values in its
+    uniform buffers, and its own line in pixel_history (the bundle's event has one line).
+    profile times a bundle whole. The views and live patches reach inside it.
   - The wireframe view on a running WebGPU page (view on a capture has it).
   - Linux. Signed installers and updates: a release is an archive holding the one
     binary.

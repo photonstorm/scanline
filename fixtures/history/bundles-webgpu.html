@@ -101,6 +101,7 @@ function bundle (label, draws)
 }
 
 const early = bundle('early', [[own, red], [auto, blue]]);
+const clipped = new URLSearchParams(location.search).has('clipped');
 
 // With ?spare, a bind group and its buffer that nothing ever sets: made, and never used.
 const spare = new URLSearchParams(location.search).has('spare') ? tinted('spare', tintLayout, [1, 1, 1, 1], 0) : null;
@@ -117,7 +118,19 @@ function frame ()
         colorAttachments: [{ view: context.getCurrentTexture().createView(), clearValue: [0.1, 0.1, 0.1, 1], loadOp: 'clear', storeOp: 'store' }]
     });
 
+    // With ?clipped the pass's scissor box covers the left half only while the bundles run:
+    // the green quad, the third draw inside them, falls outside it and draws nothing.
+    if (clipped)
+    {
+        pass.setScissorRect(0, 0, 80, 120);
+    }
+
     pass.executeBundles([early, late]);
+
+    if (clipped)
+    {
+        pass.setScissorRect(0, 0, 160, 120);
+    }
 
     // A bundle leaves the pass with nothing set: everything is set again.
     pass.setVertexBuffer(0, vertices);

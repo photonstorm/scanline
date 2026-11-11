@@ -320,7 +320,7 @@ Two things the new Babylon.js page (`fixtures/engines/babylon-shadows.html`) fou
 
 ## WebGPU capture: what it does not do
 
-- Geometry, and which test turned a draw away, for a draw inside a render bundle.
+- For a draw inside a render bundle: the values in its uniform buffers, and a line of its own in `pixel_history`. (`draw` and `geometry` take one with `inside: n`.)
 - External textures. The calls that use them fail in replay and the summary says so.
 - The contents of stencil and multisampled textures. They are empty in replay; a pass normally clears them.
 - Buffers and textures the GPU wrote in an earlier frame (a simulation stepped by a compute pass) are read before the frame begins, with the render targets: every storage buffer and storage texture, up to 256 MB in all. Read after the frame they would hold the frame's own step, and the replay would take it twice. Past the budget the capture says so, and the replay check shows whether it mattered.
@@ -430,7 +430,8 @@ Built after milestone 7. The probe keeps what is recorded into every bundle enco
 - A capture holds every bundle its frame runs, whenever it was built, with the pipelines, bind groups and buffers it uses. The replay records it again, call by call.
 - `executeBundles` stays one event, so event numbers do not change. `draw` lists the draws inside, each with its pipeline. `stats` counts what a bundle draws in each frame it runs.
 - Where an analysis issues draws its own way (draw_id, overdraw, wireframe, mip), the replay does not run the bundle: it issues what the bundle recorded on the pass, which draws the same, and each draw goes through the analysis. Their pixels belong to the bundle's event. `profile` times a bundle whole.
-- Not done for a draw inside a bundle: `geometry`, and the tests in `pixel_history` and `draw` ("which test rejected it"). They are worked out per event, and a bundle's event is several draws.
+- One draw inside a bundle is asked for by its place among them: `draw(draw, inside: n)` says what it is drawn with, how many pixels it changed, and if none, which test turned it away; `geometry(draw, inside: n)` gives its vertices and where its vertex shader puts them. Both replay the bundle's recorded calls on the pass and stop at that draw, with the state the bundle had set for it. `draw` lists the draws inside with their numbers.
+- Not done for a draw inside a bundle: the values in its uniform buffers, and a line of its own in `pixel_history`, where the bundle's event has one line for all its draws.
 
 Checked against `fixtures/history/bundles-webgpu.html`: one bundle built before the first frame (two draws, one with a pipeline of layout `'auto'`), one built every frame, and a draw straight on the pass.
 
