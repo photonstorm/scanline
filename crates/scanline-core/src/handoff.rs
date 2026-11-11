@@ -736,10 +736,11 @@ pub async fn recording(host: &Arc<Host>, params: &Value) -> Result<Value> {
 
     // What each frame looked like, by replaying the recording once. Needs a browser.
     let mut images = json!([]);
+    let mut video_path: Option<Value> = None;
 
     match host.replayer(params) {
-        Ok(session) => match pictures(host, &session, &handle, &stream).await {
-            Ok((hashes, sheet, columns)) => {
+        Ok(session) => match pictures(host, &session, &handle, &stream, params).await {
+            Ok((hashes, sheet, columns, video)) => {
                 for (frame, hash) in frames.iter_mut().zip(&hashes) {
                     frame["picture"] = json!(hash);
                 }
@@ -774,6 +775,29 @@ pub async fn recording(host: &Arc<Host>, params: &Value) -> Result<Value> {
                 std::fs::write(&path, sheet.to_png()?).with_context(|| format!("writing {}", path.display()))?;
                 lines.push(format!("Contact sheet: {} across, frame {} at the top-left, in reading order: {}", columns, meta["first_frame"], path.display()));
                 images = json!([{ "view": path, "original": path, "width": sheet.width, "height": sheet.height, "scale": 1.0, "space": "contact_sheet" }]);
+
+                // The frames as a video, for the person: something to watch and to pass on.
+                match video {
+                    Some(Ok((bytes, about))) => {
+                        let path = host.store.recording_dir(&handle).join(format!("{handle}.webm"));
+
+                        std::fs::write(&path, &bytes).with_context(|| format!("writing {}", path.display()))?;
+                        lines.push(format!(
+                            "Video: {} frames at {} a second, {}×{} (WebM, VP8, {}): {}",
+                            about["frames"],
+                            about["fps"],
+                            about["width"],
+                            about["height"],
+                            crate::inventory::size(bytes.len() as f64),
+                            path.display()
+                        ));
+                        video_path = Some(
+                            json!({ "path": path, "frames": about["frames"], "fps": about["fps"], "width": about["width"], "height": about["height"], "bytes": bytes.len() }),
+                        );
+                    }
+                    Some(Err(why)) => lines.push(format!("No video was made: {why}")),
+                    None => {}
+                }
             }
             Err(error) => lines.push(format!("The frames' pictures could not be made: {error}")),
         },
@@ -790,7 +814,7 @@ pub async fn recording(host: &Arc<Host>, params: &Value) -> Result<Value> {
 
     lines.push(format!("capture(recording: \"{handle}\", frame: n) makes a frame a capture, to take apart like any other."));
 
-    let mut value = result(lines.join("\n"), json!({ "recording": handle, "meta": meta, "frames": frames }));
+    let mut value = result(lines.join("\n"), json!({ "recording": handle, "meta": meta, "frames": frames, "video": video_path }));
 
     value["images"] = images;
 
@@ -799,13 +823,32 @@ pub async fn recording(host: &Arc<Host>, params: &Value) -> Result<Value> {
 
 /// Replays a recording once and returns each frame's picture as a hash, with a sheet of
 /// small pictures and how many it has across.
-async fn pictures(host: &Arc<Host>, session: &Arc<Session>, handle: &str, stream: &Value) -> Result<(Vec<String>, Image, u32)> {
+type Video = Option<std::result::Result<(Vec<u8>, Value), String>>;
+
+async fn pictures(host: &Arc<Host>, session: &Arc<Session>, handle: &str, stream: &Value, params: &Value) -> Result<(Vec<String>, Image, u32, Video)> {
     let hashes: Vec<String> = stream["blob_hashes"].as_array().into_iter().flatten().filter_map(|hash| hash.as_str().map(str::to_string)).collect();
     let store = &host.store;
 
     session.replay_load(handle, stream, &|index| store.get_blob(hashes.get(index).ok_or_else(|| anyhow!("The recording names no blob {index}."))?)).await?;
 
-    let reply = session.replay("frames", &json!({ "key": handle }), Duration::from_secs(120)).await?;
+    // video: true, or {fps, max_edge}: the frames are also encoded as they are replayed.
+    let wanted = !params["video"].is_null() && params["video"] != false;
+    let options = if wanted { json!({ "fps": params["video"]["fps"], "edge": params["video"]["max_edge"] }) } else { Value::Null };
+    let mut reply = session.replay("frames", &json!({ "key": handle, "video": options }), Duration::from_secs(120)).await?;
+
+    // An encoder this browser lacks is no reason to go without the pictures.
+    let mut video: Video = None;
+
+    if reply["unsupported"].is_string() {
+        video = Some(Err("this browser has no video encoder for pages (WebCodecs VideoEncoder).".to_string()));
+        reply = session.replay("frames", &json!({ "key": handle }), Duration::from_secs(120)).await?;
+    } else if wanted {
+        video = Some(match base64::engine::general_purpose::STANDARD.decode(reply["video"]["webm"].as_str().unwrap_or("")) {
+            Ok(bytes) if !bytes.is_empty() => Ok((bytes, reply["video"].clone())),
+            _ => Err("the replay returned no video.".to_string()),
+        });
+    }
+
     let frames = reply["frames"].as_array().cloned().unwrap_or_default();
 
     if frames.is_empty() {
@@ -853,7 +896,7 @@ async fn pictures(host: &Arc<Host>, session: &Arc<Session>, handle: &str, stream
         pixel[3] = 255;
     }
 
-    Ok((frames.iter().map(|frame| frame["hash"].as_str().unwrap_or("").to_string()).collect(), Image::new(sheet_width, sheet_height, data)?, columns))
+    Ok((frames.iter().map(|frame| frame["hash"].as_str().unwrap_or("").to_string()).collect(), Image::new(sheet_width, sheet_height, data)?, columns, video))
 }
 
 /// Makes one frame of a recording into a capture.

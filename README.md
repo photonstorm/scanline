@@ -43,6 +43,7 @@ Every milestone of the build plan up to 1.0 has been worked through on macOS (Ap
 - A capture as one file: `export` writes a capture and everything it uses to one `.scanline` file, and `import` reads it into any host, where it answers the same questions and replays.
 - Tiers: the person decides what a client may do when the host starts. By default patching and `eval` work only on pages served from this machine, and `navigate` keeps to the origin a session was launched on. See [docs/SECURITY.md](docs/SECURITY.md).
 - Skills: seven recipes (the core loop, wrong pixels, a slow frame, memory, working with a person, playing, and writing rendering code that can be debugged by name), held in the binary so they always match it: `scanline skill`, or `help(skill)` over MCP. A test checks that every command a skill names exists.
+- A recording as a video: `recording(video: true)` writes the frames kept before a Debug press as a WebM file, for the person to watch or attach to a report.
 - Assertions for a test run: `assert` holds the canvas to a baseline picture, a pixel to a colour, the console to "no errors" and a frame to budgets (draws, triangles, calls, GPU and CPU time), and exits 2 from a shell when anything fails. `scanline help testing` has the recipe.
 - MCP over loopback HTTP (`scanline serve --http`), for a client that cannot spawn a process: bound to 127.0.0.1, with a token and `Host` and `Origin` checks.
 - Engine adapters also cover Babylon.js (both engines).

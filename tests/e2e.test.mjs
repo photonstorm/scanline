@@ -2180,6 +2180,53 @@ describe('the flight recorder and what the page throws away', () =>
             // Reading the old ones before they went raised nothing the page could see.
             assert.match((await scanline('console', '--level', 'error', '--session', session)).out, /No error console lines/);
 
+            // The same frames as a video, for the person: a WebM file a browser can play,
+            // with the colours the frames had.
+            const filmed = await scanline('recording', recording, '--video', 'true', '--session', session, '--json');
+            const video = filmed.json.data.video;
+            const frames = filmed.json.data.frames.map((frame) => frame.frame);
+
+            assert.equal(filmed.code, 0, filmed.out);
+            assert.match(filmed.json.summary, /Video: \d+ frames at 60 a second, 160×120 \(WebM, VP8, [\d.]+ KB\)/);
+            assert.deepEqual([video.frames, video.fps, video.width, video.height], [frames.length, 60, 160, 120]);
+
+            const file = readFileSync(video.path);
+
+            assert.deepEqual([...file.subarray(0, 4)], [0x1a, 0x45, 0xdf, 0xa3], 'an EBML header');
+
+            const seen = await scanline('eval', `(async () => {
+                const bytes = Uint8Array.from(atob("${file.toString('base64')}"), (c) => c.charCodeAt(0));
+                const video = document.createElement('video');
+
+                video.muted = true;
+                video.src = URL.createObjectURL(new Blob([bytes], { type: 'video/webm' }));
+                await new Promise((resolve, reject) => { video.onloadeddata = resolve; video.onerror = () => reject(new Error('the video does not decode')); });
+
+                const canvas = document.createElement('canvas');
+
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+
+                const context = canvas.getContext('2d');
+                const at = async (index, x, y) =>
+                {
+                    await new Promise((resolve) => { video.onseeked = resolve; video.currentTime = (index + 0.5) / 60; });
+                    context.drawImage(video, 0, 0);
+
+                    return [...context.getImageData(x, y, 1, 1).data];
+                };
+
+                return JSON.stringify({ size: [video.videoWidth, video.videoHeight], duration: video.duration, early: await at(${frames.indexOf(10)}, 40, 60), late: await at(${frames.indexOf(30)}, 120, 60), gone: await at(${frames.indexOf(30)}, 40, 60) });
+            })()`, '--session', session, '--json');
+            const decoded = JSON.parse(seen.json.data.value);
+            const close = (a, b) => a.every((channel, index) => Math.abs(channel - b[index]) <= 6);
+
+            assert.deepEqual(decoded.size, [160, 120]);
+            assert.ok(Math.abs(decoded.duration - frames.length / 60) < 0.02, `${decoded.duration} s for ${frames.length} frames`);
+            assert.ok(close(decoded.early, orange), `frame 10 shows the orange square: ${decoded.early}`);
+            assert.ok(close(decoded.late, blue), `frame 30 shows the blue one: ${decoded.late}`);
+            assert.ok(close(decoded.gone, empty), `and not the orange: ${decoded.gone}`);
+
             await scanline('close', '--session', session);
         });
     }

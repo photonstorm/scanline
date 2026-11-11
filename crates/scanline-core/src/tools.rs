@@ -535,8 +535,13 @@ pub const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "recording",
-        description: "A flight recording: the frames kept before Debug was pressed. Says how many events each frame issued, which frames' pictures differ from the one before, and returns a contact sheet of every frame. With no handle, lists the recordings on disk. capture(recording, frame) makes one frame a capture.",
-        schema: schema!("[]", r#""recording": { "type": "string", "description": "A handle such as rec_1." }"#, session!()),
+        description: "A flight recording: the frames kept before Debug was pressed. Says how many events each frame issued, which frames' pictures differ from the one before, and returns a contact sheet of every frame; video: true also writes the frames as a WebM file. With no handle, lists the recordings on disk. capture(recording, frame) makes one frame a capture.",
+        schema: schema!(
+            "[]",
+            r#""recording": { "type": "string", "description": "A handle such as rec_1." }"#,
+            r#""video": { "description": "true, or {\"fps\": 60, \"max_edge\": 960}: write the frames as a video for the person to watch or pass on." }"#,
+            session!()
+        ),
         read_only: true,
     },
     Tool {
@@ -1287,6 +1292,8 @@ level. Ask them, and let Scanline hold the evidence.
   recording(recording: \"rec_1\")
       which frames draw something different from the rest, which frames' pictures did not
       change, and a contact sheet of every frame. Start here for anything intermittent.
+      video: true also writes the frames as a WebM file: for the person, to watch or to
+      attach to a report. You cannot watch it; the contact sheet is yours.
   capture(recording: \"rec_1\", frame: n)
       makes any recorded frame a capture. Take a bad frame and a good neighbour and
       compare their draw lists.

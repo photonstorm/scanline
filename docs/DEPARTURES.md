@@ -333,6 +333,10 @@ Built after milestone 7. The build plan names "CI assertions and baselines" for 
 
 Not built: baselines of anything but the canvas (a capture's draw list, a texture), and a report in a format a CI system reads (JUnit). `--json` gives every check as data.
 
+## A recording as a video
+
+Built after milestone 7 ("frame sequences as video" in the build plan's list for after 1.0). `recording(recording, video: true)` writes the recording's frames as a WebM file beside its contact sheet, for the person to watch or to attach to a report. The frames are already made by replaying the recording; with `video` each is also given to the browser's own VP8 encoder (WebCodecs) in the replay page, and the WebM container is written by hand (`replay/src/video.ts`). 60 frames a second by default, scaled down by whole steps to at most 960 on the longest edge, opaque. The file says how the encoder turned colours into video (the matrix and range it reports), because a player that has to guess gets greens and reds visibly wrong on a small picture. A browser without the encoder still gets the contact sheet, and is told why there is no video.
+
 ## Send to agent
 
 Built after milestone 7 (PRD UI-5, which the build plan puts after 1.0). In the viewer's Capture tab the person chooses an event, clicks a pixel of its picture to pin it, writes a note if they like, and presses Send to agent. The host queues a `selection` event holding the capture, the event number, the target, the pixel with its value, the shader if they were reading one, the note, and the call to make next. `wait(kinds: ["selection"])` returns it. `viewer(pin: [x, y], send: "note")` does the same as the person's clicks, which is how it is tested. A texture cannot be chosen: the viewer has no texture list.

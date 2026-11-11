@@ -10,6 +10,7 @@ import { METHOD_NAMES } from '../../probe/src/hooks/generated';
 import { gpuApi } from './gpu';
 import { gpuAnalysis } from './gpu-analysis';
 import { tally } from './tally';
+import { Film } from './video';
 
 type Json = any;
 
@@ -3278,7 +3279,7 @@ const api = {
 
     // A recording of several frames, played through once: the canvas at the end of each
     // frame, as a hash of its pixels and a small picture for a contact sheet.
-    async frames (args: { key: string; edge?: number }): Promise<Json>
+    async frames (args: { key: string; edge?: number; video?: { fps?: number; edge?: number } }): Promise<Json>
     {
         const item = capture(args.key);
         const marks: Json[] = item.data.header.frames ?? [];
@@ -3286,6 +3287,14 @@ const api = {
         const edge = args.edge ?? 96;
         const out: Json[] = [];
         const thumbs: Uint8Array[] = [];
+
+        // With video, every frame is also given to the browser's encoder as it is replayed.
+        if (args.video && !Film.supported())
+        {
+            return { unsupported: 'no-encoder' };
+        }
+
+        const film = args.video ? new Film(Math.max(1, Math.min(args.video.fps ?? 60, 120)), Math.max(64, Math.min(args.video.edge ?? 960, 3840))) : null;
 
         let size = { width: 0, height: 0 };
         let notes: string[] = [];
@@ -3318,6 +3327,7 @@ const api = {
             size = { width: w, height: h };
             thumbs.push(thumb);
             out.push({ frame, hash: (hash >>> 0).toString(16).padStart(8, '0') });
+            film?.add(width, height, data);
         };
 
         const lastOf = new Map<number, number>(marks.map((mark) => [mark.command - 1, mark.frame]));
@@ -3362,7 +3372,9 @@ const api = {
             at += thumb.length;
         }
 
-        return { frames: out, thumb: size, thumbs: toBase64(await gzip(all)), notes, ms: performance.now() - started };
+        const video = film ? { webm: toBase64(await film.finish()), width: film.width, height: film.height, fps: film.fps, frames: film.frames, colour: film.colour } : undefined;
+
+        return { frames: out, thumb: size, thumbs: toBase64(await gzip(all)), video, notes, ms: performance.now() - started };
     },
 
     // Every event that changed one pixel of a target, in order, with the value before and
