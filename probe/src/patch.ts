@@ -1007,7 +1007,9 @@ export function installPatches (): void
                     patch.mode = 'solid';
                     patch.colour = colour;
                     patch.solids = new G.Map();
-                    patch.description = `${filterSaid(filter)} are drawn in one flat colour (${colour.join(', ')}); what their shaders discard is still discarded`;
+                    const every = filterSaid(filter) === 'every draw';
+
+                    patch.description = `${filterSaid(filter)} ${every ? 'is' : 'are'} drawn in one flat colour (${colour.join(', ')}); what ${every ? 'its shader discards' : 'their shaders discard'} is still discarded`;
                     break;
                 }
 

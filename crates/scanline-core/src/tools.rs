@@ -618,13 +618,13 @@ pub const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "experiment",
-        description: "Try a change for a number of frames, measure GPU and CPU frame time with and without it, and take it away again. scissor_1px clips every draw to one pixel: if the frame gets much cheaper, the cost is in filling pixels. skip with a filter leaves draws out: what they cost. Says what the result implies.",
+        description: "Try a change for a number of frames, measure GPU and CPU frame time with and without it, and take it away again. scissor_1px clips every draw to one pixel: if the frame gets much cheaper, the cost is in filling pixels. flat_fragment writes one flat colour: what computing the colour costs. skip with a filter leaves draws out: what they cost. Says what the result implies.",
         schema: schema!(
             r#"["kind"]"#,
             session!(),
             context!(),
-            r#""kind": { "type": "string", "enum": ["scissor_1px", "skip"] }"#,
-            r#""filter": { "type": "object", "description": "For skip: which draws. WebGL: {\"program\": \"prg_2\"}, {\"texture\": \"tex_3\"} and/or {\"draws\": [6, 8]}. WebGPU: {\"pipeline\": \"pip_2\"}, {\"texture\": \"tex_3\"} and/or {\"draws\": [6, 8]}." }"#,
+            r#""kind": { "type": "string", "enum": ["scissor_1px", "flat_fragment", "skip"] }"#,
+            r#""filter": { "type": "object", "description": "For skip and flat_fragment: which draws. WebGL: {\"program\": \"prg_2\"}, {\"texture\": \"tex_3\"} and/or {\"draws\": [6, 8]}. WebGPU: {\"pipeline\": \"pip_2\"}, {\"texture\": \"tex_3\"} and/or {\"draws\": [6, 8]}." }"#,
             r#""frames": { "type": "integer", "description": "How many frames to measure each way. Default 60." }"#,
         ),
         read_only: false,
@@ -1147,6 +1147,7 @@ next draw on, and is undone at will. The page's own objects are never touched.
   patches(revert: \"pat_2\")                         undo one; revert: \"all\" undoes every one
   experiment(kind: \"scissor_1px\")                  is the cost in filling pixels? Measures the
                                                     frame with and without, then puts it back
+  experiment(kind: \"flat_fragment\")                is it in computing each pixel's colour?
   experiment(kind: \"skip\", filter)                 what do these draws cost?
 
 A filter names draws by {program: \"prg_2\"}, {texture: \"tex_3\"} and/or {draws: [6, 8]}.

@@ -640,7 +640,9 @@ pub async fn experiment(session: &Arc<Session>, params: &Value) -> Result<Value>
     let context = choose_context(session, params).await?;
     let kind = params["kind"]
         .as_str()
-        .ok_or_else(|| anyhow!("experiment needs kind: scissor_1px (is the cost in filling pixels?) or skip with a filter (what do these draws cost?)."))?;
+        .ok_or_else(|| {
+            anyhow!("experiment needs kind: scissor_1px (is the cost in filling pixels?), flat_fragment (is it in computing their colour?) or skip with a filter (what do these draws cost?).")
+        })?;
     let frames = params["frames"].as_u64().unwrap_or(60).clamp(10, 600);
 
     let (patch, what, meaning) = match kind {
@@ -662,7 +664,12 @@ pub async fn experiment(session: &Arc<Session>, params: &Value) -> Result<Value>
                 "What went is what those draws cost, all of it: issuing them, their vertices and their pixels.",
             )
         }
-        other => bail!("There is no \"{other}\" experiment. Kinds are scissor_1px and skip (with a filter)."),
+        "flat_fragment" => (
+            json!({ "kind": "draws", "mode": "solid", "filter": filter_of(session, &context, &params["filter"])? }),
+            "every matching draw writing one flat colour".to_string(),
+            "The draws are issued, their vertices processed and the same pixels filled, but each fragment writes one constant colour. Its shader still runs what it needs to decide a discard; the work that only made the colour (texture samples, lighting, loops) is gone. What went is the cost of computing the colour. If little went and scissor_1px takes a lot away, the cost is in how many pixels are filled, not in what each one computes: overdraw, or resolution.",
+        ),
+        other => bail!("There is no \"{other}\" experiment. Kinds are scissor_1px, flat_fragment (optionally with a filter) and skip (with a filter)."),
     };
 
     let before = measure(session, &context, frames).await?;

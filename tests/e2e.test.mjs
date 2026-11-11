@@ -1390,6 +1390,22 @@ describe('live patches', () =>
 
         assert.equal(none.code, 1);
         assert.match(none.out, /needs a filter/);
+
+        // The light shafts: 64 samples a pixel to make a colour. Writing a flat colour
+        // takes most of the frame's GPU time away, on WebGL and on WebGPU.
+        for (const page of ['fixtures/slow/webgl2.html', 'fixtures/slow/webgpu.html'])
+        {
+            await scanline('close');
+            await scanline('launch', server.url(page), '--paused', '--headless');
+            await scanline('step', '4');
+
+            const flat = await scanline('experiment', 'flat_fragment', '--frames', '20', '--json');
+
+            assert.equal(flat.code, 0, flat.out);
+            assert.match(flat.json.summary, /Tried for 20 frames: every matching draw writing one flat colour \(every draw is drawn in one flat colour/);
+            assert.ok(flat.json.data.gpu_ms.with < flat.json.data.gpu_ms.without * 0.6, `${page}: ${JSON.stringify(flat.json.data.gpu_ms)}`);
+            assert.match((await scanline('patches')).out, /No patches are in force/);
+        }
     });
 
     test('webgpu: pipelines are rebuilt with the change, and the page\'s own are put back', async () =>
