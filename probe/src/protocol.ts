@@ -138,6 +138,24 @@ function readEngine (): Array<{ engine: string; text?: string; error?: string }>
     return out;
 }
 
+// The page's state as plain data, for a policy to decide by. Null when it provides none.
+export function pageState (): unknown
+{
+    if (stateOf === null)
+    {
+        return null;
+    }
+
+    try
+    {
+        return plainState(stateOf());
+    }
+    catch
+    {
+        return null;
+    }
+}
+
 // State may be wider and deeper than an entity's few fields, but is still copied as plain data.
 function plainState (value: unknown, depth = 0): unknown
 {

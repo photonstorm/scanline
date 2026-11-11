@@ -52,6 +52,65 @@ scanline take_control --release
 
 - [ ] The keys and clicks work again.
 
+## Marking the frozen frame (milestone 4)
+
+```bash
+scanline launch http://127.0.0.1:8765/fixtures/bugs/b13.html
+```
+
+```bash
+scanline request_human "Press Debug, then point at the glass"
+```
+
+Press F9 with the game focused, then:
+
+- [ ] The strip reads "Frozen at frame N … Click the picture to point at something, drag to mark a box, or type a note", and has a text field with a Send button.
+- [ ] A click on the frozen game leaves a small orange ring where you clicked. A drag leaves an orange box.
+- [ ] Typing in the strip's field and pressing Enter (or Send) clears the field and the strip says the note was sent.
+
+```bash
+scanline events
+```
+
+- [ ] The list ends with one `annotation` for each: a point (`x`, `y`), a box (`x`, `y`, `w`, `h`) and the note, with coordinates that match where you pointed (canvas pixels from the top-left of the 480×360 picture).
+
+```bash
+scanline resume
+```
+
+- [ ] The ring or box disappears and the note field goes.
+
+## A real gamepad (milestone 4)
+
+With a gamepad plugged in (press a button on it once so the browser sees it):
+
+```bash
+scanline launch http://127.0.0.1:8765/fixtures/matrix/game.html --deterministic
+```
+
+- [ ] The left stick moves the green square.
+
+```bash
+scanline save_run
+```
+
+- [ ] The summary counts "gamepad changes".
+
+```bash
+scanline replay_run run_1
+```
+
+- [ ] The square ends where it was, and the fingerprints match.
+
+## Pointer lock without the shim (milestone 4)
+
+```bash
+scanline launch http://127.0.0.1:8765/fixtures/matrix/mouselook.html
+```
+
+- [ ] Click the picture: the cursor disappears and moving the mouse slides the white bar. Escape gives the cursor back.
+- [ ] F9 still freezes the page while the pointer is locked.
+
 ## Confirmed
 
 - 11 November 2026: a real F9 press froze `b13.html`, 128 frames were kept, and `recording` named the four frames that flicker. (No strip existed then.)
@@ -59,4 +118,5 @@ scanline take_control --release
 ## Not possible on this machine
 
 - Windows: nothing has been run there, and the browser launch for Windows is not written.
-- Pointer lock and fullscreen: `node spikes/s4-input.mjs --headed` checks them and has not been run.
+- Pointer lock and fullscreen: `node spikes/s4-input.mjs --headed` checks them and has not been run. The pointer-lock shim (`--pointer_lock shim`) is tested; the browser's own lock is not.
+- A Debug hotkey that works while another application has the keyboard: nothing registers one with the operating system. F9 works while the game's window or the strip has the keyboard.

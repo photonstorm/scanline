@@ -35,6 +35,9 @@ Early. The first three milestones of the build plan ("eyes and hands", "inventor
 - The page protocol: a page can name its GPU objects and group its draws, declare the game objects they belong to, mark points on its timeline, offer its state (returned with every step), and register controls and debug views, through a global that exists only inside Scanline. `packages/scanline-hooks` wraps it; the `scanline-debuggable-rendering` skill says how to write a page this way.
 - Engine adapters: with no change to the page, every draw on three.js (both renderers), PixiJS 8 (both renderers) and Phaser 4 resolves to the engine's own objects. On three.js that is the `Object3D`, with shadow passes and render targets as groups. PixiJS and Phaser batch, so a draw's object is its batch: which sprites went into it, and why it ended there.
 - Working with a person: the agent asks them to play and press Debug (F9 in the page) when the bug shows. The press freezes the page and captures the frame there and then, and the flight recorder has kept the frames before it (120 by default). A recording says which of its frames draw something different from the rest, gives a contact sheet of every frame, and any frame can be made a capture.
+- Marking the frozen frame: after a Debug press the person can click the picture to point at something, drag a box, or type a note in the strip, and each reaches the agent as an event in canvas pixels.
+- Capture when something happens: `capture(when)` runs the page until it raises an error, a frame runs long, the page marks an event or an expression becomes true, and captures that frame with the frames before it.
+- A virtual gamepad, relative mouse moves under a pointer-lock shim, and policies: a function the agent writes that runs in the page once a frame and answers with the input to give.
 - The control strip: a small window under the game's, in the same browser, that shows the person who is driving, what the agent asked of them, the frame number and whether frames are being recorded, with Debug, Pause and Step buttons. This is the only interface there is so far.
 - One owner of the input: when the agent takes control, the person's keys and mouse are kept out of the page; when the person has it, the agent may look but not act.
 - Runs: in a deterministic session (seeded random numbers, a fixed time step, a clock that starts from zero) the input a page has received can be saved and played again from a reload, on the same frames. A fingerprint of the frame every 30 frames is checked against the original, and the replay stops where they first differ. Stepping and replay can run without waiting for the display: two minutes of play replays in about six seconds.
@@ -47,7 +50,7 @@ Early. The first three milestones of the build plan ("eyes and hands", "inventor
 - A runner that starts the evaluation's agents by itself (the bugs, prompts and scorer exist: see `evals/`).
 - The stencil and mip views, and pixel history, geometry, profile and the views for WebGPU.
 - Overdraw and the like on the live page. WebGPU uniforms by name. Adapters for Babylon.js and PlayCanvas.
-- The rest of the interface: the capture viewer, live graphs and the activity log. A Debug hotkey that works when another application has the keyboard. Recorded network responses and gamepad input for runs.
+- The rest of the interface: the capture viewer, live graphs and the activity log. A Debug hotkey that works when another application has the keyboard. Recorded network responses for runs.
 - WGSL reflection. Readback of compressed and depth textures in the live page.
 - The fast binary channel for bulk data. Windows. Installers. A pinned browser download.
 

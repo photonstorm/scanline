@@ -32,6 +32,9 @@ Use the `gfx_*` MCP tools if you have them, or the `scanline` command in a shell
 - `gfx_step(frames: 20, events: [{"at": 12, "key": "Space", "press": true}])` presses a key on an exact frame.
 - `gfx_run_until(until: {expr: "game.scene === 'level2'"})` skips ahead in real time.
 - `gfx_eval("JSON.stringify(game.state)")` reads state the page exposes, which is a better basis for decisions than pixels.
+- `gfx_policy(source: "s => ({keys_down: s.obstacleAhead < 40 ? ['Space'] : []})", frames: 600)` plays by rule: your function runs in the page once a frame with the page's state and answers with input. Return `stop: true` to end, `log` to keep a value.
+- A gamepad: `gfx_input(events: [{"gamepad": 0, "axes": [1, 0], "buttons": {"0": true}}])`. Mouse-look: launch with `pointer_lock: "shim"`, click the canvas, then send `{"pointer": "move", "dx": 12, "dy": -3}`.
+- `gfx_capture(when: {error: true})` runs until the page raises an error (or `{frame_ms_over: 20}`, `{mark: "name"}`) and captures that frame with the ones before it.
 
 ## What the page and its engine say
 

@@ -25,6 +25,8 @@ export interface Config
 
     // The key that means "freeze and capture now", as a KeyboardEvent code or key. 'none' for no key.
     debugKey: string;
+    // 'shim': the probe grants pointer lock and delivers relative moves itself.
+    pointerLock: 'native' | 'shim';
 
     probeVersion: string;
 }
@@ -41,6 +43,7 @@ export const config: Config = {
     startPaused: false,
     deterministic: null,
     debugKey: 'F9',
+    pointerLock: 'native',
     probeVersion: '0.0.1',
     ...given
 };

@@ -109,7 +109,7 @@ impl Host {
 
         // One owner of the input at a time. While the person has it, the agent may look but
         // may not move time or send input: that would fight them for the game.
-        if matches!(method, "input" | "step" | "run_until" | "resume" | "navigate" | "replay_run") {
+        if matches!(method, "input" | "step" | "run_until" | "resume" | "navigate" | "replay_run" | "policy") {
             if let Ok(session) = self.session(&params) {
                 let state = session.state.lock().unwrap();
 
@@ -144,6 +144,7 @@ impl Host {
             "stats" => commands::stats(&live()?, &params).await,
             "trace" => trace::trace(&live()?, &params).await,
             "capture" if params["recording"].is_string() => handoff::frame_capture(self, &params).await,
+            "capture" if !params["when"].is_null() => handoff::capture_when(self, &live()?, &params).await,
             "capture" => capture::capture(self, &live()?, &params).await,
             "request_human" => handoff::request_human(&live()?, &params).await,
             "take_control" => handoff::take_control(&live()?, &params).await,
@@ -157,6 +158,7 @@ impl Host {
             "patch_texture" => patch::patch_texture(&live()?, &params).await,
             "patches" => patch::patches(&live()?, &params).await,
             "experiment" => patch::experiment(&live()?, &params).await,
+            "policy" => commands::policy(&live()?, &params).await,
             "page" => page::page(&live()?, &params).await,
             "live_view" => page::live_view(&live()?, &params).await,
             "save_run" => runs::save_run(self, &live()?).await,

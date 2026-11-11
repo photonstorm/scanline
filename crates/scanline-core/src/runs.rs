@@ -80,6 +80,10 @@ fn event_of(row: &Value) -> Option<Value> {
 
             Some(json!({ "key": row[3].as_str().filter(|code| !code.is_empty()).or(row[4].as_str())?, "down": kind == "keydown" }))
         }
+        // A move the pointer-lock shim made carries how far it went, not where to.
+        "mousemove" if row[10].as_u64() == Some(0) && (number(8) != 0.0 || number(9) != 0.0) => {
+            Some(json!({ "pointer": "move", "dx": number(8), "dy": number(9) }))
+        }
         "mousemove" => Some(json!({ "pointer": "move", "x": number(3), "y": number(4), "space": "css_px" })),
         "mousedown" | "mouseup" => Some(json!({
             "pointer": if kind == "mousedown" { "down" } else { "up" },
@@ -89,6 +93,12 @@ fn event_of(row: &Value) -> Option<Value> {
             "space": "css_px",
         })),
         "wheel" => Some(json!({ "wheel": { "dx": number(5), "dy": number(6) }, "x": number(3), "y": number(4), "space": "css_px" })),
+        // A gamepad's whole state, as it stood: set again on the same frame.
+        "gamepad" => {
+            let state: Value = serde_json::from_str(row[5].as_str()?).ok()?;
+
+            Some(json!({ "gamepad": row[3], "connected": row[4].as_u64() == Some(1), "id": state["id"], "buttons": state["buttons"], "axes": state["axes"] }))
+        }
         "touchstart" | "touchmove" | "touchend" | "touchcancel" => {
             let points: Vec<Value> = row.as_array()?[4..].chunks_exact(3).map(|point| json!({ "id": point[0], "x": point[1], "y": point[2] })).collect();
 
@@ -154,6 +164,7 @@ pub async fn save_run(host: &Arc<Host>, session: &Arc<Session>) -> Result<Value>
             "mousedown" => ("click", "clicks"),
             "wheel" => ("wheel turn", "wheel turns"),
             "touchstart" => ("touch", "touches"),
+            "gamepad" => ("gamepad change", "gamepad changes"),
             _ => continue,
         };
 

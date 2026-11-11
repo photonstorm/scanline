@@ -52,6 +52,7 @@ pub const TOOLS: &[Tool] = &[
             r#""level": { "type": "string", "enum": ["off", "observe"], "description": "off: hooks pass straight through. Default observe." }"#,
             r#""unmodified": { "type": "boolean", "description": "Change nothing the page can observe. Some readbacks stop working." }"#,
             r#""debug_key": { "type": "string", "description": "The key the person presses to freeze and capture. Default F9; \"none\" for no key." }"#,
+            r#""pointer_lock": { "type": "string", "enum": ["native", "shim"], "description": "shim: Scanline grants pointer lock itself and delivers relative mouse moves ({\"pointer\": \"move\", \"dx\": 12, \"dy\": -3}), for games played by mouse-look. Default native." }"#,
             r#""strip": { "type": "boolean", "description": "Open the control strip under the game's window at once. Default: it opens when request_human is called." }"#,
         ),
         read_only: false,
@@ -260,6 +261,9 @@ pub const TOOLS: &[Tool] = &[
             context!(),
             r#""recording": { "type": "string", "description": "With frame: make that frame of a flight recording a capture, instead of capturing the page." }"#,
             r#""frame": { "type": "integer" }"#,
+            r#""when": { "type": "object", "description": "Capture when something happens, not now: {error: true}, {frame_ms_over: 20}, {mark: \"name\"} or {expr: \"…\"}. The page runs until then; the frame that met it is captured, with the frames before it as a recording." }"#,
+            r#""flight_frames": { "type": "integer", "description": "With when: how many frames before it to keep. Default 30." }"#,
+            r#""timeout_s": { "type": "number", "description": "With when: how long to wait, in real seconds. Default 30, at most 45." }"#,
             r#""max_edge": { "type": "integer", "description": "Longest edge of the thumbnail returned. Default 512." }"#
         ),
         read_only: false,
@@ -483,6 +487,7 @@ pub const TOOLS: &[Tool] = &[
             session!(),
             r#""open": { "type": "boolean" }"#,
             r#""press": { "type": "string", "enum": ["debug", "pause", "step"] }"#,
+            r#""note": { "type": "string", "description": "Type a note into the strip and send it as the person would (only while the page is frozen after Debug). For testing." }"#,
             r#""output": { "type": "boolean", "description": "Also return a picture of the strip." }"#,
         ),
         read_only: false,
@@ -584,6 +589,19 @@ pub const TOOLS: &[Tool] = &[
             r#""value": { "description": "For set_control: the new value. For time with setScale: the scale." }"#,
             r#""checkpoint": { "type": "string", "description": "For restore: a handle such as chk_1." }"#,
             r#""action": { "type": "string", "enum": ["pause", "resume", "step", "setScale"], "description": "For time: which of the engine's own functions to call." }"#,
+        ),
+        read_only: false,
+    },
+    Tool {
+        name: "policy",
+        description: "Play reactively: a function you write runs in the page once a frame with the page's own state (what page(call: \"state\") shows; it can also read page globals) and returns the input to give: {keys_down: [...], events: [...], log: anything, stop: true}. The page steps a frame at a time until frames run out or it returns stop. Returns the end frame, what it logged, and the page's state.",
+        schema: schema!(
+            r#"["source"]"#,
+            session!(),
+            context!(),
+            r#""source": { "type": "string", "description": "A function: (state, info) => ({keys_down: state.obstacleAhead < 40 ? [\"Space\"] : []}). info is {frame, time, memory}: memory is an object of yours kept between frames." }"#,
+            r#""frames": { "type": "integer", "description": "At most this many frames. Default 120." }"#,
+            r#""timeout_s": { "type": "number", "description": "Real seconds allowed. Default 40." }"#,
         ),
         read_only: false,
     },
@@ -711,8 +729,18 @@ Input events (for input.events and step.events)
   Mouse      {\"pointer\": \"move\", \"x\": 100, \"y\": 80}
              {\"pointer\": \"down\", \"x\": 100, \"y\": 80, \"button\": \"left\"}
              {\"pointer\": \"up\", \"x\": 100, \"y\": 80}
+             {\"pointer\": \"move\", \"dx\": 12, \"dy\": -3}       a relative move, for a page that has
+             the pointer locked (mouse-look). Needs launch(pointer_lock: \"shim\").
   Wheel      {\"wheel\": {\"dx\": 0, \"dy\": 120}, \"x\": 100, \"y\": 80}
   Touch      {\"touch\": \"start\", \"points\": [{\"id\": 1, \"x\": 50, \"y\": 60}]}   also move, end, cancel
+  Gamepad    {\"gamepad\": 0, \"buttons\": {\"0\": true}, \"axes\": [1, 0]}    plug in pad 0 (if it is
+             not), hold button 0 and push the left stick right. What is set stays set.
+             {\"gamepad\": 0, \"buttons\": {\"0\": false}}                  let the button go
+             {\"gamepad\": 0, \"connected\": false}                       unplug it
+             Buttons take true, false or 0 to 1 (a trigger). Standard layout: 0 to 3 the
+             face buttons (0 at the bottom), 4 and 5 the bumpers, 6 and 7 the triggers,
+             8 Back, 9 Start, 10 and 11 the sticks pressed, 12 to 15 the d-pad (up,
+             down, left, right). Axes: left stick x and y, right stick x and y, −1 to 1.
 
 Key names are DOM names: ArrowLeft, ArrowRight, ArrowUp, ArrowDown, Space, Enter, Escape, Tab,
 Shift, Control, Alt, a–z (or KeyA), 0–9 (or Digit1), F1–F12.
@@ -720,6 +748,10 @@ Shift, Control, Alt, a–z (or KeyA), 0–9 (or Digit1), F1–F12.
 x and y are canvas pixels from the top-left of the canvas. Add \"space\": \"css_px\" for page coordinates.
 
 Playing
+  policy(source: \"s => ({keys_down: s.x < 200 ? ['ArrowRight'] : [], stop: s.x >= 200})\")
+      play by rule: your function runs in the page once a frame with the page's own state
+      (and can read its globals), and answers with the keys to hold, events to send,
+      something to log, and whether to stop. For reacting to what happens.
   step(frames: 40, hold: {keys_down: [\"ArrowRight\"]})
       hold Right for 40 frames. The key stays held on later steps until hold changes.
   step(frames: 20, events: [{\"at\": 12, \"key\": \"Space\", \"press\": true}])
@@ -756,8 +788,8 @@ Not built yet (planned, in this order):
   - GPU time per pass on WebGL.
   - Hand-off to a person, beyond what is built (request_human, the control strip, the Debug
     key, the flight recorder, runs, one owner of the input): a Debug hotkey that works when
-    some other application has the keyboard, annotation by clicking on the frozen frame, a
-    gamepad, and pointer lock.
+    some other application has the keyboard, and the browser's own pointer lock (a shim
+    stands in: launch(pointer_lock: \"shim\")).
   - Analysis, beyond what is built (pixel history, compare, lint, shader_analysis, the
     overdraw, wireframe, draw_id, depth and nan views, profile, geometry): stencil and mip
     views, and all of these but compare, lint and shader_analysis for WebGPU.
@@ -797,7 +829,7 @@ Known limits
     as the frame left them, so its replay is one step ahead. Render targets are read before
     the frame and do not have this problem. The replay check shows when it matters.
   - A run replays exactly only in a deterministic session, and only if the page takes
-    nothing else from outside: network responses are not recorded, nor a gamepad. A
+    nothing else from outside: network responses are not recorded. A
     deterministic session reads the canvas back every 30th frame to fingerprint it.
   - fast stepping and replay do not present the canvas after every frame. A page that
     relies on the browser clearing its drawing buffer between frames, instead of clearing it
@@ -1056,6 +1088,13 @@ level. Ask them, and let Scanline hold the evidence.
   When the person presses Debug (F9 with the page focused; debug does the same)
       the page freezes at that frame, the frame becomes a capture, and the frames before
       it are kept as a recording. The event names both: cap_N and rec_N.
+      After the press the person can mark the frozen picture: a click is a point, a drag
+      a box, and the strip takes a typed note. Each arrives as an annotation event in
+      canvas pixels: wait(kinds: [\"annotation\"]) or events.
+  capture(when: {error: true})
+      no person needed: the page runs until it raises an error, a frame takes too long
+      ({frame_ms_over: 20}), it marks an event ({mark: \"name\"}) or an expression becomes
+      true ({expr}). That frame becomes a capture and the frames before it a recording.
   recording(recording: \"rec_1\")
       which frames draw something different from the rest, which frames' pictures did not
       change, and a contact sheet of every frame. Start here for anything intermittent.

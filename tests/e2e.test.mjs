@@ -938,8 +938,58 @@ describe('the control strip and the input owner', () =>
         strip = await shown();
 
         assert.equal(strip.who, 'Nobody is driving');
-        assert.match(strip.instruction, /^Frozen at frame \d+\. The agent has this frame and the \d+ before it\.$/);
+        assert.match(strip.instruction, /^Frozen at frame \d+\. The agent has this frame and the \d+ before it\. Click the picture to point at something, drag to mark a box, or type a note\.$/);
         assert.equal(strip.recording, false);
+    });
+
+    test('after Debug the person marks the frozen frame: a point, a box and a note reach the agent', async () =>
+    {
+        await scanline('launch', server.url('fixtures/bugs/b13.html'), '--headless');
+        await scanline('request_human', 'Press Debug when the glass flickers');
+        await new Promise((resolve) => setTimeout(resolve, 400));
+        await scanline('strip', '--press', 'debug');
+
+        const pressed = await scanline('wait', '--request', 'req_1', '--json');
+        const cursor = pressed.json.data.events.at(-1).seq;
+
+        assert.equal(pressed.json.data.events.at(-1).kind, 'debug_pressed');
+
+        // The page counts the clicks it sees, to show that it sees none of these.
+        await scanline('eval', 'window.clicks = 0; addEventListener("mousedown", () => window.clicks++, true); 1');
+
+        // The strip invites the marks, and has a field for a note.
+        const invited = await scanline('strip', '--json');
+
+        assert.match(invited.json.data.shown.instruction, /Frozen at frame \d+\. .*Click the picture to point at something, drag to mark a box, or type a note\./);
+        assert.equal(invited.json.data.shown.note, true);
+
+        // A click, a drag, and a typed note, as the person would make them.
+        await scanline('input', '--events', '[{"pointer": "down", "x": 250, "y": 210}, {"pointer": "up", "x": 250, "y": 210}]', '--as_person', 'true');
+        await scanline('input', '--events', '[{"pointer": "down", "x": 100, "y": 50}, {"pointer": "move", "x": 180, "y": 120}, {"pointer": "up", "x": 180, "y": 120}]', '--as_person', 'true');
+        await scanline('strip', '--note', 'the crates show through here');
+
+        const marks = (await scanline('events', '--since', cursor, '--json')).json.data.events.filter((event) => event.kind === 'annotation').map((event) => event.data);
+        const frame = pressed.json.data.events.at(-1).data.frame;
+
+        assert.deepEqual(marks, [
+            { frame, space: 'canvas_px', x: 250, y: 210 },
+            { frame, space: 'canvas_px', x: 100, y: 50, w: 81, h: 71 },
+            { note: 'the crates show through here' }
+        ]);
+
+        // The page saw none of it, and the outline the person sees goes when the page moves on.
+        assert.equal((await scanline('eval', '[window.clicks, document.querySelectorAll("div[aria-hidden]").length].join()', '--json')).json.data.value, '0,1');
+
+        await scanline('step', '1');
+        await new Promise((resolve) => setTimeout(resolve, 400));
+
+        assert.equal((await scanline('eval', 'document.querySelectorAll("div[aria-hidden]").length', '--json')).json.data.value, 0);
+        assert.equal((await scanline('strip', '--json')).json.data.shown.note, false, 'the note field goes with the frozen frame');
+        assert.match((await scanline('strip', '--note', 'too late')).out, /The strip shows no note field just now/);
+
+        // A click is the page's again.
+        await scanline('input', '--events', '[{"pointer": "down", "x": 250, "y": 210}, {"pointer": "up", "x": 250, "y": 210}]');
+        assert.equal((await scanline('eval', 'window.clicks', '--json')).json.data.value, 1);
     });
 
     test('while the agent has the input, the person\'s is kept out of the page', async () =>
@@ -1252,6 +1302,196 @@ describe('live patches', () =>
 
         // No patch left the page with an error of its own making.
         assert.doesNotMatch((await scanline('console', '--level', 'error')).out, /not compatible|is invalid/);
+    });
+});
+
+describe('a gamepad', () =>
+{
+    const game = async () => JSON.parse((await scanline('eval', 'JSON.stringify(game)', '--json')).json.data.value);
+
+    test('a virtual pad is plugged in, held, let go and unplugged, and a run with it replays', async () =>
+    {
+        await scanline('launch', server.url('fixtures/matrix/game.html'), '--paused', '--headless', '--deterministic');
+        await scanline('step', '5');
+
+        const before = await game();
+
+        assert.equal(before.pads, 0);
+
+        // The left stick full right and half down, and the bottom face button held.
+        const sent = await scanline('input', '--events', '[{"gamepad": 0, "axes": [1, 0.5], "buttons": {"0": true}}]');
+
+        assert.equal(sent.code, 0, sent.out);
+        await scanline('step', '30');
+
+        const held = await game();
+
+        assert.equal(held.pads, 1, 'the page was told a gamepad was connected');
+        assert.equal(held.padName, 'Scanline Virtual Gamepad (STANDARD GAMEPAD)');
+        assert.equal(held.padHeld, 30, 'the button is held on every frame');
+        assert.ok(Math.abs(held.x - (before.x + 45)) < 1e-6, 'thirty frames at 90 pixels a second');
+        assert.ok(Math.abs(held.y - (before.y + 22.5)) < 1e-6);
+
+        // What the page is handed looks like the browser's own.
+        const shape = await scanline('eval', 'JSON.stringify((() => { const pad = navigator.getGamepads()[0]; return [pad instanceof Gamepad, pad.buttons[0] instanceof GamepadButton, pad.mapping, pad.buttons.length, pad.axes.length, pad.buttons[0].value, navigator.getGamepads.name, Function.prototype.toString.call(navigator.getGamepads)]; })())', '--json');
+
+        assert.deepEqual(JSON.parse(shape.json.data.value), [true, true, 'standard', 17, 4, 1, 'getGamepads', 'function getGamepads() { [native code] }']);
+
+        // Letting go stops it; unplugging tells the page.
+        await scanline('input', '--events', '[{"gamepad": 0, "buttons": {"0": false}, "axes": [0, 0]}]');
+        await scanline('step', '10');
+        await scanline('input', '--events', '[{"gamepad": 0, "connected": false}]');
+        await scanline('step', '2');
+
+        const after = await game();
+
+        assert.equal(after.pads, 0);
+        assert.equal(after.padHeld, 30);
+        assert.equal(after.x, held.x);
+
+        // The pad's states are in the run, and played again on the same frames.
+        const saved = await scanline('save_run');
+        const run = /^(run_\d+):/.exec(saved.out)?.[1];
+
+        assert.match(saved.out, /with 3 gamepad changes\./);
+
+        const replayed = await scanline('replay_run', run);
+
+        assert.match(replayed.out, /All \d+ fingerprints along the way match the original/);
+
+        const again = await game();
+
+        assert.deepEqual([again.x, again.y, again.padHeld, again.pads], [after.x, after.y, after.padHeld, after.pads]);
+
+        // It is one of the changes a page could observe, and says so.
+        assert.match((await scanline('status')).out, /navigator\.getGamepads is wrapped/);
+        assert.match((await scanline('input', '--events', '[{"gamepad": 9}]')).out, /A gamepad's index is 0 to 3/);
+    });
+});
+
+describe('playing by rule, and by mouse-look', () =>
+{
+    test('a policy reads the page each frame and answers with input, until it says stop', async () =>
+    {
+        await scanline('launch', server.url('fixtures/matrix/game.html'), '--paused', '--headless', '--deterministic');
+
+        // Hold Right until the square is past x = 100, then let go and stop. Log every 20th frame.
+        const played = await scanline('policy', "(s, info) => ({ keys_down: game.x < 100 ? ['ArrowRight'] : [], stop: game.x >= 100, log: info.frame % 20 === 0 ? Math.round(game.x) : undefined })", '--frames', '200', '--json');
+
+        assert.equal(played.code, 0, played.out);
+        assert.match(played.json.summary, /^Ran the policy for 41 frames, to frame 41: the policy returned stop\. No events sent; no keys held at the end\./);
+        assert.deepEqual(played.json.data.log, [{ frame: 0, value: 40 }, { frame: 20, value: 69 }, { frame: 40, value: 99 }]);
+
+        const x = (await scanline('eval', 'game.x', '--json')).json.data.value;
+
+        assert.ok(x >= 100 && x < 102, `the square stopped just past 100: ${x}`);
+
+        // The policy's own memory lasts from frame to frame, and events are real input.
+        const clicked = await scanline('policy', '(s, info) => { info.memory.n = (info.memory.n ?? 0) + 1; return { events: info.memory.n === 3 ? [{ pointer: "down", x: 50, y: 50 }, { pointer: "up", x: 50, y: 50 }] : [], stop: info.memory.n > 5 }; }', '--json');
+
+        assert.equal(clicked.json.data.events_sent, 2);
+        assert.equal((await scanline('eval', 'game.clicks', '--json')).json.data.value, 1);
+
+        // With the page protocol, the state the page provides is the first argument.
+        await scanline('navigate', server.url('fixtures/protocol/webgl2.html'));
+
+        const read = await scanline('policy', 's => ({ log: s.season, stop: true })', '--json');
+
+        assert.deepEqual(read.json.data.log.map((entry) => entry.value), ['summer']);
+        assert.match(read.json.summary, /Page state \(its own words\)/);
+
+        // A policy that is not a function, or that throws, says so.
+        assert.match((await scanline('policy', '42')).out, /The policy is not a function/);
+        assert.match((await scanline('policy', '() => { throw new Error("no"); }')).out, /The policy threw at frame .*: no\./);
+        assert.match((await scanline('policy')).out, /policy needs source/);
+    });
+
+    test('with the pointer-lock shim, a page that turns by how far the mouse moves can be driven', async () =>
+    {
+        await scanline('launch', server.url('fixtures/matrix/mouselook.html'), '--paused', '--headless', '--pointer_lock', 'shim');
+        await scanline('step', '2');
+
+        const game = async () => JSON.parse((await scanline('eval', 'JSON.stringify(game)', '--json')).json.data.value);
+
+        // Before the page has asked for the lock there is nothing to move.
+        assert.match((await scanline('input', '--events', '[{"pointer": "move", "dx": 10, "dy": 0}]')).out, /The page does not have the pointer locked/);
+
+        // A click: the page asks for the lock and is given it.
+        await scanline('input', '--events', '[{"pointer": "down", "x": 100, "y": 100}, {"pointer": "up", "x": 100, "y": 100}]');
+        await scanline('step', '1');
+        assert.deepEqual(await game(), { yaw: 160, pitch: 0, locked: true, moves: 0, changes: 1 });
+
+        // Two relative moves turn the view by their sum.
+        await scanline('input', '--events', '[{"pointer": "move", "dx": 40, "dy": -5}, {"pointer": "move", "dx": 10, "dy": 0}]');
+        await scanline('step', '1');
+        assert.deepEqual(await game(), { yaw: 210, pitch: -5, locked: true, moves: 2, changes: 1 });
+        assert.deepEqual((await scanline('pixels', '210', '100', '--json')).json.data.rgba8, [255, 255, 255, 255], 'the bar is drawn where the view now points');
+
+        // The page gives the lock up itself.
+        await scanline('input', '--events', '[{"key": "Escape", "press": true}]');
+        await scanline('step', '1');
+        assert.equal((await game()).locked, false);
+
+        // It is a change the page could observe, and is listed.
+        assert.match((await scanline('status')).out, /requestPointerLock is granted by the debugger without a gesture/);
+    });
+
+    test('without the shim a relative move is refused, with the reason', async () =>
+    {
+        await scanline('launch', server.url('fixtures/matrix/mouselook.html'), '--paused', '--headless');
+
+        const refused = await scanline('input', '--events', '[{"pointer": "move", "dx": 10, "dy": 0}]');
+
+        assert.equal(refused.code, 1);
+        assert.match(refused.out, /A relative move \(dx, dy\) needs the pointer-lock shim: launch with pointer_lock: "shim"/);
+        assert.doesNotMatch((await scanline('status')).out, /requestPointerLock is granted/);
+    });
+});
+
+describe('capture triggers', () =>
+{
+    test('a frame is captured when the page marks an event, raises an error or runs long, with the frames before it', async () =>
+    {
+        await scanline('launch', server.url('fixtures/protocol/webgl2.html'), '--paused', '--headless');
+        await scanline('step', '3');
+
+        // A mark the page makes once a second of its own time.
+        const marked = await scanline('capture', '--when', '{"mark": "second passed"}', '--json');
+
+        assert.equal(marked.code, 0, marked.out);
+        assert.match(marked.json.summary, /^Stopped at frame 62: the page raised "second passed"\. Paused\.\nTriggered at frame 62\. The page is frozen\. cap_\d+ is that frame; rec_\d+ holds the 59 frames up to it \(4–62\)\./);
+        assert.equal(marked.json.data.met, true);
+        assert.equal(marked.json.data.frames, 59);
+        assert.match(marked.json.summary, /Replay check: replaying the capture gives an image identical/);
+
+        // An error, thrown from a timer some frames from now.
+        await scanline('eval', 'setTimeout(() => { throw new Error("boom"); }, 400); 1');
+
+        const failed = await scanline('capture', '--when', '{"error": true}', '--flight_frames', '10', '--json');
+
+        assert.match(failed.json.summary, /^Stopped at frame \d+: an error was raised\. Paused\.\nTriggered at frame \d+/);
+        assert.ok(failed.json.data.frames >= 10 && failed.json.data.frames <= 40, 'the recorder keeps whole runs of 30, so between 10 and 40');
+
+        // A frame that takes far longer than the rest.
+        await scanline('eval', 'window.n = 0; const tick = () => { if (++window.n === 12) { let x = 0; for (let i = 0; i < 4e8; i++) { x += i; } } requestAnimationFrame(tick); }; requestAnimationFrame(tick); 1');
+
+        const slow = await scanline('capture', '--when', '{"frame_ms_over": 60}', '--json');
+
+        assert.match(slow.json.summary, /^Stopped at frame \d+: frame \d+ took [\d.]+ ms of CPU time \(over 60\)\. Paused\.\nTriggered at frame/);
+
+        // The agent's ownership of the input is not disturbed, and each capture is announced.
+        const events = await scanline('events', '--json');
+
+        assert.equal(events.json.data.events.filter((event) => event.kind === 'capture_ready').length, 3);
+        assert.equal(events.json.data.events.filter((event) => event.kind === 'debug_pressed').length, 0);
+
+        // A condition that is never met captures nothing, and says so.
+        const never = await scanline('capture', '--when', '{"mark": "never"}', '--timeout_s', '1', '--json');
+
+        assert.equal(never.json.data.met, false);
+        assert.match(never.json.summary, /^Nothing was captured: the condition was not met\./);
+        assert.match((await scanline('record', 'status')).out + (await scanline('status')).out, /Paused|paused/);
+        assert.match((await scanline('capture', '--when', '{"nonsense": 1}')).out, /capture\(when\) takes one of/);
     });
 });
 

@@ -133,6 +133,11 @@ pub struct State {
     pub patches: std::collections::BTreeMap<String, (Instance, i64)>,
     /// States the page saved through the page protocol: the handle shown, the state as the
     /// page gave it, and the frame it was saved at.
+    /// Whether the person can mark the frozen frame just now: after their Debug press,
+    /// until the page moves on.
+    pub annotating: bool,
+    /// The frame that is frozen for marking.
+    pub annotating_frame: u64,
     pub checkpoints: HashMap<String, (String, u64)>,
     pub next_checkpoint: u64,
     worker_urls: HashMap<String, String>,
@@ -144,6 +149,8 @@ pub struct SessionOptions {
     pub url: String,
     /// The key that means "freeze and capture now" (a KeyboardEvent code or key), or "none".
     pub debug_key: Option<String>,
+    /// Whether the probe grants pointer lock itself and delivers relative moves ("shim").
+    pub pointer_lock_shim: bool,
     pub profile: Profile,
     pub headless: bool,
     pub width: u32,
@@ -246,6 +253,7 @@ impl Session {
             "startPaused": options.start_paused,
             "deterministic": options.deterministic.map(|(seed, fixed_dt)| json!({ "seed": seed, "fixedDt": fixed_dt })),
             "debugKey": options.debug_key.clone().unwrap_or_else(|| "F9".to_string()),
+            "pointerLock": if options.pointer_lock_shim { "shim" } else { "native" },
             "probeVersion": env!("CARGO_PKG_VERSION"),
         });
 
@@ -1037,10 +1045,14 @@ fn handle(session: &Arc<Session>, event: Event) {
             let mut state = session.state.lock().unwrap();
 
             if state.strip.as_deref() == event.session.as_deref() {
-                if let Some(action) = serde_json::from_str::<Value>(params["payload"].as_str().unwrap_or(""))
-                    .ok()
-                    .and_then(|payload| payload["action"].as_str().map(str::to_string))
-                {
+                if let Some(action) = serde_json::from_str::<Value>(params["payload"].as_str().unwrap_or("")).ok().and_then(|payload| {
+                    // A note carries its text along with it.
+                    match (payload["action"].as_str(), payload["text"].as_str()) {
+                        (Some("note"), Some(text)) => Some(format!("note:{text}")),
+                        (Some(action), _) => Some(action.to_string()),
+                        _ => None,
+                    }
+                }) {
                     state.actions.push_back(action);
                     drop(state);
                     session.debug.notify_one();

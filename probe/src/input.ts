@@ -31,6 +31,12 @@ function push (row: Row): void
     }
 }
 
+// Input that does not arrive as a DOM event (a gamepad's state) is recorded by whoever sees it.
+export function recordInput (row: Row): void
+{
+    push(row);
+}
+
 function modifiers (event: KeyboardEvent | MouseEvent): number
 {
     return (event.altKey ? 1 : 0) | (event.ctrlKey ? 2 : 0) | (event.metaKey ? 4 : 0) | (event.shiftKey ? 8 : 0);

@@ -9,7 +9,8 @@
 // another window does.
 
 import { config } from './config';
-import { currentFrame } from './clock/gate';
+import { currentFrame, onFrameBegin, onPauseChange } from './clock/gate';
+import { allContexts } from './contexts';
 import { G, nAddEventListener, nativeNow } from './natives';
 import { emit, expose } from './transport';
 
@@ -50,6 +51,216 @@ export function installHandoff (): void
     }, true);
 
     installOwnership();
+    installAnnotation();
+}
+
+// ---- Marking the frozen frame ----
+//
+// Once Debug has frozen the page, the person can show the agent what they mean: a click
+// marks a point, a drag marks a box. The marks are taken here, before the page's own
+// listeners, and reach the agent as canvas pixels. A thin outline shows the person what
+// they marked; it is removed, with the listeners' effect, as soon as the page moves on.
+
+let annotating = false;
+let outline: any = null;
+
+function canvasPoint (event: any): { x: number; y: number; canvas: any } | null
+{
+    // The largest canvas with a rendering context: the one the person is looking at.
+    let canvas: any = null;
+
+    for (const info of allContexts())
+    {
+        if (info.canvas && typeof info.canvas.getBoundingClientRect === 'function' && (!canvas || info.canvas.width * info.canvas.height > canvas.width * canvas.height))
+        {
+            canvas = info.canvas;
+        }
+    }
+
+    if (!canvas)
+    {
+        return null;
+    }
+
+    const rect = canvas.getBoundingClientRect();
+
+    if (rect.width <= 0 || rect.height <= 0)
+    {
+        return null;
+    }
+
+    const clamp = (value: number, most: number): number => G.Math.max(0, G.Math.min(most - 1, G.Math.floor(value)));
+
+    return {
+        x: clamp((event.clientX - rect.left) * canvas.width / rect.width, canvas.width),
+        y: clamp((event.clientY - rect.top) * canvas.height / rect.height, canvas.height),
+        canvas
+    };
+}
+
+function show (left: number, top: number, width: number, height: number): void
+{
+    try
+    {
+        if (!outline)
+        {
+            outline = G.document.createElement('div');
+            outline.setAttribute('aria-hidden', 'true');
+            outline.style.cssText = 'position:fixed;z-index:2147483647;pointer-events:none;border:2px solid #f2b84b;box-shadow:0 0 0 1px rgba(0,0,0,0.7);box-sizing:border-box;';
+            G.document.documentElement.appendChild(outline);
+        }
+
+        outline.style.left = `${left}px`;
+        outline.style.top = `${top}px`;
+        outline.style.width = `${G.Math.max(6, width)}px`;
+        outline.style.height = `${G.Math.max(6, height)}px`;
+        outline.style.borderRadius = width < 6 && height < 6 ? '50%' : '0';
+    }
+    catch
+    {
+        // The mark still reaches the agent.
+    }
+}
+
+function stopAnnotating (): void
+{
+    annotating = false;
+
+    if (outline)
+    {
+        outline.remove();
+        outline = null;
+    }
+}
+
+function installAnnotation (): void
+{
+    let from: { x: number; y: number; clientX: number; clientY: number } | null = null;
+
+    // The page is not to see the event. A pointer event's default is left alone: to
+    // prevent it would stop the browser sending the mouse events the marks are read from.
+    const take = (event: any, prevent = true): boolean =>
+    {
+        if (!annotating || !event.isTrusted)
+        {
+            return false;
+        }
+
+        event.stopImmediatePropagation();
+
+        if (prevent && event.cancelable)
+        {
+            event.preventDefault();
+        }
+
+        return true;
+    };
+
+    const listen = (type: string, handler: (event: any) => void): void =>
+    {
+        nAddEventListener.call(G, type, handler, { capture: true, passive: false });
+    };
+
+    listen('mousedown', (event) =>
+    {
+        if (!take(event) || event.button !== 0)
+        {
+            return;
+        }
+
+        const at = canvasPoint(event);
+
+        from = at ? { x: at.x, y: at.y, clientX: event.clientX, clientY: event.clientY } : null;
+
+        if (from)
+        {
+            show(event.clientX - 3, event.clientY - 3, 0, 0);
+        }
+    });
+
+    listen('mousemove', (event) =>
+    {
+        if (take(event) && from)
+        {
+            show(G.Math.min(from.clientX, event.clientX), G.Math.min(from.clientY, event.clientY), G.Math.abs(event.clientX - from.clientX), G.Math.abs(event.clientY - from.clientY));
+        }
+    });
+
+    listen('mouseup', (event) =>
+    {
+        if (!take(event) || !from || event.button !== 0)
+        {
+            return;
+        }
+
+        const to = canvasPoint(event);
+        const start = from;
+
+        from = null;
+
+        if (!to)
+        {
+            return;
+        }
+
+        // A drag of a few pixels or more is a box; less is a point.
+        if (G.Math.abs(event.clientX - start.clientX) < 4 && G.Math.abs(event.clientY - start.clientY) < 4)
+        {
+            emit('annotation', { x: start.x, y: start.y, frame: currentFrame(), space: 'canvas_px' });
+        }
+        else
+        {
+            emit('annotation', {
+                x: G.Math.min(start.x, to.x),
+                y: G.Math.min(start.y, to.y),
+                w: G.Math.abs(to.x - start.x) + 1,
+                h: G.Math.abs(to.y - start.y) + 1,
+                frame: currentFrame(),
+                space: 'canvas_px'
+            });
+        }
+    });
+
+    for (const type of ['click', 'dblclick', 'contextmenu'])
+    {
+        listen(type, (event) => { take(event); });
+    }
+
+    for (const type of ['pointerdown', 'pointerup', 'pointermove'])
+    {
+        listen(type, (event) => { take(event, false); });
+    }
+
+    // The frame the marks were about is gone once the page moves, by a step or a resume.
+    onPauseChange((paused) =>
+    {
+        if (!paused)
+        {
+            stopAnnotating();
+        }
+    });
+
+    onFrameBegin(() =>
+    {
+        if (annotating || outline)
+        {
+            stopAnnotating();
+        }
+    });
+
+    expose('annotate.start', () =>
+    {
+        annotating = true;
+
+        return { annotating };
+    });
+
+    expose('annotate.stop', () =>
+    {
+        stopAnnotating();
+
+        return { annotating };
+    });
 }
 
 // ---- One owner of the input ----

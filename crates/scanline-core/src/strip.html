@@ -67,6 +67,31 @@
 
     body[data-owner="human"] #say { color: var(--text); }
 
+    #mark
+    {
+        display: flex;
+        flex: none;
+        gap: 6px;
+        margin: 0;
+    }
+
+    #mark[hidden] { display: none; }
+
+    #note
+    {
+        width: 220px;
+        height: 30px;
+        padding: 0 8px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: #0f1115;
+        color: var(--text);
+        font: inherit;
+        user-select: text;
+    }
+
+    #note:focus-visible { outline: 2px solid var(--agent); outline-offset: 1px; }
+
     #frame
     {
         flex: none;
@@ -141,6 +166,10 @@
 <body data-owner="" data-recording="false">
     <div id="who"><i></i><span id="who-text">Nobody is driving</span></div>
     <div id="say" title=""></div>
+    <form id="mark" hidden>
+        <input id="note" type="text" maxlength="400" autocomplete="off" placeholder="A note for the agent" aria-label="A note for the agent">
+        <button id="send" type="submit">Send</button>
+    </form>
     <div id="rec"><i></i>REC</div>
     <div id="frame">frame 0</div>
     <button id="pause" type="button">Pause</button>
@@ -150,11 +179,11 @@
     // What the person at the keyboard sees while they and the agent share a page: who has
     // the input, what the agent asked for, and the Debug button. The host tells this page
     // what to show (update) and is told what was pressed (the scanlineStrip binding).
-    const send = (action) =>
+    const send = (action, text) =>
     {
         if (typeof window.scanlineStrip === 'function')
         {
-            window.scanlineStrip(JSON.stringify({ action }));
+            window.scanlineStrip(JSON.stringify({ action, text }));
         }
     };
 
@@ -165,6 +194,20 @@
     $('debug').addEventListener('click', () => send('debug'));
     $('step').addEventListener('click', () => send('step'));
     $('pause').addEventListener('click', () => send(paused ? 'resume' : 'pause'));
+
+    // A note about the frozen frame, typed here and sent to the agent.
+    $('mark').addEventListener('submit', (event) =>
+    {
+        event.preventDefault();
+
+        const text = $('note').value.trim();
+
+        if (text)
+        {
+            send('note', text);
+            $('note').value = '';
+        }
+    });
 
     // The key works here too, for when this window has the keyboard instead of the game.
     addEventListener('keydown', (event) =>
@@ -195,6 +238,7 @@
         $('say').textContent = say;
         $('say').title = say;
         $('frame').textContent = `frame ${state.frame ?? 0}`;
+        $('mark').hidden = !state.annotate;
         $('pause').textContent = paused ? 'Resume' : 'Pause';
         $('step').disabled = !paused;
         $('debug').querySelector('kbd').textContent = window.debugKey === 'none' ? '' : window.debugKey;
@@ -210,6 +254,7 @@
         instruction: $('say').textContent,
         frame: $('frame').textContent,
         recording: document.body.dataset.recording === 'true',
+        note: !$('mark').hidden,
         pause: $('pause').textContent,
         step_enabled: !$('step').disabled
     });

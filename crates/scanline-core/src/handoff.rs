@@ -144,7 +144,7 @@ pub async fn take_control(session: &Arc<Session>, params: &Value) -> Result<Valu
 
 /// Tells the control strip what to show: who is driving, what was asked, where the page is.
 pub async fn refresh(session: &Arc<Session>) {
-    let (owner, instruction, recording, open) = {
+    let (owner, mut instruction, recording, open, mut annotating, frozen_at) = {
         let state = session.state.lock().unwrap();
 
         (
@@ -152,6 +152,8 @@ pub async fn refresh(session: &Arc<Session>) {
             state.request.as_ref().map(|request| request.instruction.clone()).or(state.strip_note.clone()),
             state.recorder.is_some(),
             state.strip.is_some(),
+            state.annotating,
+            state.annotating_frame,
         )
     };
 
@@ -162,6 +164,20 @@ pub async fn refresh(session: &Arc<Session>) {
     let Ok(top) = session.top() else { return };
     let Ok(status) = session.probe(&top, "status", json!({}), SHORT).await else { return };
 
+    // Marks are about the frozen frame: once the page has moved on they are over, and so
+    // is the invitation to make them.
+    if annotating && (status["paused"] != true || status["frame"].as_u64() != Some(frozen_at)) {
+        let mut state = session.state.lock().unwrap();
+
+        state.annotating = false;
+        state.strip_note = None;
+        annotating = false;
+
+        if state.request.is_none() {
+            instruction = None;
+        }
+    }
+
     let shown = json!({
         "owner": owner,
         "instruction": instruction,
@@ -169,6 +185,7 @@ pub async fn refresh(session: &Arc<Session>) {
         "frame": status["frame"],
         "paused": status["paused"],
         "debug_key": status["debugKey"],
+        "annotate": annotating,
     });
 
     let _ = session.strip_eval(&format!("update({shown})")).await;
@@ -196,6 +213,13 @@ pub async fn watch(host: Arc<Host>, session: Arc<Session>) {
                 "pause" => crate::commands::pause(&session).await.map(|_| ()),
                 "resume" => crate::commands::resume(&session, &json!({})).await.map(|_| ()),
                 "step" => crate::commands::step(&session, &json!({ "frames": 1 })).await.map(|_| ()),
+                // A note the person typed about the frozen frame.
+                note if note.starts_with("note:") => {
+                    session.queue("annotation", json!({ "note": note[5..].chars().take(400).collect::<String>() }));
+                    session.state.lock().unwrap().strip_note = Some("Your note was sent to the agent. You can send more, or mark the picture.".into());
+
+                    Ok(())
+                }
                 _ => Ok(()),
             };
 
@@ -221,7 +245,25 @@ pub async fn strip(session: &Arc<Session>, params: &Value) -> Result<Value> {
         return Ok(result("The control strip is not open. It opens when request_human is called; strip(open: true) opens it now.", json!({ "open": false })));
     }
 
-    let mut lines = Vec::new();
+    let mut lines: Vec<String> = Vec::new();
+
+    // Type a note and send it, as the person would.
+    if let Some(note) = params["note"].as_str() {
+        let sent = session
+            .strip_eval(&format!(
+                "(() => {{ const form = document.getElementById('mark'); if (form.hidden) {{ return false; }} document.getElementById('note').value = {}; form.requestSubmit(); return true; }})()",
+                Value::String(note.to_string())
+            ))
+            .await;
+
+        if sent != Some(json!(true)) {
+            bail!("The strip shows no note field just now. It is there once the person has pressed Debug, while the page stays frozen.");
+        }
+
+        lines.push("Typed a note into the strip and sent it, as the person would. It arrives as an annotation event.".to_string());
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        refresh(session).await;
+    }
 
     if let Some(button) = params["press"].as_str() {
         if !["debug", "pause", "step"].contains(&button) {
@@ -288,6 +330,9 @@ pub async fn debug(host: &Arc<Host>, session: &Arc<Session>, params: &Value) -> 
         None => choose_context(session, params).await?,
     };
 
+    // A press by the person, or a trigger the agent set (capture(when)).
+    let triggered = params["by"] == "trigger";
+    let word = if triggered { "Triggered" } else { "Debug" };
     let recording = session.probe(&context.instance, "record.status", json!({}), SHORT).await.is_ok_and(|status| status["recording"] == true);
     let mut data = json!({ "frame": frame, "request": request.as_ref().map(|request| request.id.clone()), "by": params["by"].as_str().unwrap_or("command") });
     let mut lines = Vec::new();
@@ -342,7 +387,7 @@ pub async fn debug(host: &Arc<Host>, session: &Arc<Session>, params: &Value) -> 
         data["first_frame"] = marks[0]["frame"].clone();
 
         lines.push(format!(
-            "Debug at frame {frame}. The page is frozen. {} is that frame; {handle} holds the {} frames up to it ({}–{}).",
+            "{word} at frame {frame}. The page is frozen. {} is that frame; {handle} holds the {} frames up to it ({}–{}).",
             value["data"]["capture"].as_str().unwrap_or("?"),
             marks.len(),
             marks[0]["frame"],
@@ -355,10 +400,17 @@ pub async fn debug(host: &Arc<Host>, session: &Arc<Session>, params: &Value) -> 
         // Nothing was recording, so the frames before the press are gone. The next one is taken.
         value = capture::capture(host, session, params).await?;
 
-        lines.push(format!(
-            "Debug at frame {frame}. The page is frozen. The flight recorder was not running, so {} is the frame after the press, not the one the person saw. Call request_human first to keep the frames before it.",
-            value["data"]["capture"].as_str().unwrap_or("?")
-        ));
+        lines.push(if triggered {
+            format!(
+                "Triggered at frame {frame}. The page is frozen. The flight recorder could not run, so {} is the frame after the one that met the condition.",
+                value["data"]["capture"].as_str().unwrap_or("?")
+            )
+        } else {
+            format!(
+                "Debug at frame {frame}. The page is frozen. The flight recorder was not running, so {} is the frame after the press, not the one the person saw. Call request_human first to keep the frames before it.",
+                value["data"]["capture"].as_str().unwrap_or("?")
+            )
+        });
     }
 
     data["capture"] = value["data"]["capture"].clone();
@@ -372,19 +424,40 @@ pub async fn debug(host: &Arc<Host>, session: &Arc<Session>, params: &Value) -> 
         data["annotation"] = Value::Object(annotation);
     }
 
-    {
+    if triggered {
+        // Nobody pressed anything: the input stays with whoever had it.
+        session.queue("capture_ready", data.clone());
+    } else {
         let mut state = session.state.lock().unwrap();
 
         state.owner = String::new();
+        state.annotating = true;
+        state.annotating_frame = frame.as_u64().unwrap_or(0);
         state.strip_note = Some(match data["recording"].as_str() {
             Some(_) => {
-                format!("Frozen at frame {frame}. The agent has this frame and the {} before it.", data["frames"].as_u64().unwrap_or(1).saturating_sub(1))
+                format!(
+                    "Frozen at frame {frame}. The agent has this frame and the {} before it. Click the picture to point at something, drag to mark a box, or type a note.",
+                    data["frames"].as_u64().unwrap_or(1).saturating_sub(1)
+                )
             }
-            None => format!("Frozen at frame {frame}. The agent has the frame after it."),
+            None => format!(
+                "Frozen at frame {frame}. The agent has the frame after it. Click the picture to point at something, drag to mark a box, or type a note."
+            ),
         });
     }
 
-    session.queue("debug_pressed", data.clone());
+    // The person can now show what they mean on the frozen picture.
+    if !triggered && session.probe(&context.instance, "annotate.start", json!({}), SHORT).await.is_ok() {
+        lines.push(
+            "The person can now mark the frozen frame: a click on the picture is a point, a drag a box, and the strip takes a typed note. Each arrives as an annotation event, in canvas pixels: wait(kinds: [\"annotation\"]) or events."
+                .to_string(),
+        );
+    }
+
+    if !triggered {
+        session.queue("debug_pressed", data.clone());
+    }
+
     refresh(session).await;
 
     lines.push(value["summary"].as_str().unwrap_or("").to_string());
@@ -394,6 +467,65 @@ pub async fn debug(host: &Arc<Host>, session: &Arc<Session>, params: &Value) -> 
     out["images"] = value["images"].clone();
 
     Ok(out)
+}
+
+/// Capture when something happens (CAP-3): the page runs until the condition is met, with
+/// the flight recorder on, and the frame that met it is captured with the frames before it.
+pub async fn capture_when(host: &Arc<Host>, session: &Arc<Session>, params: &Value) -> Result<Value> {
+    let when = &params["when"];
+    let known = ["error", "frame_ms_over", "event", "mark", "expr", "frame", "frames", "ms"];
+
+    if !when.is_object() || !when.as_object().is_some_and(|object| object.keys().any(|key| known.contains(&key.as_str()))) {
+        bail!(
+            "capture(when) takes one of {{error: true}} (the page raises an error), {{frame_ms_over: n}} (a frame takes longer than n ms), {{mark: \"name\"}} (the page marks an event), {{expr: \"…\"}} (an expression becomes true), {{frames: n}}."
+        );
+    }
+
+    let keep = params["flight_frames"].as_u64().unwrap_or(30).clamp(1, 600);
+    let context = choose_context(session, params).await?;
+
+    // The frames up to the one that meets the condition are kept, as for a Debug press.
+    let recorder = session.probe(&context.instance, "record.start", json!({ "context": context.local, "frames": keep }), SHORT).await;
+
+    if recorder.is_ok() {
+        session.state.lock().unwrap().recorder = Some(context.clone());
+    }
+
+    let ran = crate::commands::run_until(session, &json!({ "until": when, "timeout_s": params["timeout_s"], "observe": { "state": false } })).await;
+
+    let met = match &ran {
+        Ok(value) => value["data"]["met"] == true,
+        Err(_) => false,
+    };
+
+    if !met {
+        // Nothing to capture: the recorder is put away and the page left paused.
+        let _ = session.probe(&context.instance, "record.stop", json!({}), SHORT).await;
+
+        session.state.lock().unwrap().recorder = None;
+
+        let ran = ran?;
+
+        return Ok(result(
+            format!(
+                "Nothing was captured: the condition was not met. {}\nCall capture(when) again to keep waiting, or capture() for the frame as it is.",
+                ran["summary"].as_str().unwrap_or("")
+            ),
+            json!({ "met": false, "frame": ran["data"]["frame"] }),
+        ));
+    }
+
+    let mut args = params.clone();
+
+    args["by"] = json!("trigger");
+
+    let mut value = debug(host, session, &args).await?;
+    let stopped = ran.map(|value| value["summary"].as_str().unwrap_or("").lines().next().unwrap_or("").to_string()).unwrap_or_default();
+
+    value["summary"] = json!(format!("{stopped}\n{}", value["summary"].as_str().unwrap_or("")));
+    value["data"]["met"] = json!(true);
+
+    Ok(value)
 }
 
 fn the_recording(host: &Host, params: &Value) -> Result<(String, Value)> {

@@ -88,6 +88,13 @@ pub async fn launch(host: &Arc<Host>, params: &Value) -> Result<Value> {
         deterministic,
         browser: params["browser"].as_str().map(Into::into),
         debug_key: params["debug_key"].as_str().map(str::to_string),
+        pointer_lock_shim: match params["pointer_lock"].as_str() {
+            None | Some("native") => false,
+            Some("shim") => true,
+            Some(other) => {
+                bail!("pointer_lock is native (the browser's own, the default) or shim (Scanline grants it and delivers relative moves), not \"{other}\".")
+            }
+        },
     };
 
     let session = Session::launch(id.clone(), host.artefacts().join("sessions").join(&id), options).await?;
@@ -445,6 +452,138 @@ pub async fn step(session: &Arc<Session>, params: &Value) -> Result<Value> {
     Ok(value)
 }
 
+/// A policy (`gfx_policy`): a function of the agent's, run in the page once a frame with
+/// the page's own state, whose answer is the input to give. The page is stepped a frame
+/// at a time, and the input is sent as real input between frames.
+pub async fn policy(session: &Arc<Session>, params: &Value) -> Result<Value> {
+    // A source that is not text (a bare number typed at a shell) is still shown to the page, which says what is wrong with it.
+    let given = match &params["source"] {
+        Value::String(text) => text.clone(),
+        Value::Null => String::new(),
+        other => other.to_string(),
+    };
+    let source = Some(given.trim()).filter(|source| !source.is_empty()).ok_or_else(|| {
+        anyhow!(
+            "policy needs source: a function of the page's state that returns input, for example \"s => ({{keys_down: s.obstacleAhead < 40 ? ['Space'] : []}})\". It may also return events, log (kept for you) and stop: true."
+        )
+    })?;
+    let frames = params["frames"].as_u64().unwrap_or(120).clamp(1, 5000);
+    let top = session.top()?;
+    let convert = Converter::new(session, params["context"].as_str()).await;
+    let console_before = session.state.lock().unwrap().console_seq;
+    let started = std::time::Instant::now();
+    let limit = Duration::from_secs_f64(params["timeout_s"].as_f64().unwrap_or(40.0).clamp(1.0, 45.0));
+
+    session.probe_all("pause", json!({}), SHORT).await;
+
+    let mut held: Option<Vec<String>> = None;
+    let mut log: Vec<(Value, Value)> = Vec::new();
+    let (mut ran, mut sent, mut logged) = (0u64, 0u64, 0u64);
+    let mut ended = "ran every frame asked for";
+    let mut frame = Value::Null;
+    let mut first = true;
+
+    while ran < frames {
+        let decision = session.probe(&top, "policy.step", json!({ "source": source, "reset": first }), SHORT).await.map_err(|error| {
+            anyhow!(
+                "The policy threw at frame {}: {error}. The page is paused there; {ran} frames had run.",
+                if frame.is_null() { "the start".to_string() } else { frame.to_string() }
+            )
+        })?;
+
+        first = false;
+
+        if !decision["log"].is_null() {
+            logged += 1;
+
+            if log.len() < 40 {
+                log.push((decision["frame"].clone(), decision["log"].clone()));
+            }
+        }
+
+        // Held keys change only when the policy's answer does. Its last answer counts
+        // too, so a policy can let go as it stops.
+        if let Some(keys) = decision["keys_down"].as_array() {
+            let wanted: Vec<String> = keys.iter().filter_map(Value::as_str).map(str::to_string).collect();
+
+            if held.as_ref() != Some(&wanted) {
+                hold(session, &json!({ "keys_down": wanted })).await?;
+                held = Some(wanted);
+            }
+        }
+
+        for event in decision["events"].as_array().into_iter().flatten() {
+            dispatch(session, event, &convert).await?;
+            sent += 1;
+        }
+
+        if decision["stop"] == true {
+            ended = "the policy returned stop";
+            frame = decision["frame"].clone();
+            break;
+        }
+
+        let stepped = session.probe_all("step", json!({ "frames": 1, "fast": true }), Duration::from_secs(15)).await;
+        let stop = primary(&stepped)?;
+
+        frame = stop["frame"].clone();
+        ran += 1;
+
+        if stop["reason"] == "idle" {
+            ended = "the page has nothing more scheduled";
+            break;
+        }
+
+        if started.elapsed() > limit {
+            ended = "the time allowed ran out";
+            break;
+        }
+    }
+
+    session.settle().await;
+
+    let mut lines = vec![format!(
+        "Ran the policy for {ran} frame{}, to frame {frame}: {ended}. {} sent{}.",
+        if ran == 1 { "" } else { "s" },
+        match sent {
+            0 => "No events".to_string(),
+            1 => "1 event".to_string(),
+            more => format!("{more} events"),
+        },
+        match &held {
+            Some(keys) if !keys.is_empty() => format!("; still holding {}", keys.join(", ")),
+            Some(_) => "; no keys held at the end".to_string(),
+            None => String::new(),
+        }
+    )];
+
+    if !log.is_empty() {
+        lines.push(format!(
+            "What it logged (frame: value){}:",
+            if logged > log.len() as u64 { format!(", the first {} of {logged}", log.len()) } else { String::new() }
+        ));
+        lines.extend(log.iter().map(|(at, value)| format!("  {at}: «{}»", page_text(&value.to_string(), 160))));
+    }
+
+    let errors = error_lines(session, console_before);
+
+    if !errors.is_empty() {
+        lines.push(format!("{} error{} raised (page text follows):", errors.len(), if errors.len() == 1 { "" } else { "s" }));
+        lines.extend(errors.iter().take(3).map(|text| format!("  «{text}»")));
+    }
+
+    let mut value = result(
+        "",
+        json!({ "frames": ran, "frame": frame, "ended": ended, "events_sent": sent, "holding": held, "log": log.iter().map(|(at, entry)| json!({ "frame": at, "value": entry })).collect::<Vec<_>>(), "errors": errors }),
+    );
+
+    page_state(session, &params["observe"], &mut value, &mut lines).await;
+    observe(session, &params["observe"], &mut value, &mut lines).await?;
+    value["summary"] = json!(lines.join("\n"));
+
+    Ok(value)
+}
+
 /// What the page says of itself through the page protocol, when it says anything. It comes
 /// with every step and run unless observe says state: false.
 async fn page_state(session: &Arc<Session>, wanted: &Value, value: &mut Value, lines: &mut Vec<String>) {
@@ -715,6 +854,26 @@ async fn dispatch(session: &Arc<Session>, event: &Value, convert: &Converter) ->
 }
 
 async fn dispatch_now(session: &Arc<Session>, event: &Value, convert: &Converter) -> Result<()> {
+    // A gamepad has no input events of the browser's to send: the probe holds its state and
+    // hands it to the page when the page asks.
+    if !event["gamepad"].is_null() {
+        let index = event["gamepad"]
+            .as_u64()
+            .ok_or_else(|| anyhow!("gamepad is the pad's index, 0 to 3: {{\"gamepad\": 0, \"buttons\": {{\"0\": true}}, \"axes\": [1, 0]}}."))?;
+        let top = session.top()?;
+
+        session
+            .probe(
+                &top,
+                "gamepad.set",
+                json!({ "index": index, "id": event["id"], "connected": event["connected"], "buttons": event["buttons"], "axes": event["axes"] }),
+                SHORT,
+            )
+            .await?;
+
+        return Ok(());
+    }
+
     if let Some(name) = event["key"].as_str() {
         if event["press"] == true {
             key_event(session, name, true).await?;
@@ -723,6 +882,26 @@ async fn dispatch_now(session: &Arc<Session>, event: &Value, convert: &Converter
             let down = event["down"].as_bool().ok_or_else(|| anyhow!("A key event needs down: true or false, or press: true."))?;
 
             key_event(session, name, down).await?;
+        }
+
+        return Ok(());
+    }
+
+    // A relative move, for a page that has the pointer locked and reads how far it moved.
+    if event["pointer"] == "move" && (!event["dx"].is_null() || !event["dy"].is_null()) {
+        let top = session.top()?;
+        let reply = session.probe(&top, "pointer.moveBy", json!({ "dx": event["dx"], "dy": event["dy"] }), SHORT).await?;
+
+        if reply["shim"] != true {
+            bail!(
+                "A relative move (dx, dy) needs the pointer-lock shim: launch with pointer_lock: \"shim\". The browser has no way to inject one under its own pointer lock."
+            );
+        }
+
+        if reply["locked"] != true {
+            bail!(
+                "The page does not have the pointer locked. A game asks for it with requestPointerLock(), usually on a click: click the canvas first, then send relative moves."
+            );
         }
 
         return Ok(());

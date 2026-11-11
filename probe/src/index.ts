@@ -24,6 +24,9 @@ import { COUNTERS, IDL_VERSION } from './hooks/generated';
 import { hub, totals, type Counters } from './hooks/hub';
 import { coverage, installHooks } from './hooks/install';
 import { installImage } from './image';
+import { installGamepads } from './gamepad';
+import { installPointerLock } from './pointerlock';
+import { installPolicy } from './policy';
 import { installInputRecorder } from './input';
 import { installInventory } from './inventory';
 import { installMasquerade } from './masquerade';
@@ -147,6 +150,9 @@ function boot (): void
     installProtocol();
     installAdapters();
     installInputRecorder();
+    installGamepads();
+    installPointerLock();
+    installPolicy();
     installErrors();
     installAudio();
 

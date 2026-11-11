@@ -42,7 +42,10 @@ gl.useProgram(program);
 const rect = gl.getUniformLocation(program, 'rect');
 const colour = gl.getUniformLocation(program, 'colour');
 const keys = new Set();
-const game = window.game = { frame: 0, x: 40, y: 110, sparks: [], clicks: 0, time: 0 };
+const game = window.game = { frame: 0, x: 40, y: 110, sparks: [], clicks: 0, time: 0, pads: 0, padHeld: 0 };
+
+addEventListener('gamepadconnected', (event) => { game.pads++; game.padName = event.gamepad.id; });
+addEventListener('gamepaddisconnected', () => { game.pads--; });
 
 addEventListener('keydown', (event) => keys.add(event.code));
 addEventListener('keyup', (event) => keys.delete(event.code));
@@ -83,6 +86,17 @@ function frame (time)
     if (keys.has('ArrowLeft')) { game.x -= speed * dt; }
     if (keys.has('ArrowDown')) { game.y += speed * dt; }
     if (keys.has('ArrowUp')) { game.y -= speed * dt; }
+
+    // A gamepad, if one is plugged in: the left stick moves the square, and the bottom face
+    // button is counted for each frame it is held.
+    const pad = navigator.getGamepads()[0];
+
+    if (pad && pad.connected)
+    {
+        game.x += pad.axes[0] * speed * dt;
+        game.y += pad.axes[1] * speed * dt;
+        game.padHeld += pad.buttons[0].pressed ? 1 : 0;
+    }
 
     game.x = Math.max(0, Math.min(300, game.x));
     game.y = Math.max(0, Math.min(220, game.y));

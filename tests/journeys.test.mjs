@@ -56,17 +56,34 @@ afterEach(async () =>
     }
 });
 
+// Frame statistics over thirty frames, once the GPU's timings for them have come back.
+// They arrive a few frames late, and later still on a busy machine.
+async function timed ()
+{
+    await scanline('step', 34);
+
+    let stats = null;
+
+    for (let attempt = 0; attempt < 8; attempt++)
+    {
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        stats = await scanline('stats', '--window_frames', 30, '--json');
+
+        if (stats.json?.data.gpu.frames > 10)
+        {
+            return stats;
+        }
+
+        await scanline('step', 4);
+    }
+
+    assert.fail(`GPU timings did not arrive: ${stats?.out}`);
+}
+
 // GPU time of a frame, the middle of thirty.
 async function gpuTime ()
 {
-    await scanline('step', 34);
-    await new Promise((resolve) => setTimeout(resolve, 150));
-
-    const stats = await scanline('stats', '--window_frames', 30, '--json');
-
-    assert.ok(stats.json.data.gpu.frames > 10, stats.out);
-
-    return stats.json.data.gpu.ms.p50;
+    return (await timed()).json.data.gpu.ms.p50;
 }
 
 // J3. Slow frame: profile, find the pass and the shader, test that the cost is fill, read
@@ -150,11 +167,8 @@ async function slowFrameGpu (page)
 
     assert.match(launched.out, /Launched ses_1/, launched.out);
 
-    await scanline('step', 40);
-    await new Promise((resolve) => setTimeout(resolve, 150));
-
     // 1. Where does the GPU time go? One pass has most of it.
-    const stats = await scanline('stats', '--window_frames', 30, '--json');
+    const stats = await timed();
     const passes = [...stats.json.data.gpu.passes].sort((a, b) => b.mean - a.mean);
 
     assert.equal(passes[0].label, 'godrays', stats.json.summary);

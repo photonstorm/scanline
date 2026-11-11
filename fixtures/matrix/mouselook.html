@@ -1,0 +1,51 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Mouse look</title>
+<style>body { margin: 0; background: #111; } canvas { display: block; }</style>
+<canvas id="scene" width="320" height="240"></canvas>
+<script type="module">
+// A page played by mouse-look: a click on the canvas asks for pointer lock, and while it is
+// held the view turns by how far the mouse moves, not by where it is. Raw WebGL 2.
+//
+// The view is a vertical bar whose place across the canvas is the yaw.
+const canvas = document.getElementById('scene');
+const gl = canvas.getContext('webgl2', { antialias: false, alpha: false });
+const game = window.game = { yaw: 160, pitch: 0, locked: false, moves: 0, changes: 0 };
+
+canvas.addEventListener('click', () => canvas.requestPointerLock());
+
+document.addEventListener('pointerlockchange', () =>
+{
+    game.locked = document.pointerLockElement === canvas;
+    game.changes++;
+});
+
+document.addEventListener('mousemove', (event) =>
+{
+    if (document.pointerLockElement === canvas)
+    {
+        game.yaw = Math.max(0, Math.min(319, game.yaw + event.movementX));
+        game.pitch += event.movementY;
+        game.moves++;
+    }
+});
+
+document.addEventListener('keydown', (event) =>
+{
+    if (event.code === 'Escape') { document.exitPointerLock(); }
+});
+
+function frame ()
+{
+    gl.disable(gl.SCISSOR_TEST);
+    gl.clearColor(0.125, 0.25, 0.375, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.enable(gl.SCISSOR_TEST);
+    gl.scissor(Math.round(game.yaw) - 4, 0, 8, 240);
+    gl.clearColor(1, 1, 1, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    requestAnimationFrame(frame);
+}
+
+requestAnimationFrame(frame);
+</script>
