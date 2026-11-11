@@ -8,6 +8,7 @@
 //! - `data` is the same result, structured, for scripts.
 //! - `images` lists files written for this result; `view` is the one sized for an agent.
 
+mod analysis;
 mod capture;
 mod commands;
 mod handoff;
@@ -154,6 +155,7 @@ impl Host {
             "draw_diff" => capture::draw_diff(self, &params),
             "pixel_source" => capture::pixel_source(self, &params).await,
             "query" => capture::query(self, &params),
+            "compare" => analysis::compare(self, &params),
             "resources" => inventory::resources(&live()?, &params).await,
             "resource" => inventory::resource(&live()?, &params).await,
             "memory" => inventory::memory(&live()?, &params).await,

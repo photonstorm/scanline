@@ -368,7 +368,7 @@ fn partial(area: &Value, (width, height): (i64, i64)) -> bool {
 }
 
 /// Numbers as a short list of runs: 5–8, 12.
-fn runs(numbers: &[i64]) -> String {
+pub(crate) fn runs(numbers: &[i64]) -> String {
     let mut parts: Vec<String> = Vec::new();
     let mut index = 0;
 
@@ -405,7 +405,7 @@ fn feedback(row: &Value, tag: u64) -> Option<(i64, String)> {
     })
 }
 
-fn plural(count: i64, noun: &str) -> String {
+pub(crate) fn plural(count: i64, noun: &str) -> String {
     format!("{count} {noun}{}", if count == 1 { "" } else { "s" })
 }
 
@@ -1077,7 +1077,7 @@ fn tables(body: &Value, tag: u64, errors: &HashMap<i64, String>, effects: &HashM
 }
 
 /// Gives a session's replay page a capture from the store.
-async fn load_into(host: &Arc<Host>, session: &Arc<Session>, handle: &str) -> Result<Value> {
+pub(crate) async fn load_into(host: &Arc<Host>, session: &Arc<Session>, handle: &str) -> Result<Value> {
     let stream = host.store.stream(handle)?;
     let hashes: Vec<String> = stream["blob_hashes"].as_array().into_iter().flatten().filter_map(|hash| hash.as_str().map(str::to_string)).collect();
     let store = &host.store;
@@ -1087,11 +1087,11 @@ async fn load_into(host: &Arc<Host>, session: &Arc<Session>, handle: &str) -> Re
     Ok(stream)
 }
 
-fn replay_image(reply: &Value) -> Result<Image> {
+pub(crate) fn replay_image(reply: &Value) -> Result<Image> {
     Image::new(reply["width"].as_u64().unwrap_or(0) as u32, reply["height"].as_u64().unwrap_or(0) as u32, unpack(reply["data"].as_str().unwrap_or(""))?)
 }
 
-fn the_capture(host: &Host, params: &Value) -> Result<(String, Value)> {
+pub(crate) fn the_capture(host: &Host, params: &Value) -> Result<(String, Value)> {
     let Some(handle) = params["capture"].as_str() else {
         let known = host.store.handles();
 
@@ -1110,7 +1110,7 @@ fn the_capture(host: &Host, params: &Value) -> Result<(String, Value)> {
 /// What a capture is of, for the first line of every answer about one, and a warning when
 /// the session named alongside it has a different page open: handles are shared by every
 /// session on the host, so it is easy to pass someone else's.
-fn about(host: &Host, params: &Value, handle: &str, meta: &Value) -> String {
+pub(crate) fn about(host: &Host, params: &Value, handle: &str, meta: &Value) -> String {
     let url = meta["url"].as_str().unwrap_or("");
     let mut text = format!("{handle} (frame {} of {})", meta["frame"], page_text(url, 80));
 
@@ -1601,11 +1601,11 @@ pub fn pass_tree(host: &Arc<Host>, params: &Value) -> Result<Value> {
     Ok(result(lines.join("\n"), json!({ "capture": handle, "passes": rows_as_objects(&passes) })))
 }
 
-fn rows_as_objects(rows: &scanline_store::Rows) -> Vec<Value> {
+pub(crate) fn rows_as_objects(rows: &scanline_store::Rows) -> Vec<Value> {
     rows.rows.iter().map(|row| Value::Object(rows.columns.iter().cloned().zip(row.iter().cloned()).collect())).collect()
 }
 
-fn describe_event(row: &serde_json::Map<String, Value>) -> String {
+pub(crate) fn describe_event(row: &serde_json::Map<String, Value>) -> String {
     let get = |key: &str| row.get(key).cloned().unwrap_or(Value::Null);
     let word = |key: &str| get(key).as_str().unwrap_or("").to_string();
     let mut text = format!("{:>4}  ", get("draw").as_i64().unwrap_or(0));
@@ -1732,7 +1732,7 @@ pub fn draw_list(host: &Arc<Host>, params: &Value) -> Result<Value> {
     ))
 }
 
-fn draw_state(host: &Host, handle: &str, draw: &Value) -> Result<Value> {
+pub(crate) fn draw_state(host: &Host, handle: &str, draw: &Value) -> Result<Value> {
     let Some(index) = draw.as_i64() else { bail!("A draw is named by its number in the capture, from 0. Call draw_list to see them.") };
     let rows = host.store.query(
         handle,
@@ -2351,7 +2351,7 @@ fn history(host: &Host, handle: &str, state: &Value) -> Option<(HashMap<String, 
     Some((uniforms, units))
 }
 
-fn flatten(prefix: &str, value: &Value, out: &mut std::collections::BTreeMap<String, String>) {
+pub(crate) fn flatten(prefix: &str, value: &Value, out: &mut std::collections::BTreeMap<String, String>) {
     match value {
         Value::Object(map) => {
             for (key, child) in map {
@@ -2500,7 +2500,7 @@ fn schema(host: &Host, handle: &str) -> String {
 // ---- What the frame did: answered by replay ----
 
 /// The target a looking command means: the canvas, or a texture the frame drew to.
-fn target_of(host: &Host, handle: &str, params: &Value) -> Result<(Value, String)> {
+pub(crate) fn target_of(host: &Host, handle: &str, params: &Value) -> Result<(Value, String)> {
     match params["target"].as_str() {
         None | Some("canvas") => Ok((Value::Null, "the canvas".into())),
         Some(name) => {

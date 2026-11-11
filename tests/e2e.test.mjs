@@ -791,6 +791,22 @@ describe('working with the person', () =>
         assert.deepEqual(good.json.data.findings, []);
         assert.match(bad.json.data.url, /b13\.html$/);
 
+        // The two against each other: the glass has moved in the order, and the picture differs where the crates are.
+        const compared = await scanline('compare', bad.json.data.capture, good.json.data.capture, '--json');
+
+        assert.equal(compared.code, 0, compared.out);
+        assert.deepEqual(compared.json.data.moved, [{ a: 6, b: 9 }]);
+        assert.deepEqual([compared.json.data.only_a, compared.json.data.only_b], [[], []]);
+        assert.match(compared.json.summary, /MOVED: a's event 6 is b's event 9: TRIANGLE_STRIP ×4 {2}prg_1 → canvas {2}blend SRC_ALPHA\/ONE_MINUS_SRC_ALPHA/);
+        assert.match(compared.json.summary, /In a it is drawn before a's events 7–9; in b it is drawn after them\./);
+        assert.match(compared.json.summary, /Their final pictures differ in \d+ of 172800 pixels/);
+        assert.deepEqual(readFileSync(compared.json.images[0].view).subarray(0, 4), PNG);
+
+        const same = await scanline('compare', good.json.data.capture, good.json.data.capture);
+
+        assert.match(same.out, /Both issue the same 25 events in the same order/);
+        assert.match(same.out, /Their final pictures are identical\./);
+
         // Its tables hold that frame's calls only, numbered as they are in the recording.
         const calls = await scanline('query', bad.json.data.capture, 'select count(*), min(command) from commands', '--json');
 

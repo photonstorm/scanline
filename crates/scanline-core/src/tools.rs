@@ -345,6 +345,16 @@ pub const TOOLS: &[Tool] = &[
         read_only: true,
     },
     Tool {
+        name: "compare",
+        description: "Two captures against each other: events one has and the other lacks, events that have moved in the order, differences in state and in uniform values between events that line up, what each used that the other did not, and how their final pictures differ, with a heat map. For a frame that looks wrong against one that looks right.",
+        schema: schema!(
+            r#"["a", "b"]"#,
+            r#""a": { "type": "string", "description": "A capture handle." }"#,
+            r#""b": { "type": "string", "description": "Another." }"#
+        ),
+        read_only: true,
+    },
+    Tool {
         name: "request_human",
         description: "Ask the person at the keyboard to do something you cannot, such as play until a glitch shows. Returns at once with a request handle. The person gets the input, the page runs, and the last frames are recorded. When they press Debug (F9) the page is frozen and captured there and then; collect that with wait.",
         schema: schema!(
