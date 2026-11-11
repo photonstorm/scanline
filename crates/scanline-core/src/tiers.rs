@@ -182,6 +182,11 @@ pub(crate) struct Page {
 
 /// Why a command is refused, if it is.
 pub(crate) fn refusal(tiers: &Tiers, method: &str, params: &Value, page: Option<&Page>) -> Option<String> {
+    // Making kept patches again is making patches.
+    if method == "patches" && params["again"] == true {
+        return refusal(tiers, "patch_state", &Value::Null, page).map(|why| why.replacen("patch_state is", "patches(again) makes patches, which is", 1));
+    }
+
     // An expression run in the page is eval by another name.
     let expression = match method {
         "run_until" => params["until"]["expr"].is_string().then_some("run_until with until: {expr}"),

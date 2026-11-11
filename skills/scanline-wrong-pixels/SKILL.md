@@ -64,6 +64,8 @@ Before touching source, make the change live and look:
 
 Then `gfx_step(frames: 1)` and `gfx_pixels(x, y)`. If the value is now the one you wrote down in step 1, you have the cause. `gfx_patches()` states each patch as the change to make in source.
 
+If the bug takes play to reach, make the patch with `keep: true` and `gfx_replay_run` the saved run: the patch is made again before the first frame, so the whole run is played with the fix in force.
+
 If the pixel is still wrong, the patch was not the cause: `gfx_patches(revert: "all")` and go back to step 4. Do not stack guesses.
 
 ## 6. Fix it in source, and check with no patch

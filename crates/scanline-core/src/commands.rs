@@ -315,13 +315,27 @@ pub async fn navigate(session: &Arc<Session>, params: &Value) -> Result<Value> {
         _ => bail!("navigate needs url: \"…\" or reload: true."),
     };
 
+    // Kept patches belong to the page they were made on. Another page's objects are other things.
+    let same_page = url.split('#').next() == session.url().split('#').next();
+
     session.navigate(&url).await?;
     tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let kept = if same_page {
+        crate::patch::reapply(session).await
+    } else {
+        let dropped = std::mem::take(&mut session.state.lock().unwrap().kept_patches).len();
+
+        (dropped > 0).then(|| format!("{dropped} kept patch{} dropped: this is another page.", if dropped == 1 { " was" } else { "es were" }))
+    };
 
     let mut value = status(session).await?;
     let summary = value["summary"].as_str().unwrap_or("").to_string();
 
-    value["summary"] = json!(format!("Loaded. Context handles from before this load are no longer valid. {summary}"));
+    value["summary"] = json!(format!(
+        "Loaded. Context handles from before this load are no longer valid. {summary}{}",
+        kept.map(|text| format!("\n{text}")).unwrap_or_default()
+    ));
 
     Ok(value)
 }

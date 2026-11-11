@@ -1058,6 +1058,93 @@ describe('live patches', () =>
         await scanline('resources', 'texture');
     };
 
+    test('a patch made with keep is made again after a reload, and one made without is not', async () =>
+    {
+        await open('fixtures/bugs/b01.html');
+
+        const sky = [89, 153, 229, 255];
+        const crate = [187, 131, 75, 255];
+
+        // Two patches: the fix, kept; and one that would hide the ground, not kept.
+        const kept = await scanline('patch_state', '--filter', '{"program": "prg_1"}', '--state', '{"cull": false}', '--keep', '--json');
+
+        assert.equal(kept.code, 0, kept.out);
+        assert.equal(kept.json.data.kept, true);
+        assert.match(kept.json.summary, /It is kept: after navigate\(reload: true\) or replay_run it is made again/);
+
+        const passing = await scanline('patch_state', '--state', '{"scissor": [0, 0, 10, 10]}', '--json');
+
+        assert.match(passing.json.summary, /A reload removes every patch\./);
+
+        await scanline('step', '2');
+        assert.deepEqual(await pixel(100, 220), sky, 'everything is clipped to a corner');
+
+        const listed = await scanline('patches', '--json');
+
+        assert.deepEqual(listed.json.data.patches.map((patch) => patch.kept), [true, false]);
+        assert.match(listed.json.summary, /\[kept across reloads\]/);
+
+        // A reload: the kept one comes back under a new handle, the other is gone.
+        const reloaded = await scanline('navigate', '--reload', '--json');
+
+        assert.equal(reloaded.code, 0, reloaded.out);
+        assert.match(reloaded.json.summary, /Kept patch made again in the new page: pat_1 \(draws that use prg_1: cull off\)\./);
+
+        await scanline('pause');
+        await scanline('step', '2');
+        assert.deepEqual(await pixel(100, 220), crate, 'the fix is in force from the first frames of the new page');
+
+        const after = await scanline('patches', '--json');
+
+        assert.deepEqual(after.json.data.patches.map((patch) => [patch.kind, patch.kept]), [['state', true]]);
+
+        // Undone, it stays undone across the next reload.
+        await scanline('patches', '--revert', after.json.data.patches[0].patch);
+
+        const again = await scanline('navigate', '--reload', '--json');
+
+        assert.doesNotMatch(again.json.summary, /Kept patch/);
+
+        await scanline('pause');
+        await scanline('step', '2');
+        assert.deepEqual(await pixel(100, 220), sky, 'the bug is back');
+
+        // Another page is another page: what was kept for this one is dropped. (Handles from
+        // before a reload are refused until they have been listed again.)
+        await scanline('resources', 'program');
+
+        const once = await scanline('patch_state', '--filter', '{"program": "prg_1"}', '--state', '{"cull": false}', '--keep');
+
+        assert.equal(once.code, 0, once.out);
+
+        const elsewhere = await scanline('navigate', server.url('fixtures/bugs/b00.html'), '--json');
+
+        assert.match(elsewhere.json.summary, /1 kept patch was dropped: this is another page\./);
+        assert.match((await scanline('patches')).out, /No patches are in force/);
+        assert.match((await scanline('patches', '--again')).out, /No kept patch is waiting/);
+    });
+
+    test('a kept patch is in force from the first frame of a replayed run', async () =>
+    {
+        await scanline('launch', server.url('fixtures/bugs/b01.html'), '--paused', '--headless', '--deterministic');
+        await scanline('step', '12');
+        await scanline('resources', 'program');
+
+        const crate = [187, 131, 75, 255];
+        const run = /(run_\d+)/.exec((await scanline('save_run')).out)?.[1];
+
+        assert.ok(run);
+
+        // The fix is tried on the run that reached the bug: reload, patch, play.
+        await scanline('patch_state', '--filter', '{"program": "prg_1"}', '--state', '{"cull": false}', '--keep');
+
+        const replayed = await scanline('replay_run', run, '--json');
+
+        assert.equal(replayed.code, 0, replayed.out);
+        assert.match(replayed.json.summary, /Kept patch made again in the new page: pat_\d+ \(draws that use prg_1: cull off\)\./);
+        assert.deepEqual(await pixel(100, 220), crate, 'the replayed run ends with the crate drawn');
+    });
+
     test('state, draws, a uniform and a texture are overridden and put back', async () =>
     {
         await open('fixtures/bugs/b01.html');

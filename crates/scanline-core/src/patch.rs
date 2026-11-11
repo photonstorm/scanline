@@ -124,6 +124,111 @@ fn done(session: &Session, context: &ContextRef, handle: &str, made: &Value, mor
     result(lines.join("\n"), json!({ "patch": handle, "description": description, "log": made["log"] }))
 }
 
+/// Makes a patch, and remembers how if it was asked to outlast a reload.
+pub async fn apply(session: &Arc<Session>, method: &str, params: &Value) -> Result<Value> {
+    let mut value = make(session, method, params).await?;
+
+    if params["keep"] == true {
+        let handle = value["data"]["patch"].as_str().unwrap_or("").to_string();
+        let mut kept = params.clone();
+
+        // The session is this one; it is not part of what to do again.
+        if let Some(object) = kept.as_object_mut() {
+            object.remove("session");
+        }
+
+        session.state.lock().unwrap().kept_patches.push((method.to_string(), kept, handle));
+
+        let summary = value["summary"].as_str().unwrap_or("").replace(
+            "A reload removes every patch.",
+            "It is kept: after navigate(reload: true) or replay_run it is made again, as long as the page creates its objects in the same order, so that the handles mean the same things.",
+        );
+
+        value["summary"] = json!(summary);
+        value["data"]["kept"] = json!(true);
+    }
+
+    Ok(value)
+}
+
+async fn make(session: &Arc<Session>, method: &str, params: &Value) -> Result<Value> {
+    match method {
+        "patch_draws" => patch_draws(session, params).await,
+        "patch_state" => patch_state(session, params).await,
+        "patch_uniform" => patch_uniform(session, params).await,
+        "patch_shader" => patch_shader(session, params).await,
+        "patch_texture" => patch_texture(session, params).await,
+        other => bail!("{other} does not make a patch."),
+    }
+}
+
+/// After a reload: makes the kept patches again in the new page. The page may still be
+/// building what they name (a program linked a moment after load), so each is tried for a
+/// short while. Returns what to tell whoever asked for the reload, if anything was kept.
+pub async fn reapply(session: &Arc<Session>) -> Option<String> {
+    let kept: Vec<(String, Value, String)> = session.state.lock().unwrap().kept_patches.clone();
+
+    if kept.is_empty() {
+        return None;
+    }
+
+    {
+        let mut state = session.state.lock().unwrap();
+        let live = state.instances.clone();
+
+        // Handles of the page that has gone would be refused as stale. The same handles
+        // name the new page's objects, if it makes them in the same order.
+        state.objects.retain(|_, instance| live.contains(instance));
+        state.patches.clear();
+    }
+
+    let mut again = Vec::new();
+    let mut made = Vec::new();
+    let mut failed = Vec::new();
+
+    for (method, params, was) in kept {
+        let give_up = tokio::time::Instant::now() + Duration::from_millis(2000);
+        let outcome = loop {
+            match make(session, &method, &params).await {
+                Ok(value) => break Ok(value),
+                Err(error) if tokio::time::Instant::now() >= give_up => break Err(error),
+                Err(_) => tokio::time::sleep(Duration::from_millis(100)).await,
+            }
+        };
+
+        match outcome {
+            Ok(value) => {
+                let handle = value["data"]["patch"].as_str().unwrap_or("").to_string();
+
+                made.push(format!("{handle} ({})", value["data"]["description"].as_str().unwrap_or("")));
+                again.push((method, params, handle));
+            }
+            Err(error) => {
+                failed.push(format!("{} that was {was}: {}", method, page_text(&format!("{error:#}"), 240)));
+                again.push((method, params, String::new()));
+            }
+        }
+    }
+
+    session.state.lock().unwrap().kept_patches = again;
+
+    let mut lines = Vec::new();
+
+    if !made.is_empty() {
+        lines.push(format!("Kept patch{} made again in the new page: {}.", if made.len() == 1 { "" } else { "es" }, made.join("; ")));
+    }
+
+    if !failed.is_empty() {
+        lines.push(format!(
+            "NOT made again ({}): {}. The page may not have created what it names yet: patches(again: true) tries once more; patches(revert: \"all\") forgets them.",
+            failed.len(),
+            failed.join("; ")
+        ));
+    }
+
+    Some(lines.join("\n"))
+}
+
 pub async fn patch_draws(session: &Arc<Session>, params: &Value) -> Result<Value> {
     let context = choose_context(session, params).await?;
     let mode = params["mode"].as_str().unwrap_or("skip");
@@ -278,12 +383,37 @@ pub async fn patch_texture(session: &Arc<Session>, params: &Value) -> Result<Val
 
 /// The patches in force, each with what it changes; or, with revert, one or all undone.
 pub async fn patches(session: &Arc<Session>, params: &Value) -> Result<Value> {
+    // Kept patches that could not be made straight after a reload, tried again.
+    if params["again"] == true {
+        let pending = session.state.lock().unwrap().kept_patches.iter().any(|entry| entry.2.is_empty());
+
+        if !pending {
+            return Ok(result("No kept patch is waiting to be made again.", json!({ "again": 0 })));
+        }
+
+        // Only the ones that are missing: the others are in force.
+        let all = std::mem::take(&mut session.state.lock().unwrap().kept_patches);
+        let (waiting, in_force): (Vec<_>, Vec<_>) = all.into_iter().partition(|entry| entry.2.is_empty());
+        let before = session.state.lock().unwrap().patches.clone();
+
+        session.state.lock().unwrap().kept_patches = waiting;
+
+        let said = reapply(session).await.unwrap_or_default();
+        let mut state = session.state.lock().unwrap();
+
+        state.patches.extend(before);
+        state.kept_patches.extend(in_force);
+
+        return Ok(result(said, json!({ "again": true })));
+    }
+
     if let Some(which) = params["revert"].as_str() {
         if which == "all" {
             let replies = session.probe_all("patch.remove", json!({ "all": true }), SHORT).await;
             let removed: u64 = replies.iter().map(|(_, reply)| reply["removed"].as_u64().unwrap_or(0)).sum();
 
             session.state.lock().unwrap().patches.clear();
+            session.state.lock().unwrap().kept_patches.clear();
 
             return Ok(result(
                 format!("{removed} patch{} undone. The page draws as its own code says.", if removed == 1 { "" } else { "es" }),
@@ -294,6 +424,9 @@ pub async fn patches(session: &Arc<Session>, params: &Value) -> Result<Value> {
         let Some((instance, id)) = session.state.lock().unwrap().patches.remove(which) else {
             bail!("There is no patch \"{which}\". patches() lists the ones in force.");
         };
+
+        // Undone is undone: it is not made again after the next reload either.
+        session.state.lock().unwrap().kept_patches.retain(|entry| entry.2 != which);
 
         let reply = session.probe(&instance, "patch.remove", json!({ "patch": id }), SHORT).await?;
 
@@ -324,15 +457,18 @@ pub async fn patches(session: &Arc<Session>, params: &Value) -> Result<Value> {
             let context = ContextRef { handle: String::new(), instance: instance.clone(), local: 0, api: String::new() };
             let description = said(session, &context, patch["description"].as_str().unwrap_or(""));
 
+            let kept = session.state.lock().unwrap().kept_patches.iter().any(|entry| entry.2 == *handle);
+
             lines.push(format!(
-                "  {handle}  {description}{}",
+                "  {handle}  {description}{}{}",
                 match (patch["kind"].as_str(), patch["draws"].as_u64().unwrap_or(0)) {
                     (Some("uniform"), _) => String::new(),
                     (_, 0) => "  (matched no draws in the last frame)".to_string(),
                     (_, draws) => format!("  ({draws} draw{} a frame)", if draws == 1 { "" } else { "s" }),
-                }
+                },
+                if kept { "  [kept across reloads]" } else { "" }
             ));
-            rows.push(json!({ "patch": handle, "kind": patch["kind"], "description": description, "draws": patch["draws"] }));
+            rows.push(json!({ "patch": handle, "kind": patch["kind"], "description": description, "draws": patch["draws"], "kept": kept }));
         }
     }
 
@@ -355,7 +491,16 @@ pub async fn patches(session: &Arc<Session>, params: &Value) -> Result<Value> {
         summary.push_str(&format!("\nNOT APPLIED to at least one draw, which was drawn unpatched: {}.", page_text(why, 300)));
     }
 
-    Ok(result(summary, json!({ "patches": rows, "not_applied": failure })))
+    let waiting = session.state.lock().unwrap().kept_patches.iter().filter(|entry| entry.2.is_empty()).count();
+
+    if waiting > 0 {
+        summary.push_str(&format!(
+            "\n{waiting} kept patch{} could not be made again after the last reload. patches(again: true) tries once more.",
+            if waiting == 1 { "" } else { "es" }
+        ));
+    }
+
+    Ok(result(summary, json!({ "patches": rows, "not_applied": failure, "waiting": waiting })))
 }
 
 /// GPU and CPU time a frame, the mean over the frames just stepped.

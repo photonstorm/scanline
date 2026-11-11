@@ -131,6 +131,9 @@ pub struct State {
     pub strip_note: Option<String>,
     /// Live patches made in this session: the handle shown, and the probe and number behind it.
     pub patches: std::collections::BTreeMap<String, (Instance, i64)>,
+    /// Patches asked to outlast a reload: the command that made each, its arguments, and
+    /// the handle it has now ("" while it has not been made again).
+    pub kept_patches: Vec<(String, Value, String)>,
     /// States the page saved through the page protocol: the handle shown, the state as the
     /// page gave it, and the frame it was saved at.
     /// Whether the person can mark the frozen frame just now: after their Debug press,

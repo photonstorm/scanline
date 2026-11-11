@@ -268,6 +268,11 @@ pub async fn replay_run(host: &Arc<Host>, session: &Arc<Session>, params: &Value
 
     reloaded?;
 
+    // Patches asked to outlast a reload are made again before the first frame is played.
+    if let Some(said) = crate::patch::reapply(session).await {
+        notes.push(said);
+    }
+
     let top = session.top()?;
     let status = session.probe(&top, "status", json!({}), SHORT).await?;
 

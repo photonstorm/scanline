@@ -542,6 +542,7 @@ pub const TOOLS: &[Tool] = &[
             context!(),
             r#""filter": { "type": "object", "description": "Which draws. WebGL: {\"program\": \"prg_2\"}, {\"texture\": \"tex_3\"} and/or {\"draws\": [6, 8]} (event numbers, as draw_list gives them). WebGPU: {\"pipeline\": \"pip_2\"}.", "properties": { "program": { "type": "string" }, "pipeline": { "type": "string" }, "texture": { "type": "string" }, "draws": {} } }"#,
             r#""mode": { "type": "string", "enum": ["skip", "isolate"], "description": "Default skip." }"#,
+            r#""keep": { "type": "boolean", "description": "Make the patch again after a reload (navigate(reload: true), replay_run), so a fix can be tried from the first frame." }"#,
         ),
         read_only: false,
     },
@@ -554,6 +555,7 @@ pub const TOOLS: &[Tool] = &[
             context!(),
             r#""filter": { "type": "object", "description": "Which draws. WebGL: {\"program\": \"prg_2\"}, {\"texture\": \"tex_3\"} and/or {\"draws\": [6, 8]} (event numbers). WebGPU: {\"pipeline\": \"pip_2\"}. Left out: every draw.", "properties": { "program": { "type": "string" }, "pipeline": { "type": "string" }, "texture": { "type": "string" }, "draws": {} } }"#,
             r#""state": { "type": "object", "description": "Any of blend, depth_test, depth_write, cull (true or false), color_mask ([r, g, b, a]), scissor ([x, y, w, h], or false for off)." }"#,
+            r#""keep": { "type": "boolean", "description": "Make the patch again after a reload (navigate(reload: true), replay_run), so a fix can be tried from the first frame." }"#,
         ),
         read_only: false,
     },
@@ -567,6 +569,7 @@ pub const TOOLS: &[Tool] = &[
             r#""target": { "type": "string", "description": "The program, such as prg_1." }"#,
             r#""name": { "type": "string" }"#,
             r#""value": { "description": "A number, or a list of as many numbers as the uniform has components." }"#,
+            r#""keep": { "type": "boolean", "description": "Make the patch again after a reload (navigate(reload: true), replay_run), so a fix can be tried from the first frame." }"#,
         ),
         read_only: false,
     },
@@ -583,6 +586,7 @@ pub const TOOLS: &[Tool] = &[
             r#""edits": { "type": "array", "description": "[{\"find\": \"64\", \"replace\": \"24\"}]: each find must occur in the source; every occurrence is replaced.", "items": { "type": "object" } }"#,
             r#""defines": { "type": "object", "description": "{\"SAMPLES\": 24}: added as #define lines after #version." }"#,
             r#""source": { "type": "string", "description": "The whole new shader." }"#,
+            r#""keep": { "type": "boolean", "description": "Make the patch again after a reload (navigate(reload: true), replay_run), so a fix can be tried from the first frame." }"#,
         ),
         read_only: false,
     },
@@ -596,13 +600,19 @@ pub const TOOLS: &[Tool] = &[
             r#""handle": { "type": "string", "description": "The texture, such as tex_3." }"#,
             r#""with": { "type": "string", "enum": ["checker", "white", "black", "mips"], "description": "Default checker." }"#,
             r#""filter": { "type": "object", "description": "Only for these draws: {\"program\": \"prg_2\"} and/or {\"draws\": [6, 8]} (event numbers).", "properties": { "program": { "type": "string" }, "draws": {} } }"#,
+            r#""keep": { "type": "boolean", "description": "Make the patch again after a reload (navigate(reload: true), replay_run), so a fix can be tried from the first frame." }"#,
         ),
         read_only: false,
     },
     Tool {
         name: "patches",
         description: "The live patches in force, each with a plain description of what it changes (the change to make in source, if it turns out to be the fix) and how many draws a frame it applies to. revert undoes one, or \"all\".",
-        schema: schema!("[]", session!(), r#""revert": { "type": "string", "description": "A patch handle such as pat_2, or \"all\"." }"#),
+        schema: schema!(
+            "[]",
+            session!(),
+            r#""revert": { "type": "string", "description": "A patch handle such as pat_2, or \"all\"." }"#,
+            r#""again": { "type": "boolean", "description": "Try once more to make kept patches that could not be made straight after a reload." }"#,
+        ),
         read_only: false,
     },
     Tool {
@@ -891,7 +901,7 @@ Not built:
     overdraw, wireframe, draw_id, depth, stencil, mip and nan views, profile, geometry):
     all of these but compare, lint and shader_analysis for WebGPU.
   - Live patching beyond what is built: debug views on the live page, a solid-colour mode
-    for draws, substituting a texture from a file, patches that survive a reload; and for
+    for draws, substituting a texture from a file; and for
     WebGPU, uniforms by name, filters by event number or texture, and draws in render bundles.
   - Adapters for Babylon.js and PlayCanvas. Windows and Linux. A loopback HTTP transport
     for MCP (stdio only). Signed installers and updates: a release is an archive holding
@@ -1131,7 +1141,10 @@ The way to use it
      navigate(reload: true), and check again without the patch.
 
 Handles (prg_1, tex_3) have to have been listed first: resources(kind: \"program\").
-A reload removes every patch. A patched shader that does not compile changes nothing and
+A reload removes every patch, unless it was made with keep: true: such a patch is made
+again after navigate(reload: true) and before replay_run plays its first frame, so a fix
+can be tried from the start of a run (it relies on the page creating its objects in the
+same order, so that prg_1 is the same program). A patched shader that does not compile changes nothing and
 returns the compiler's message.";
 
 const PAGE: &str = "\
