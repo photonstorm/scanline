@@ -323,7 +323,7 @@ Two things the new Babylon.js page (`fixtures/engines/babylon-shadows.html`) fou
 - Geometry, and which test turned a draw away, for a draw inside a render bundle.
 - External textures. The calls that use them fail in replay and the summary says so.
 - The contents of stencil and multisampled textures. They are empty in replay; a pass normally clears them.
-- Buffers and storage textures the GPU wrote in an earlier frame (a compute simulation) are captured as the frame left them, not as it found them, so such a frame replays one step ahead. Render targets are read before the frame. The replay check shows when this matters.
+- Buffers and textures the GPU wrote in an earlier frame (a simulation stepped by a compute pass) are read before the frame begins, with the render targets: every storage buffer and storage texture, up to 256 MB in all. Read after the frame they would hold the frame's own step, and the replay would take it twice. Past the budget the capture says so, and the replay check shows whether it mattered.
 - More than one device in a capture. Calls on another device's objects are left out.
 - A call rejected in replay is found by wrapping every call in an error scope. WebGPU reports most errors when an encoder is finished, so the call named is `finish`, with the browser's message saying which pass call was at fault.
 

@@ -990,10 +990,10 @@ Known limits
     uses an external texture fails in replay; the summary says so. A render bundle is held
     as what was recorded into it, whenever it was built (not in an unmodified session,
     which follows nothing).
-  - A WebGPU frame that reads what the GPU wrote in an earlier frame through a buffer or a
-    storage texture (a simulation stepped by a compute pass) is captured with their contents
-    as the frame left them, so its replay is one step ahead. Render targets are read before
-    the frame and do not have this problem. The replay check shows when it matters.
+  - A WebGPU frame that reads what the GPU wrote in an earlier frame (a simulation stepped
+    by a compute pass) replays from the right start: render targets, storage textures and
+    storage buffers are read before the frame, up to 256 MB in all. Past that the capture
+    says some were not, and its replay may be one step ahead; the replay check shows it.
   - A run replays exactly only in a deterministic session. Such a session keeps every
     response the page is given from the network, with the frame it arrived on, and a
     replay gives them again on those frames; the page is held between two frames for a

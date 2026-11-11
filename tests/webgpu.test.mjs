@@ -563,6 +563,28 @@ describe('textures a copy cannot read', () =>
     });
 });
 
+describe('a simulation stepped on the GPU', () =>
+{
+    // fixtures/history/compute-webgpu.html: a compute pass moves a bar 8 px a frame by
+    // adding to a storage buffer, and adds to a storage texture that tints the background.
+    test('a capture holds what the frame began with, so its replay takes the step once', async () =>
+    {
+        const { session, capture } = await captured('fixtures/history/compute-webgpu.html');
+        const pixel = async (x, ...rest) => (await scanline('pixels', x, 60, '--session', session, ...rest, '--json')).json.data.rgba8;
+
+        // Frame 4, live: the bar at x 32–40 on a background of (64, 0, 0).
+        assert.deepEqual([await pixel(28), await pixel(36), await pixel(44)], [[64, 0, 0, 255], [255, 255, 255, 255], [64, 0, 0, 255]]);
+
+        // And replayed: the same, not a step ahead.
+        assert.deepEqual([await pixel(28, '--capture', capture), await pixel(36, '--capture', capture), await pixel(44, '--capture', capture)], [[64, 0, 0, 255], [255, 255, 255, 255], [64, 0, 0, 255]]);
+
+        const list = await scanline('draw_list', capture, '--session', session);
+
+        assert.match(list.out, /compute/);
+        await scanline('stop');
+    });
+});
+
 describe('WebGPU in a worker', () =>
 {
     test('a device made in a worker is captured, replayed, analysed and patched', async () =>

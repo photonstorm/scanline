@@ -1,0 +1,114 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>A simulation stepped by a compute pass: a WebGPU frame with known answers</title>
+<style>body { margin: 0; background: #111; } canvas { display: block; }</style>
+<canvas id="game" width="160" height="120"></canvas>
+<script type="module">
+// Each frame a compute pass moves a white bar 8 px to the right, by adding to a number in
+// a storage buffer that only the GPU ever writes after the first frame, and a render pass
+// draws the bar where the number says. It also adds 16 to the red of a 1×1 storage
+// texture, which tints the background.
+//
+//   frame n (counting from 1): the bar covers x 8n to 8n + 8, for the whole height,
+//   and the background is (16n, 0, 0) while 16n is under 256.
+//
+// So frame 3 has the bar at x 24–32 on a background of (48, 0, 0). A capture of frame 3
+// has to hold the buffer and the texture as frame 2 left them: read after the frame they
+// hold frame 3's step, and a replay would step them again.
+const canvas = document.getElementById('game');
+const adapter = await navigator.gpu.requestAdapter();
+const device = await adapter.requestDevice();
+const context = canvas.getContext('webgpu');
+const format = navigator.gpu.getPreferredCanvasFormat();
+const state = window.game = { frame: 0 };
+
+context.configure({ device, format, alphaMode: 'opaque' });
+
+const place = device.createBuffer({ label: 'place', size: 16, usage: GPUBufferUsage.STORAGE });
+const tintA = device.createTexture({ label: 'tint A', size: [1, 1], format: 'rgba8unorm', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING });
+const tintB = device.createTexture({ label: 'tint B', size: [1, 1], format: 'rgba8unorm', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING });
+
+const stepModule = device.createShaderModule({ label: 'step', code: `
+    struct Place { x: f32 }
+
+    @group(0) @binding(0) var<storage, read_write> place: Place;
+    @group(0) @binding(1) var before: texture_2d<f32>;
+    @group(0) @binding(2) var after: texture_storage_2d<rgba8unorm, write>;
+
+    @compute @workgroup_size(1) fn step ()
+    {
+        place.x = place.x + 8.0;
+        textureStore(after, vec2i(0, 0), textureLoad(before, vec2i(0, 0), 0) + vec4f(16.0 / 255.0, 0.0, 0.0, 0.0));
+    }` });
+
+const drawModule = device.createShaderModule({ label: 'bar', code: `
+    struct Place { x: f32 }
+
+    @group(0) @binding(0) var<storage, read> place: Place;
+    @group(0) @binding(1) var tint: texture_2d<f32>;
+
+    @vertex fn vertex (@builtin(vertex_index) index: u32) -> @builtin(position) vec4f
+    {
+        return vec4f(vec2f(f32((index << 1u) & 2u), f32(index & 2u)) * 2.0 - 1.0, 0.0, 1.0);
+    }
+
+    @fragment fn fragment (@builtin(position) at: vec4f) -> @location(0) vec4f
+    {
+        if (at.x >= place.x && at.x < place.x + 8.0)
+        {
+            return vec4f(1.0);
+        }
+
+        return vec4f(textureLoad(tint, vec2i(0, 0), 0).rgb, 1.0);
+    }` });
+
+const stepPipeline = device.createComputePipeline({ label: 'step', layout: 'auto', compute: { module: stepModule, entryPoint: 'step' } });
+const drawPipeline = device.createRenderPipeline({
+    label: 'bar',
+    layout: 'auto',
+    vertex: { module: drawModule, entryPoint: 'vertex' },
+    fragment: { module: drawModule, entryPoint: 'fragment', targets: [{ format }] },
+    primitive: { topology: 'triangle-list' }
+});
+
+// The tint goes back and forth between two textures: one is read while the other is written.
+const stepGroups = [[tintA, tintB], [tintB, tintA]].map(([before, after], index) => device.createBindGroup({
+    label: `step ${index}`,
+    layout: stepPipeline.getBindGroupLayout(0),
+    entries: [{ binding: 0, resource: { buffer: place } }, { binding: 1, resource: before.createView() }, { binding: 2, resource: after.createView() }]
+}));
+const drawGroups = [tintB, tintA].map((tint, index) => device.createBindGroup({
+    label: `draw ${index}`,
+    layout: drawPipeline.getBindGroupLayout(0),
+    entries: [{ binding: 0, resource: { buffer: place } }, { binding: 1, resource: tint.createView() }]
+}));
+
+function frame ()
+{
+    const which = state.frame % 2;
+
+    state.frame++;
+
+    const encoder = device.createCommandEncoder();
+    const compute = encoder.beginComputePass({ label: 'step' });
+
+    compute.setPipeline(stepPipeline);
+    compute.setBindGroup(0, stepGroups[which]);
+    compute.dispatchWorkgroups(1);
+    compute.end();
+
+    const pass = encoder.beginRenderPass({
+        label: 'scene',
+        colorAttachments: [{ view: context.getCurrentTexture().createView(), clearValue: [0, 0, 0, 1], loadOp: 'clear', storeOp: 'store' }]
+    });
+
+    pass.setPipeline(drawPipeline);
+    pass.setBindGroup(0, drawGroups[which]);
+    pass.draw(3);
+    pass.end();
+    device.queue.submit([encoder.finish()]);
+    requestAnimationFrame(frame);
+}
+
+requestAnimationFrame(frame);
+</script>

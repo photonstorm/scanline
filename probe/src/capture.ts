@@ -46,6 +46,7 @@ export interface Capture
     // While recording
     used: Set<Entry>;
     renderTargets: Map<number, number[]>;   // texture ID -> blob index per level, read before the frame
+    buffersBefore?: Map<number, number>;    // WebGPU: buffer ID -> blob, for buffers the GPU writes, read before the frame
     uniformsAtStart: Map<number, Record<string, number[]>>;
     done: boolean;
     waiters: Array<() => void>;

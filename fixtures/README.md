@@ -110,6 +110,8 @@ A WebGL 2 page for the stencil and mip views. Two overlapping squares write the 
 
 `history/formats.html` (WebGL 2, or WebGL 1 with `?gl=1`) and `history/formats-webgpu.html` draw from textures that cannot be read directly: an S3TC/BC1 texture of four one-colour blocks, luminance and alpha textures, and depth textures drawn once before the first frame. For checking that each is read back to its known values, and that a capture holds them and replays to the same picture.
 
+`history/compute-webgpu.html` is a simulation stepped on the GPU: a compute pass moves a bar 8 px a frame by adding to a storage buffer, and tints the background through a storage texture. For checking that a capture holds what the frame began with, so that its replay takes the step once.
+
 `history/bundles-webgpu.html` draws three of its four quads from render bundles: one bundle built before the first frame (two draws, one with a pipeline of layout `'auto'`) and one built every frame. For checking that a capture holds a bundle built long before it, that the views take a bundle apart, and that a live patch reaches the draws inside. With `?spare` it also makes a bind group and a buffer that nothing uses, for checking what the inventory says is in use.
 
 `history/deleted.html` (and `?api=webgpu`) deletes a texture and a vertex buffer at frame 20 and replaces them, for the flight recorder: a recording that spans frame 20 has to replay the frames before it with what the page has thrown away.

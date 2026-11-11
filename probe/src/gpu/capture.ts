@@ -87,6 +87,8 @@ const DRAWS = ['draw', 'drawIndexed', 'drawIndirect', 'drawIndexedIndirect'];
 const BUFFER_MAP_READ = 0x0001;
 const MAX_BUFFER = 64 * 1024 * 1024;
 const MAX_PRE_FRAME = 256 * 1024 * 1024;
+const BUFFER_STORAGE = 0x0080;
+const TEXTURE_STORAGE_BINDING = 0x08;
 
 function note (capture: Capture, text: string): void
 {
@@ -916,7 +918,10 @@ export async function gpuBegin (capture: Capture, info: ContextInfo): Promise<vo
 
     for (const entry of capture.light ? [] : all('texture'))
     {
-        if (entry.api !== 'webgpu' || !entry.p.renderTarget || !alive(entry) || deviceFor(entry.ref.deref()!) !== device || unreadable(entry.p) !== null)
+        // A storage texture is one the GPU writes too: a compute pass fills it.
+        const written = entry.p.renderTarget || (typeof entry.p.usage === 'number' && (entry.p.usage & TEXTURE_STORAGE_BINDING) !== 0);
+
+        if (entry.api !== 'webgpu' || !written || !alive(entry) || deviceFor(entry.ref.deref()!) !== device || unreadable(entry.p) !== null)
         {
             continue;
         }
@@ -936,6 +941,39 @@ export async function gpuBegin (capture: Capture, info: ContextInfo): Promise<vo
         catch
         {
             // Unreadable after all: the frame is expected to clear it.
+        }
+    }
+
+    // Storage buffers as the frame begins: a compute pass may step what the last one left.
+    // Read after the frame they would hold this frame's step, and a replay would take it twice.
+    const before: Map<number, number> = new G.Map();
+
+    capture.buffersBefore = before;
+
+    for (const entry of capture.light ? [] : all('buffer'))
+    {
+        const p = entry.p;
+
+        if (entry.api !== 'webgpu' || typeof p.usage !== 'number' || (p.usage & BUFFER_STORAGE) === 0 || !p.readable || !p.size || !alive(entry) || deviceFor(entry.ref.deref()!) !== device)
+        {
+            continue;
+        }
+
+        if (p.size > budget || p.size > MAX_BUFFER)
+        {
+            note(capture, 'Some storage buffers were too large to read before the frame. If a compute pass steps what the last frame left there, its replay will be one step ahead.');
+            continue;
+        }
+
+        budget -= p.size;
+
+        try
+        {
+            before.set(entry.id, blob(capture, await readBuffer(entry, 0, p.size)));
+        }
+        catch
+        {
+            // Mapped by the page just now, or gone: read after the frame, as before.
         }
     }
 }
@@ -1114,6 +1152,13 @@ async function describe (capture: Capture, entry: Entry): Promise<Record<string,
             if (!p.readable || !alive(entry) || p.size > MAX_BUFFER)
             {
                 out.unreadable = !alive(entry) ? 'destroyed during the frame' : (p.readable ? 'too large to capture' : 'no COPY_SRC usage');
+                break;
+            }
+
+            // A storage buffer read before the frame: that is what the frame began with.
+            if (capture.buffersBefore?.has(entry.id))
+            {
+                out.data = capture.buffersBefore.get(entry.id);
                 break;
             }
 
