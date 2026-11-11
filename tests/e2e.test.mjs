@@ -881,20 +881,63 @@ describe('working with the person', () =>
     });
 });
 
+describe('a loop that is not on frames or timers', () =>
+{
+    for (const [name, via] of [['a MessageChannel', 'channel'], ['scheduler.postTask', 'task']])
+    {
+        test(`a page that runs its loop on ${name} is paused, stepped and captured like any other`, async () =>
+        {
+            await scanline('launch', server.url(`fixtures/matrix/timers.html?via=${via}`), '--paused', '--headless');
+
+            const turns = async () => Number(/\d+/.exec((await scanline('eval', 'fixture.frames')).out)[0]);
+
+            // Held: nothing runs while paused, however long.
+            assert.equal(await turns(), 0);
+            await new Promise((resolve) => setTimeout(resolve, 300));
+            assert.equal(await turns(), 0);
+
+            // One turn of the loop a frame.
+            await scanline('step', '10');
+            assert.equal(await turns(), 10);
+            await scanline('step', '5');
+            assert.equal(await turns(), 15);
+
+            const taken = await scanline('capture');
+
+            assert.match(taken.out, /5 draws, 0 clears in 1 pass/);
+            assert.match(taken.out, /Replay check: replaying the capture gives an image identical/);
+            assert.deepEqual((await scanline('pixels', '60', '60', '--json')).json.data.rgba8, [255, 0, 0, 255]);
+
+            // Let go, it runs; paused again, it stops.
+            await scanline('resume');
+            await new Promise((resolve) => setTimeout(resolve, 200));
+            await scanline('pause');
+
+            const ran = await turns();
+
+            assert.ok(ran > 17, `${ran} turns after running for a moment`);
+            await new Promise((resolve) => setTimeout(resolve, 200));
+            assert.equal(await turns(), ran);
+        });
+    }
+});
+
 describe('a Debug key held system-wide', { skip: process.platform !== 'darwin' }, () =>
 {
     test('the helper is given the key by the operating system, and a press is a Debug press', async () =>
     {
-        await scanline('launch', server.url('fixtures/bugs/b13.html'), '--headless');
+        const launched = await scanline('launch', server.url('fixtures/bugs/b13.html'), '--headless');
+        const session = /Launched (ses_\d+)/.exec(launched.out)[1];
+
         await scanline('step', '5');
         await scanline('resume');
 
         // --self-test posts the event a real press causes, so nobody has to touch a key.
         // F15, not F9: for the moment this runs the key really is held, on a machine in use.
-        const helper = await new Promise((resolve) => execFile(binary, ['hotkey', 'ses_1', 'F15', '--self-test'], { env, timeout: 30000 }, (error, stdout, stderr) => resolve({ code: error ? error.code ?? 1 : 0, out: stdout + stderr })));
+        const helper = await new Promise((resolve) => execFile(binary, ['hotkey', session, 'F15', '--self-test'], { env, timeout: 30000 }, (error, stdout, stderr) => resolve({ code: error ? error.code ?? 1 : 0, out: stdout + stderr })));
 
         assert.equal(helper.code, 0, helper.out);
-        assert.match(helper.out, /^holding F15 for ses_1\npressed: \{"id":1,"result"/);
+        assert.match(helper.out, /^holding F15 for ses_\d+\npressed: \{"id":1,"result"/);
 
         const events = await scanline('events', '--kinds', '["debug_pressed"]', '--json');
         const press = events.json.data.events[0];
@@ -903,7 +946,7 @@ describe('a Debug key held system-wide', { skip: process.platform !== 'darwin' }
         assert.match(press.data.capture, /^cap_\d+$/);
         assert.match((await scanline('status')).out, /^Paused at frame/);
 
-        assert.match((await new Promise((resolve) => execFile(binary, ['hotkey', 'ses_1', 'Q'], { env }, (_error, stdout, stderr) => resolve(stdout + stderr)))), /"Q" is not a key this can hold/);
+        assert.match((await new Promise((resolve) => execFile(binary, ['hotkey', session, 'Q'], { env }, (_error, stdout, stderr) => resolve(stdout + stderr)))), /"Q" is not a key this can hold/);
 
         // A session nobody is sitting at is not given one: asking the person holds no key.
         const asked = await scanline('request_human', '--instruction', 'press Debug');

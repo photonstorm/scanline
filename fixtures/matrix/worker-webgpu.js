@@ -1,0 +1,67 @@
+import { BACKGROUND, QUADS, instanceData, loop } from './scene.js';
+
+self.onmessage = async (event) =>
+{
+    const adapter = await navigator.gpu.requestAdapter();
+    const device = await adapter.requestDevice();
+    const context = event.data.canvas.getContext('webgpu');
+    const format = navigator.gpu.getPreferredCanvasFormat();
+
+    context.configure({ device, format, alphaMode: 'opaque' });
+
+    const module = device.createShaderModule({
+        label: 'quads',
+        code: `
+            struct Out { @builtin(position) position: vec4f, @location(0) tint: vec4f }
+
+            @vertex fn vs (@builtin(vertex_index) index: u32, @location(0) rect: vec4f, @location(1) colour: vec4f) -> Out
+            {
+                let corner = vec2f(f32(index & 1u), f32(index >> 1u));
+
+                return Out(vec4f(rect.xy + corner * rect.zw, 0.0, 1.0), colour);
+            }
+
+            @fragment fn fs (in: Out) -> @location(0) vec4f { return in.tint; }
+        `
+    });
+
+    const pipeline = device.createRenderPipeline({
+        label: 'quads',
+        layout: 'auto',
+        vertex: {
+            module,
+            buffers: [{
+                arrayStride: 32,
+                stepMode: 'instance',
+                attributes: [
+                    { shaderLocation: 0, offset: 0, format: 'float32x4' },
+                    { shaderLocation: 1, offset: 16, format: 'float32x4' }
+                ]
+            }]
+        },
+        fragment: { module, targets: [{ format }] },
+        primitive: { topology: 'triangle-strip' }
+    });
+
+    const instances = device.createBuffer({ label: 'quad instances', size: QUADS.length * 32, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
+
+    const state = loop('worker-webgpu', (elapsed) =>
+    {
+        device.queue.writeBuffer(instances, 0, instanceData(elapsed));
+
+        const encoder = device.createCommandEncoder();
+        const pass = encoder.beginRenderPass({
+            label: 'scene',
+            colorAttachments: [{ view: context.getCurrentTexture().createView(), clearValue: BACKGROUND, loadOp: 'clear', storeOp: 'store' }]
+        });
+
+        pass.setPipeline(pipeline);
+        pass.setVertexBuffer(0, instances);
+        pass.draw(4, QUADS.length);
+        pass.end();
+        device.queue.submit([encoder.finish()]);
+    });
+
+    // The page cannot read a worker's globals, so the state is posted on request.
+    self.onmessage = () => self.postMessage({ ...state });
+};

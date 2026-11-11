@@ -485,6 +485,39 @@ describe('render bundles', () =>
     });
 });
 
+describe('WebGPU in a worker', () =>
+{
+    test('a device made in a worker is captured, replayed, analysed and patched', async () =>
+    {
+        const { session, capture, summary } = await captured('fixtures/matrix/worker-webgpu.html');
+
+        assert.match(summary, /1 draw, 1 clear in 1 pass/);
+        assert.match((await scanline('status', '--session', session)).out, /ctx_1 webgpu 320×240 \(offscreen, in a worker\)/);
+
+        // The worker's objects have handles of their own.
+        assert.match((await scanline('resources', 'pipeline', '--session', session)).out, /pip_1_w1 «quads» {2}render pipeline/);
+
+        const history = await scanline('pixel_history', capture, 60, 60, '--session', session, '--json');
+
+        assert.deepEqual(history.json.data.history.map((row) => [row.draw, row.after]), [[0, [32, 64, 96, 255]], [1, [255, 0, 0, 255]]]);
+
+        const owners = await scanline('view', capture, 'draw_id', '--session', session, '--json');
+
+        assert.deepEqual(owners.json.data.owners.map((owner) => [owner.draw, owner.pixels]), [[1, 76800]]);
+
+        // A live patch reaches the worker's draws.
+        const solid = await scanline('patch_draws', '--mode', 'solid', '--session', session);
+
+        assert.match(solid.out, /^pat_1_w1: every draw is drawn in one flat colour/);
+        await scanline('step', 2, '--session', session);
+        assert.deepEqual((await scanline('pixels', 60, 60, '--session', session, '--json')).json.data.rgba8, [255, 0, 255, 255]);
+        await scanline('patches', '--revert', 'all', '--session', session);
+        await scanline('step', 2, '--session', session);
+        assert.deepEqual((await scanline('pixels', 60, 60, '--session', session, '--json')).json.data.rgba8, [255, 0, 0, 255]);
+        assert.match((await scanline('console', '--level', 'error', '--session', session)).out, /No error console lines/);
+    });
+});
+
 describe('frame statistics', () =>
 {
     test('triangles are counted on WebGPU, from each pipeline\'s topology', async () =>

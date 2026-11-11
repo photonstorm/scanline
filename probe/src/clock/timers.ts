@@ -4,8 +4,15 @@
 // clamping are the browser's own. While the clock is frozen (paused, stepping, or a
 // deterministic session) no native timers are armed: the frame gate calls drain() after
 // each frame and the timers that have come due run then, each in a task of its own.
+//
+// A page can also run its loop on a MessageChannel (a message to itself is a task with no
+// delay) or on scheduler.postTask. Left alone, such a loop would run on through a pause.
+// So while the clock is frozen a message posted on a port is kept, and sent at the next
+// drain: a loop of that kind takes one turn a frame. A task posted to the scheduler
+// becomes a timer of this module. While the clock tracks real time both go straight to
+// the browser.
 
-import { G, nClearTimeout, nextTask, nIndirectEval, nSetTimeout, type Fn } from '../natives';
+import { G, nClearTimeout, nextTask, nIndirectEval, nSetTimeout, ownPorts, type Fn } from '../natives';
 import { patch } from '../masquerade';
 import { clock } from './clock';
 
@@ -22,6 +29,54 @@ interface Timer
 }
 
 const timers = new Map<number, Timer>();
+
+// Messages a page posted on a port while the clock was frozen, in order.
+const heldMessages: Array<{ port: any; args: any[] }> = [];
+
+let postNative: Fn | null = null;
+
+// Messages the drain has sent on and not yet seen arrive, and messages that arrived while
+// the clock was frozen without having been sent by the drain: they were in flight when the
+// page was paused, and are handled at the next drain like the rest.
+let inFlight = 0;
+
+const lateArrivals: Array<() => void> = [];
+
+function sendHeld (): number
+{
+    const late = lateArrivals.splice(0);
+
+    for (const handle of late)
+    {
+        try
+        {
+            handle();
+        }
+        catch
+        {
+            // Reported by the handler's own wrapper.
+        }
+    }
+
+    const batch = heldMessages.splice(0);
+
+    inFlight = batch.length;
+
+    for (const message of batch)
+    {
+        try
+        {
+            postNative!.apply(message.port, message.args);
+        }
+        catch
+        {
+            // The port has closed, or what was to be transferred has gone: as it would
+            // have been had the page posted it now.
+        }
+    }
+
+    return batch.length + late.length;
+}
 
 let nextId = 1;
 let order = 0;
@@ -181,6 +236,8 @@ export function suspendTimers (): void
 // The clock is tracking real time again.
 export function resumeTimers (): void
 {
+    sendHeld();
+
     for (const timer of timers.values())
     {
         arm(timer);
@@ -189,7 +246,7 @@ export function resumeTimers (): void
 
 export function pendingTimers (): number
 {
-    return timers.size;
+    return timers.size + heldMessages.length + lateArrivals.length;
 }
 
 function earliestDue (): Timer | null
@@ -240,7 +297,19 @@ export function drainTimers (done: (ran: number) => void): void
         }
     };
 
-    if (earliestDue() === null)
+    // Messages kept since the last drain go first. Those posted while these are handled
+    // wait for the next: one turn of a message loop a frame.
+    const sent = clock.frozen ? sendHeld() : 0;
+
+    if (sent > 0)
+    {
+        ran += sent;
+
+        // Two tasks on, so that the messages have been delivered and handled before
+        // the timers run and the frame is called settled.
+        nextTask(() => nextTask(step));
+    }
+    else if (earliestDue() === null)
     {
         done(0);
     }
@@ -271,4 +340,139 @@ export function installTimers (): void
     {
         clear(id);
     });
+
+    // A message a page posts to itself on a channel.
+    if (G.MessagePort)
+    {
+        postNative = patch(G.MessagePort.prototype, 'postMessage', (native) => function postMessage (this: any, ...args: any[]): void
+        {
+            if (!clock.frozen || ownPorts.has(this))
+            {
+                return native.apply(this, args);
+            }
+
+            heldMessages.push({ port: this, args });
+
+            return undefined;
+        });
+    }
+
+    // What a message handler draws is kept as a timer callback's is: in the same task,
+    // before the browser presents the canvas and clears it. Handlers set as onmessage are
+    // followed; one added with addEventListener is not, and a frame it draws may be
+    // captured without its picture.
+    const handler = G.MessagePort ? G.Object.getOwnPropertyDescriptor(G.MessagePort.prototype, 'onmessage') : undefined;
+
+    if (handler && typeof handler.set === 'function' && typeof handler.get === 'function')
+    {
+        const given = new G.WeakMap() as WeakMap<object, unknown>;
+
+        G.Object.defineProperty(G.MessagePort.prototype, 'onmessage', {
+            configurable: handler.configurable,
+            enumerable: handler.enumerable,
+            get (this: any): unknown
+            {
+                return given.has(this) ? given.get(this) : handler.get!.call(this);
+            },
+            set (this: any, value: unknown)
+            {
+                if (ownPorts.has(this) || typeof value !== 'function')
+                {
+                    given.delete(this);
+                    handler.set!.call(this, value);
+
+                    return;
+                }
+
+                const page = value as Fn;
+
+                given.set(this, value);
+                handler.set!.call(this, function wrapped (this: unknown, ...args: any[]): unknown
+                {
+                    // Posted before the pause and arriving after it: not yet.
+                    if (clock.frozen)
+                    {
+                        if (inFlight > 0)
+                        {
+                            inFlight--;
+                        }
+                        else
+                        {
+                            lateArrivals.push(() => wrapped.apply(this, args));
+                            inFlight++;
+
+                            return undefined;
+                        }
+                    }
+
+                    try
+                    {
+                        return page.apply(this, args);
+                    }
+                    catch (error)
+                    {
+                        onThrow(error);
+
+                        throw error;
+                    }
+                    finally
+                    {
+                        afterCallback();
+                    }
+                });
+            }
+        });
+    }
+
+    // scheduler.postTask(callback, {delay}): a timer by another name. scheduler.yield is a
+    // task with no delay.
+    const scheduler = G.scheduler;
+
+    if (scheduler && typeof scheduler.postTask === 'function')
+    {
+        const later = (callback: Fn, delay: number, signal: any): Promise<unknown> => new G.Promise((resolve: Fn, reject: Fn) =>
+        {
+            if (signal?.aborted)
+            {
+                reject(signal.reason);
+
+                return;
+            }
+
+            const id = create(() =>
+            {
+                try
+                {
+                    resolve(callback());
+                }
+                catch (error)
+                {
+                    reject(error);
+                }
+            }, delay, [], false);
+
+            signal?.addEventListener?.('abort', () =>
+            {
+                clear(id);
+                reject(signal.reason);
+            });
+        });
+
+        // Always a timer of this module, running or frozen, so that one posted while the
+        // page runs does not fire after it is paused. Priorities are not kept.
+        patch(scheduler, 'postTask', (native) => function postTask (this: any, callback: Fn, options?: any): Promise<unknown>
+        {
+            if (typeof callback !== 'function')
+            {
+                return native.apply(this, arguments as any);
+            }
+
+            return later(callback, G.Number(options?.delay) || 0, options?.signal);
+        });
+
+        patch(scheduler, 'yield', () => function yield_ (this: any): Promise<unknown>
+        {
+            return later(() => undefined, 0, undefined);
+        });
+    }
 }

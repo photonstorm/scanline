@@ -333,6 +333,10 @@ Built after milestone 7. The build plan names "CI assertions and baselines" for 
 
 Not built: baselines of anything but the canvas (a capture's draw list, a texture), and a report in a format a CI system reads (JUnit). `--json` gives every check as data.
 
+## Loops that are not on frames or timers
+
+Built after milestone 7 (it was a known limit). A page can run its loop on a `MessageChannel` (a message to itself is a task with no delay) or on `scheduler.postTask`, and neither was held by a pause. Now, while the clock is frozen (paused, stepping, or a deterministic session), a message posted on a port is kept and sent at the next frame's drain, so such a loop takes one turn a frame; a message already on its way when the page is paused is handled at the next drain too. `scheduler.postTask` and `scheduler.yield` are timers of the probe's own at all times (priorities are not kept). While the page runs freely, messages go straight to the browser. A handler set as `onmessage` is followed so that what it draws is kept for the frame's picture; one added with `addEventListener` is paused and stepped all the same, but a frame it draws may be captured without its picture, and the replay check says so.
+
 ## The native-capture profile
 
 Built after milestone 7 (the architecture lists it as "later"). `launch(profile: "native-capture")` starts the browser with its GPU sandbox and GPU watchdog off, Metal capture allowed in its environment, and Dawn told to pass the page's labels to the native API unrenamed. The launch result names the GPU process and says what to do next in Xcode. It is refused unless the host was started with `SCANLINE_ALLOW=native-capture`, because such a browser is weaker than a normal one. Scanline's part ends at starting the browser and finding the process: attaching Xcode's Metal debugger has not been tried (see `docs/BY-HAND.md`), and RenderDoc and PIX are Windows tools, where nothing here runs.

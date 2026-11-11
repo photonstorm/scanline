@@ -46,6 +46,21 @@ const rect = gl.getUniformLocation(program, 'rect');
 const colour = gl.getUniformLocation(program, 'colour');
 
 // No requestAnimationFrame anywhere: the loop is a 16 ms timer reading performance.now().
+// ?via=channel runs it on a MessageChannel instead (a message to itself, as some
+// schedulers do), and ?via=task on scheduler.postTask.
+const via = new URLSearchParams(location.search).get('via');
+const channel = new MessageChannel();
+
+let next = null;
+
+channel.port1.onmessage = () => next(performance.now());
+
+const schedule = via === 'channel'
+    ? (callback) => { next = callback; channel.port2.postMessage(0); }
+    : (via === 'task'
+        ? (callback) => { scheduler.postTask(() => callback(performance.now()), { delay: 16 }); }
+        : (callback) => setTimeout(() => callback(performance.now()), 16));
+
 loop('timers', (elapsed) =>
 {
     const data = instanceData(elapsed);
@@ -58,5 +73,5 @@ loop('timers', (elapsed) =>
         gl.uniform4fv(colour, data.subarray(i * 8 + 4, i * 8 + 8));
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     }
-}, (callback) => setTimeout(() => callback(performance.now()), 16));
+}, schedule);
 </script>

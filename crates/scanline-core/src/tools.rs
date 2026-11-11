@@ -954,7 +954,9 @@ Known limits
     a reused render bundle are not named one by one. Babylon.js: draws made by a depth
     renderer, an outline or bounding-box renderer or a GUI texture are grouped by their
     pass and not named by mesh. PlayCanvas has no adapter.
-  - A page whose loop runs on MessageChannel or scheduler.postTask is not paused by the frame gate.
+  - A loop that runs on a MessageChannel or scheduler.postTask is paused and stepped (one
+    turn a frame). If its handler was added with addEventListener and not set as onmessage,
+    a frame it draws may be captured without its picture; the replay check says so.
   - Code that busy-waits on performance.now() inside one frame spins forever while stepping.
   - A WebGPU canvas is read back only if it was configured after the probe loaded (always true
     for a fresh launch) and unmodified mode is off.
@@ -991,8 +993,8 @@ Known limits
     WebGPU while it runs (measured; the aim is 100). A texture or buffer the page deletes
     while it records is read just before it goes (up to 64 MB each), so the frames that used
     it still replay; on WebGL only if a kept frame used it.
-  - Capturing WebGPU has been run on raw WebGPU, three.js, PixiJS and Babylon.js, on one device, in a window.
-    A device in a worker, and other engines, are untried.
+  - Capturing WebGPU has been run on raw WebGPU (in a window and in a worker), three.js,
+    PixiJS and Babylon.js, on one device. Other engines are untried.
   - WebGPU analysis reads WGSL itself, since the browser tells a page nothing about a shader:
     declarations only (structs, resource variables, entry points). A shader it cannot follow
     leaves its bindings unnamed and its draws out of draw_id and overdraw, and the answer

@@ -27,6 +27,8 @@ Each page sets `window.fixture` (or posts it from a worker) to
 | `webgl2.html` | WebGL 2 | 1 `drawArraysInstanced`, 5 instances | Vertex array object, instance buffer updated each frame. |
 | `webgpu.html` | WebGPU | 1 `draw`, 5 instances, 1 pass | Instance buffer written each frame. |
 | `webgpu-invalid.html` | WebGPU | 1 `draw` the browser rejects | The draw reads past its vertex buffer, so the command buffer is dropped and nothing is drawn. For checking that rejected calls are reported. |
+| `worker-webgpu.html` | WebGPU in a worker | 1 `draw`, 5 instances, 1 pass | The device, its queue and every pass live in a worker, on a canvas handed over to it. |
+| `timers.html?via=channel`, `?via=task` | WebGL 1 | 5 `drawArrays` | The timer page with its loop on a `MessageChannel` (a message to itself) or on `scheduler.postTask`: for checking that such a loop is paused and stepped. |
 | `game.html` | WebGL 2 | 1 `drawArrays` for the player, 1 per spark | A game that takes input: a square steered with the arrow keys, sparks thrown in random directions from each click. For recording a run and replaying it. |
 | `loader.html` | WebGL 2 | 2 clears | Fetches `/__counter` on frames 20 and 50, a path the test server answers with a different number each time, 40 ms later. A bar grows each frame by the last number given. For checking that a run keeps the network. |
 | `mouselook.html` | WebGL 2 | 2 clears | Asks for pointer lock on a click and then turns by how far the mouse moves. A white bar marks the yaw. For the pointer-lock shim. |

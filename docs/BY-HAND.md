@@ -236,4 +236,3 @@ These are not tests. They are choices that were not mine to make, and each is a 
 - Pointer lock and fullscreen: `node spikes/s4-input.mjs --headed` checks them and has not been run. The pointer-lock shim (`--pointer_lock shim`) is tested; the browser's own lock is not.
 - A PlayCanvas adapter. `npm install --save-dev playcanvas` was refused by the permission system where this was built (code from outside), so there is no PlayCanvas to write an adapter against. Run that install yourself and say so, and the adapter can be written the way Babylon's was (`probe/src/adapters/babylon.ts`).
 - PlayCanvas, a Unity WebGL build and an Emscripten build, which the specification's content matrix lists: none is in the repository, and fetching them needed your say-so. Put a build in `fixtures/engines/`, launch it, run `scanline capture`, and read the "Replay check" line.
-- A WebGPU device in a worker: there is no fixture for it.

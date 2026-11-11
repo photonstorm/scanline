@@ -1,0 +1,19 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Matrix: WebGPU in a worker</title>
+<style>body { margin: 0; background: #111; } canvas { display: block; }</style>
+<canvas id="scene" width="320" height="240"></canvas>
+<script type="module">
+// The matrix scene drawn with WebGPU from a worker, on a canvas handed over to it. The
+// device, its queue and every pass live in the worker: the page itself issues no call.
+const offscreen = document.getElementById('scene').transferControlToOffscreen();
+const worker = new Worker('./worker-webgpu.js', { type: 'module' });
+
+worker.postMessage({ canvas: offscreen }, [offscreen]);
+
+window.readFixture = () => new Promise((resolve) =>
+{
+    worker.onmessage = (event) => resolve(event.data);
+    worker.postMessage('state');
+});
+</script>

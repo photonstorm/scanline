@@ -57,6 +57,10 @@ taskChannel.port1.onmessage = () =>
     }
 };
 
+// The probe's own ports: a page's messages may be held while the clock is frozen, and
+// these never are.
+export const ownPorts = new G.WeakSet([taskChannel.port1, taskChannel.port2]) as WeakSet<object>;
+
 export function nextTask (task: () => void): void
 {
     taskQueue.push(task);
