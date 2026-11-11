@@ -19,6 +19,7 @@ mod patch;
 mod runs;
 mod session;
 mod tools;
+mod trace;
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -141,6 +142,7 @@ impl Host {
             "pixels" => commands::pixels(&live()?, &params).await,
             "console" => commands::console(&self.session(&params)?, &params).await,
             "stats" => commands::stats(&live()?, &params).await,
+            "trace" => trace::trace(&live()?, &params).await,
             "capture" if params["recording"].is_string() => handoff::frame_capture(self, &params).await,
             "capture" => capture::capture(self, &live()?, &params).await,
             "request_human" => handoff::request_human(&live()?, &params).await,

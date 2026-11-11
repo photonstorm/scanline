@@ -1255,6 +1255,33 @@ describe('live patches', () =>
     });
 });
 
+describe('a browser trace', () =>
+{
+    test('a window of frames is traced: the GPU process\'s time, and the whole trace on disk', async () =>
+    {
+        await scanline('launch', server.url('fixtures/matrix/webgl2.html'), '--paused', '--headless');
+        await scanline('step', '3');
+
+        const traced = await scanline('trace', '--frames', '12', '--json');
+
+        assert.equal(traced.code, 0, traced.out);
+        assert.match(traced.json.summary, /Browser trace over 12 frames \(frames 4–15\): \d+ events from \d+ processes/);
+        assert.match(traced.json.summary, /The GPU process's main thread was busy for [\d.]+ ms, [\d.]+ ms a frame/);
+        assert.match(traced.json.summary, /GPU Process \/ CrGpuMain/);
+        assert.ok(traced.json.data.gpu_main_thread_ms > 0);
+        assert.ok(traced.json.data.gpu_process_slices.some((slice) => /CommandBuffer|GpuChannel|WebGL/.test(slice.name)), 'the GPU process is seen running the page\'s commands');
+
+        // The page went on by exactly the frames asked for, and is paused.
+        assert.match((await scanline('status')).out, /frame 15/i);
+
+        // The file is a trace other tools open.
+        const whole = JSON.parse(readFileSync(traced.json.data.path, 'utf8'));
+
+        assert.equal(whole.traceEvents.length, traced.json.data.events);
+        assert.ok(whole.traceEvents.some((event) => event.ph === 'X' && typeof event.dur === 'number'));
+    });
+});
+
 describe('runs: play it again', () =>
 {
     const state = 'JSON.stringify([game.frame, game.time, game.x, game.y, game.clicks, game.sparks, Date.now(), performance.now()])';

@@ -895,6 +895,49 @@ impl Session {
         info["processInfo"].as_array()?.iter().find(|process| process["type"] == "GPU")?["id"].as_i64()
     }
 
+    /// Records a browser trace while `during` runs, and returns its events. The trace is
+    /// the browser's own (the Tracing domain): every process, the categories asked for.
+    pub async fn traced<F, T>(&self, categories: &[String], during: F) -> Result<(T, Vec<Value>)>
+    where
+        F: std::future::Future<Output = T>,
+    {
+        let mut events = self.client.subscribe();
+
+        self.client
+            .send_with_timeout(
+                "Tracing.start",
+                json!({ "transferMode": "ReportEvents", "traceConfig": { "recordMode": "recordUntilFull", "includedCategories": categories } }),
+                None,
+                Duration::from_secs(10),
+            )
+            .await
+            .context("starting a browser trace")?;
+
+        let outcome = during.await;
+
+        self.client.post("Tracing.end", json!({}), None)?;
+
+        let mut collected = Vec::new();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+
+        loop {
+            let event = match tokio::time::timeout_at(deadline, events.recv()).await {
+                Ok(Ok(event)) => event,
+                Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
+                Ok(Err(_)) => bail!("The browser went away while the trace was being collected."),
+                Err(_) => bail!("The browser did not finish handing over the trace within 30 s."),
+            };
+
+            match event.method.as_str() {
+                "Tracing.dataCollected" => collected.extend(event.params["value"].as_array().cloned().unwrap_or_default()),
+                "Tracing.tracingComplete" => break,
+                _ => {}
+            }
+        }
+
+        Ok((outcome, collected))
+    }
+
     /// What the GPU process holds, by the operating system's count. It is the whole
     /// process: every page's GPU objects, the compositor's, and the process's own.
     pub async fn gpu_process_memory(&self) -> Option<u64> {

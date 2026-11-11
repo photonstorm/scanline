@@ -171,6 +171,7 @@ pub fn command_usage(name: &str) -> Option<String> {
         "shader_analysis" => "scanline shader_analysis prg_1",
         "lint" => "scanline lint --capture cap_1",
         "geometry" => "scanline geometry cap_1 6",
+        "trace" => "scanline trace --frames 120",
         "view" => "scanline view cap_1 overdraw",
         "profile" => "scanline profile cap_1 --by shader",
         "patch_state" => "scanline patch_state --filter '{\"program\": \"prg_1\"}' --state '{\"cull\": false}'",

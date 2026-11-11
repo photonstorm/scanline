@@ -348,6 +348,17 @@ pub const TOOLS: &[Tool] = &[
         read_only: true,
     },
     Tool {
+        name: "trace",
+        description: "Step a number of frames while the browser records a trace of its own processes: how long the GPU process's main thread was busy (decoding, validating and calling the driver), the busiest threads, what the GPU process spent its time on, and frames presented or dropped where there is a display. Returns the path of the whole trace. For cost that the page's own timings do not show.",
+        schema: schema!(
+            "[]",
+            session!(),
+            r#""frames": { "type": "integer", "description": "How many frames to step and trace. Default 60." }"#,
+            r#""categories": { "type": "string", "description": "Trace categories, comma-separated. Default: gpu, viz, cc, benchmark, toplevel and the GPU service's own." }"#,
+        ),
+        read_only: false,
+    },
+    Tool {
         name: "geometry",
         description: "What one draw of a capture is given and what its vertex shader makes of it: each vertex attribute with its first values, then where the vertices land in clip space and how many triangles would reach the rasteriser at all (not off screen, behind the eye, of no area, NaN or culled). For a draw that draws nothing, or the wrong shape. WebGL 2.",
         schema: schema!(
@@ -924,6 +935,8 @@ Going deeper into a capture
   profile(capture, by: \"shader\")       GPU time of the frame's draws, ranked by draw, by
                                          shader or by pass, measured by replaying each draw
                                          several times inside a timer query
+  trace(frames: 60)                      the live page stepped while the browser traces itself:
+                                         how busy the GPU process was, and on what
   lint(capture)                          what is worth a look in the frame, most serious first
   lint()                                 the same for the live page: leaks, churn, logged errors
   shader_analysis(handle)                what a shader could cost, read from its source: samples,
