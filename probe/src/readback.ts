@@ -6,8 +6,10 @@
 
 import { contextById, type ContextInfo } from './contexts';
 import { formatName } from './gl/formats';
+import { depthOf, mustBeSampled, sampleGlTexture } from './gl/sample';
 import { trackerFor } from './gl/tracker';
-import { copyBytes } from './gpu/formats';
+import { block, copyBytes } from './gpu/formats';
+import { depthNeedsSampling, sampleGpuTexture } from './gpu/sample';
 import { natives } from './hooks/install';
 import { G, nBtoa, nFromCharCode } from './natives';
 import { alive, deviceFor, find, type Entry } from './registry';
@@ -140,6 +142,35 @@ export function prepareRead (info: ContextInfo, framebuffer: object | null): voi
     n.pixelStorei.call(gl, 0x0D05, 1);
 }
 
+// A texture read by drawing it (gl/sample.ts), as the pixels a readback gives.
+function sampledPixels (entry: Entry, info: ContextInfo, level: number, layer: number, area: { x: number; y: number; w: number; h: number }, width: number, height: number): Pixels
+{
+    const sampled = sampleGlTexture(entry, info, level, layer, area);
+    const format = formatName(entry.p.internalFormat);
+
+    if (!sampled.depth)
+    {
+        return {
+            width,
+            height,
+            channels: sampled.bytes,
+            kind: 'unorm8',
+            format,
+            note: sampled.clamped ? 'This format holds values outside 0 to 1; they are read clamped.' : null
+        };
+    }
+
+    const channels = new G.Float32Array(sampled.bytes.length) as Float32Array;
+
+    for (let i = 0; i < sampled.bytes.length; i += 4)
+    {
+        channels[i] = depthOf(sampled.bytes, i);
+        channels[i + 3] = 1;
+    }
+
+    return { width, height, channels, kind: 'float', format, note: 'Depth, read to 24 bits.' };
+}
+
 export function readGlTexture (entry: Entry, info: ContextInfo, level: number, layer: number, region: Region): Pixels
 {
     const gl = info.ctx;
@@ -152,14 +183,15 @@ export function readGlTexture (entry: Entry, info: ContextInfo, level: number, l
         throw new Error('This texture has no storage yet: nothing has been uploaded to it.');
     }
 
-    if (p.compressed)
-    {
-        throw new Error(`This texture is compressed (${formatName(p.internalFormat)}). Reading compressed textures back is not built yet.`);
-    }
-
     const width = G.Math.max(1, p.width >> level);
     const height = G.Math.max(1, p.height >> level);
     const area = clip(width, height, region);
+
+    // A compressed or a depth texture cannot be attached and read: it is drawn and read.
+    if (mustBeSampled(p))
+    {
+        return sampledPixels(entry, info, level, layer, area, width, height);
+    }
 
     let framebuffer = scratch.get(gl);
 
@@ -195,6 +227,16 @@ export function readGlTexture (entry: Entry, info: ContextInfo, level: number, l
         }
 
         const status = n.checkFramebufferStatus.call(gl, target);
+
+        if (status !== 0x8CD5 && !float && !signed && !unsigned)
+        {
+            // An 8-bit format that cannot be rendered to (luminance, alpha, sRGB without
+            // alpha): drawn and read, as a compressed texture is.
+            n.framebufferTexture2D.call(gl, target, 0x8CE0, 0x0DE1, null, 0);
+            restoreReadState(info);
+
+            return sampledPixels(entry, info, level, layer, area, width, height);
+        }
 
         if (status !== 0x8CD5)
         {
@@ -238,13 +280,16 @@ export function readGlTexture (entry: Entry, info: ContextInfo, level: number, l
 
 // ---- WebGPU ----
 
-// A texture level's bytes exactly as stored, rows packed with no padding.
-export async function readGpuRaw (entry: Entry, level: number, layer: number, region: Region = {}): Promise<{ width: number; height: number; w: number; h: number; packed: Uint8Array; format: string; bytes: number }>
+// A texture level's bytes exactly as stored, rows packed with no padding. For a compressed
+// format the whole level comes back as its blocks: `rows` rows of them, and a width and
+// height rounded up to whole blocks.
+export async function readGpuRaw (entry: Entry, level: number, layer: number, region: Region = {}): Promise<{ width: number; height: number; w: number; h: number; rows: number; packed: Uint8Array; format: string; bytes: number }>
 {
     const p = entry.p;
     const texture = entry.ref.deref() as any;
     const format: string = p.format;
     const bytes = copyBytes(format);
+    const blocks = block(format);
 
     if (!p.readable)
     {
@@ -253,16 +298,24 @@ export async function readGpuRaw (entry: Entry, level: number, layer: number, re
             : 'This texture has no COPY_SRC usage, so it cannot be read back. It was created in unmodified mode, or is a transient attachment.');
     }
 
+    if (blocks)
+    {
+        return readGpuBlocks(entry, level, layer, blocks);
+    }
+
     if (bytes === 0)
     {
-        throw new Error(`Reading ${format} textures back is not built yet (compressed, stencil and depth24plus formats need more than a copy).`);
+        throw new Error(`A ${format} texture cannot be copied to a buffer.`);
     }
 
     const width = G.Math.max(1, p.width >> level);
     const height = G.Math.max(1, p.height >> level);
     const area = clip(width, height, region);
+
+    // A depth or stencil level can only be copied whole; the region is cut from it here.
+    const copied = format.startsWith('depth') || format === 'stencil8' ? { x: 0, y: 0, w: width, h: height } : area;
     const rowBytes = area.w * bytes;
-    const stride = G.Math.ceil(rowBytes / 256) * 256;
+    const stride = G.Math.ceil(copied.w * bytes / 256) * 256;
     const n = natives;
     const device = deviceFor(texture) as any;
 
@@ -271,14 +324,21 @@ export async function readGpuRaw (entry: Entry, level: number, layer: number, re
         throw new Error('The device this texture belongs to is not known. The texture was created before the probe could record it.');
     }
 
-    const buffer = n.GPUDevice.createBuffer.call(device, { label: 'scanline: texture readback', size: G.Math.max(4, stride * area.h), usage: 0x0001 | 0x0008 });
+    const packed = new G.Uint8Array(rowBytes * area.h) as Uint8Array;
+
+    if (area.w === 0 || area.h === 0)
+    {
+        return { width, height, w: area.w, h: area.h, rows: area.h, packed, format, bytes };
+    }
+
+    const buffer = n.GPUDevice.createBuffer.call(device, { label: 'scanline: texture readback', size: G.Math.max(4, stride * copied.h), usage: 0x0001 | 0x0008 });
     const encoder = n.GPUDevice.createCommandEncoder.call(device, { label: 'scanline: texture readback' });
 
     n.GPUCommandEncoder.copyTextureToBuffer.call(
         encoder,
-        { texture, mipLevel: level, origin: { x: area.x, y: area.y, z: layer }, aspect: format.startsWith('depth') ? 'depth-only' : 'all' },
-        { buffer, bytesPerRow: stride, rowsPerImage: area.h },
-        { width: area.w, height: area.h, depthOrArrayLayers: 1 }
+        { texture, mipLevel: level, origin: { x: copied.x, y: copied.y, z: layer }, aspect: format.startsWith('depth') ? 'depth-only' : 'all' },
+        { buffer, bytesPerRow: stride, rowsPerImage: copied.h },
+        { width: copied.w, height: copied.h, depthOrArrayLayers: 1 }
     );
 
     n.GPUQueue.submit.call(device.queue, [n.GPUCommandEncoder.finish.call(encoder)]);
@@ -286,9 +346,62 @@ export async function readGpuRaw (entry: Entry, level: number, layer: number, re
     await n.GPUBuffer.mapAsync.call(buffer, 0x0001);
 
     const mapped = new G.Uint8Array(n.GPUBuffer.getMappedRange.call(buffer)) as Uint8Array;
-    const packed = new G.Uint8Array(rowBytes * area.h) as Uint8Array;
+    const left = (area.x - copied.x) * bytes;
 
     for (let y = 0; y < area.h; y++)
+    {
+        const start = (area.y - copied.y + y) * stride + left;
+
+        packed.set(mapped.subarray(start, start + rowBytes), y * rowBytes);
+    }
+
+    n.GPUBuffer.unmap.call(buffer);
+    n.GPUBuffer.destroy.call(buffer);
+
+    return { width, height, w: area.w, h: area.h, rows: area.h, packed, format, bytes };
+}
+
+// One whole level of a compressed texture, as its blocks.
+async function readGpuBlocks (entry: Entry, level: number, layer: number, blocks: [number, number, number]): Promise<{ width: number; height: number; w: number; h: number; rows: number; packed: Uint8Array; format: string; bytes: number }>
+{
+    const p = entry.p;
+    const texture = entry.ref.deref() as any;
+    const device = deviceFor(texture) as any;
+    const n = natives;
+
+    if (!device)
+    {
+        throw new Error('The device this texture belongs to is not known. The texture was created before the probe could record it.');
+    }
+
+    if (p.dimension === '3d')
+    {
+        throw new Error(`A 3D ${p.format} texture cannot be read back.`);
+    }
+
+    const [blockWidth, blockHeight, blockBytes] = blocks;
+    const across = G.Math.ceil(G.Math.max(1, p.width >> level) / blockWidth);
+    const rows = G.Math.ceil(G.Math.max(1, p.height >> level) / blockHeight);
+    const rowBytes = across * blockBytes;
+    const stride = G.Math.ceil(rowBytes / 256) * 256;
+    const buffer = n.GPUDevice.createBuffer.call(device, { label: 'scanline: texture readback', size: G.Math.max(4, stride * rows), usage: 0x0001 | 0x0008 });
+    const encoder = n.GPUDevice.createCommandEncoder.call(device, { label: 'scanline: texture readback' });
+
+    n.GPUCommandEncoder.copyTextureToBuffer.call(
+        encoder,
+        { texture, mipLevel: level, origin: { x: 0, y: 0, z: layer } },
+        { buffer, bytesPerRow: stride, rowsPerImage: rows },
+        { width: across * blockWidth, height: rows * blockHeight, depthOrArrayLayers: 1 }
+    );
+
+    n.GPUQueue.submit.call(device.queue, [n.GPUCommandEncoder.finish.call(encoder)]);
+
+    await n.GPUBuffer.mapAsync.call(buffer, 0x0001);
+
+    const mapped = new G.Uint8Array(n.GPUBuffer.getMappedRange.call(buffer)) as Uint8Array;
+    const packed = new G.Uint8Array(rowBytes * rows) as Uint8Array;
+
+    for (let y = 0; y < rows; y++)
     {
         packed.set(mapped.subarray(y * stride, y * stride + rowBytes), y * rowBytes);
     }
@@ -296,12 +409,52 @@ export async function readGpuRaw (entry: Entry, level: number, layer: number, re
     n.GPUBuffer.unmap.call(buffer);
     n.GPUBuffer.destroy.call(buffer);
 
-    return { width, height, w: area.w, h: area.h, packed, format, bytes };
+    return { width: across * blockWidth, height: rows * blockHeight, w: across * blockWidth, h: rows * blockHeight, rows, packed, format: p.format, bytes: 0 };
+}
+
+// A region of a level as texels a caller can make sense of: copied where a copy gives
+// texels, drawn and read (gpu/sample.ts) where it gives blocks or nothing.
+async function readGpuTexels (entry: Entry, level: number, layer: number, region: Region): Promise<{ width: number; height: number; w: number; h: number; packed: Uint8Array; format: string; bytes: number }>
+{
+    const p = entry.p;
+
+    if (block(p.format) || depthNeedsSampling(p.format))
+    {
+        const width = G.Math.max(1, p.width >> level);
+        const height = G.Math.max(1, p.height >> level);
+        const area = clip(width, height, region);
+        const sampled = await sampleGpuTexture(entry, level, layer, area);
+
+        return { width, height, w: area.w, h: area.h, packed: sampled.packed, format: sampled.format, bytes: sampled.bytes };
+    }
+
+    return readGpuRaw(entry, level, layer, region);
+}
+
+// The depth of one whole level, as 32-bit floats.
+export async function readGpuDepth (entry: Entry, level: number, layer: number): Promise<{ width: number; height: number; packed: Uint8Array }>
+{
+    const read = await readGpuTexels(entry, level, layer, {});
+
+    if (read.format !== 'depth16unorm')
+    {
+        return { width: read.width, height: read.height, packed: read.packed };
+    }
+
+    const source = new G.Uint16Array(read.packed.buffer, read.packed.byteOffset, read.width * read.height);
+    const depth = new G.Float32Array(read.width * read.height);
+
+    for (let i = 0; i < depth.length; i++)
+    {
+        depth[i] = source[i] / 65535;
+    }
+
+    return { width: read.width, height: read.height, packed: new G.Uint8Array(depth.buffer) };
 }
 
 async function readGpuTexture (entry: Entry, level: number, layer: number, region: Region): Promise<Pixels>
 {
-    const { width, height, w, h, packed, format, bytes } = await readGpuRaw(entry, level, layer, region);
+    const { width, height, w, h, packed, format, bytes } = await readGpuTexels(entry, level, layer, region);
     const area = { w, h };
 
     // Spread whatever the format holds across four channels: missing colour channels are 0, missing alpha is 1.
@@ -375,7 +528,16 @@ async function readGpuTexture (entry: Entry, level: number, layer: number, regio
         channels[i * 4 + 3] = present > 3 ? read(i * present + 3) : opaque;
     }
 
-    return { width, height, channels, kind, format, note: null };
+    const own: string = entry.p.format;
+
+    return {
+        width,
+        height,
+        channels,
+        kind,
+        format: own,
+        note: block(own) ? 'A compressed texture, read as the texels its blocks decode to.' : (own.includes('stencil') && own !== 'stencil8' ? 'Depth only: the stencil is not read.' : null)
+    };
 }
 
 // ---- Buffers ----

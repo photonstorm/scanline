@@ -51,7 +51,7 @@ Decided 10 November 2026, replacing the percentages in the PRD (section 9.1). Th
 | Criterion | Standing |
 |---|---|
 | Lists complete, checked against known scenes | Met for the pages there are: the inventory fixtures have known objects and the tests count them. The matrix still lacks PlayCanvas, a Unity build and an Emscripten build. |
-| Every texture can be previewed | **Not met.** Colour textures in 8-bit, float and integer formats are read back on both APIs. Compressed, depth, stencil and multisampled textures are not: they need a sampling pass or a decoder, neither built. WebGL 1 buffers cannot be read at all (the API has no call for it). |
+| Every texture can be previewed | **Met, but for multisampled textures.** Colour textures in 8-bit, float and integer formats are read back on both APIs, and compressed, depth, luminance and alpha textures by a sampling pass (see "Textures that cannot be read directly"). A multisampled texture is read through what it resolves to; the stencil of a depth and stencil texture is not read. WebGL 1 buffers cannot be read at all (the API has no call for it). |
 | Shadow state verifies after 1,000 frames | Met: no drift on eight WebGL pages (raw WebGL 1 and 2, a worker, three.js, PixiJS, Phaser, Babylon.js). `node spikes/m2-verify.mjs`. |
 
 Also from the milestone's list, and built later: WGSL reflection (not the plan's `scanline-shader` crate and `naga`: a reader of declarations in TypeScript, `shared/wgsl.ts`, because it has to run in the page), the real memory of the GPU process (milestone 5), and GPU time per pass on WebGL. Queries cannot nest, so a WebGL frame is timed in spans: the frame's query ends and another begins whenever the context starts drawing to another framebuffer, if it drew anything to the last one. `stats` lists them as `pass 0 → fbo_1`, `pass 1 → canvas`; a frame drawn in one go lists none. At most 24 spans a frame. WebGL shader reflection comes from the driver (active attributes and uniforms), which needs no parser.
@@ -90,7 +90,7 @@ Also true of what is built:
 - The `draws` table holds clears and blits as well as draws, since all three change pixels. `kind` tells them apart.
 - `draw_list`'s filter is a SQL condition on the `draws` table, not a language of its own. The database is opened read-only.
 - Replaying a capture needs a live browser, and any open session's will do. Reading what the capture says needs none.
-- Textures in formats that cannot be read back (luminance and alpha formats, compressed, depth, integer) are replayed empty. The capture's replay check then fails and says why. A sampling pass would fix the first two.
+- Integer textures are replayed empty, and float textures on a page that has not enabled the colour-buffer-float extension. The capture's replay check then fails and says why. Luminance, alpha, compressed and depth textures are read by a sampling pass and replayed (see "Textures that cannot be read directly").
 - Each replay makes a fresh context and recreates every object. Keeping one context per capture and running forwards from where it stands would make repeated questions cheaper.
 - WebGL 1 buffers now have a copy kept of every upload, as the specification asks, so they can be read and captured. This doubles the memory of WebGL 1 buffers while Scanline is attached.
 
@@ -322,10 +322,21 @@ Two things the new Babylon.js page (`fixtures/engines/babylon-shadows.html`) fou
 
 - Geometry, and which test turned a draw away, for a draw inside a render bundle.
 - External textures. The calls that use them fail in replay and the summary says so.
-- The contents of depth, stencil, multisampled and compressed textures. They are empty in replay; a pass normally clears them.
+- The contents of stencil and multisampled textures. They are empty in replay; a pass normally clears them.
 - Buffers and storage textures the GPU wrote in an earlier frame (a compute simulation) are captured as the frame left them, not as it found them, so such a frame replays one step ahead. Render targets are read before the frame. The replay check shows when this matters.
 - More than one device in a capture. Calls on another device's objects are left out.
 - A call rejected in replay is found by wrapping every call in an error scope. WebGPU reports most errors when an encoder is finished, so the call named is `finish`, with the browser's message saying which pass call was at fault.
+
+## Textures that cannot be read directly
+
+A compressed texture, a depth texture and (on WebGL) a luminance or alpha texture cannot be attached to a framebuffer or copied to a buffer as texels. They are read by drawing them: a shader of the probe's own draws one level, texel for texel, into a target that can be read. A frame that only samples such a texture (a shadow map drawn once, a compressed atlas loaded at start) used to replay with it empty.
+
+- **WebGL** (`probe/src/gl/sample.ts`). The draw uses the page's context, and everything it changes is put back from the state mirror; `resource(ctx, verify: true)` still matches afterwards. Depth is written as 24 bits across three channels. sRGB blocks are drawn to an sRGB target on WebGL 2, so the bytes read are the texture's own.
+- **A WebGL capture replays a compressed texture as the texels it decodes to**, in an 8-bit RGBA texture (sRGB where the blocks are), since WebGL has no call that reads blocks back. The frame samples the same values. A frame that itself uploads to that texture with `compressedTexSubImage2D` has that call rejected in replay, and the replay check says so. Signed and HDR block formats are clamped to 0 to 1.
+- **Depth in a WebGL capture** is uploaded on WebGL 2. WebGL 1 takes no data for a depth texture, so the replay draws it in with `EXT_frag_depth`; without that extension the texture is empty, as before.
+- **WebGPU** (`probe/src/gpu/sample.ts`). A compressed texture is copied as its blocks for a capture, which the replay writes back as they are, and drawn to be looked at. Depth is copied where the format allows (`depth16unorm`, `depth32float`, the depth of `depth32float-stencil8`) and drawn where it does not (`depth24plus`). `TEXTURE_BINDING` is added to the usage of `depth24plus` textures so that they can be drawn; it is declared with the other changes. The replay fills a depth texture by drawing a triangle whose fragments take their depth from the captured values.
+- Depth render targets are read before the frame, as colour targets are, so a frame that loads depth an earlier one drew replays from the right start.
+- Not read: multisampled textures, stencil, and 3D compressed textures.
 
 ## Assertions for a test run
 

@@ -717,6 +717,67 @@ describe('frame capture', () =>
     });
 });
 
+describe('textures a framebuffer cannot read', () =>
+{
+    // fixtures/history/formats.html: a compressed texture, a luminance and an alpha texture,
+    // and a depth texture drawn once before the first frame. None can be attached to a
+    // framebuffer and read, so each is drawn by a shader of the probe's own and that is read.
+    for (const [name, query] of [['WebGL 2', ''], ['WebGL 1', '?gl=1']])
+    {
+        test(`${name}: each is read back, held by a capture and replayed`, async () =>
+        {
+            await scanline('launch', server.url(`fixtures/history/formats.html${query}`), '--headless', '--paused');
+            await scanline('step', 3);
+
+            const state = JSON.parse((await scanline('eval', 'JSON.stringify(window.game)', '--json')).json.data.value);
+
+            assert.equal(state.depth, true, 'depth textures are available here');
+
+            const read = async (source, ...at) => (await scanline('pixels', ...at, '--source', source, '--flip', 'false', '--json')).json;
+
+            if (state.compressed)
+            {
+                const blocks = await read('tex_1', 0, 3, 8, 2);
+
+                assert.match(blocks.summary, /COMPRESSED_RGB_S3TC_DXT1/);
+                assert.match(blocks.summary, /y 3: \(255, 0, 0, 255\)×4 \(0, 255, 0, 255\)×4\n {2}y 4: \(0, 0, 255, 255\)×4 \(255, 255, 255, 255\)×4/, blocks.summary);
+            }
+
+            assert.match((await read('tex_2', 0, 0, 2, 2)).summary, /y 0: \(0, 0, 0, 255\) \(85, 85, 85, 255\)\n {2}y 1: \(170, 170, 170, 255\) \(255, 255, 255, 255\)/);
+            assert.match((await read('tex_3', 0, 0, 2, 2)).summary, /y 0: \(0, 0, 0, 255\) \(0, 0, 0, 170\)\n {2}y 1: \(0, 0, 0, 85\) \(0, 0, 0, 0\)/);
+
+            // Depth: 0.25 on the left half, 1 where nothing was drawn.
+            const depth = await read('tex_4', 6, 8, 4, 1);
+
+            assert.match(depth.summary, /rgba float, format DEPTH_COMPONENT/);
+            assert.match(depth.summary, /y 8: \(0\.25, 0, 0, 1\)×2 \(1, 0, 0, 1\)×2/, depth.summary);
+
+            // Reading them left the page's context as it was, and raised nothing.
+            assert.match((await scanline('resource', 'ctx_1', '--verify', 'true')).out, /Verified: all \d+ values match what the context reports/);
+            assert.match((await scanline('console')).out, /No console lines/);
+
+            // A capture holds all four, though the frame only samples them.
+            const taken = await scanline('capture', '--json');
+
+            assert.equal(taken.json.data.replay, 'identical', taken.json.summary);
+            assert.doesNotMatch(taken.json.summary, /could not be captured|not built yet/);
+
+            if (state.compressed)
+            {
+                assert.match(taken.json.summary, /A COMPRESSED_RGB_S3TC_DXT1 texture is replayed as the texels it decodes to, not as its blocks/);
+            }
+
+            // The page still draws what it drew.
+            await scanline('step', 1);
+
+            const pixel = async (x, y) => (await scanline('pixels', x, y, '--json')).json.data.rgba8;
+
+            assert.deepEqual([await pixel(50, 30), await pixel(110, 90), await pixel(130, 60), await pixel(150, 60)], [[170, 170, 170, 255], [170, 170, 170, 255], [64, 64, 64, 255], [255, 255, 255, 255]]);
+            await scanline('stop');
+        });
+    }
+});
+
 describe('working with the person', () =>
 {
     test('ask, play, Debug: the frames before the press are kept and the flicker is found', async () =>

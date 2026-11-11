@@ -1,0 +1,156 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Textures a copy cannot read: a WebGPU frame with known answers</title>
+<style>body { margin: 0; background: #111; } canvas { display: block; }</style>
+<canvas id="game" width="160" height="120"></canvas>
+<script type="module">
+// Three columns, each 40 px wide and all 120 px tall, each drawn from a texture that a
+// copy to a buffer does not give the texels of. All three are filled before the first
+// frame and never again, so a capture has to hold what is in them.
+//
+//   x   0–40   «blocks»    8×8 bc1-rgba-unorm, four blocks of one colour each
+//                          top left red, top right green, bottom left blue, bottom right white
+//   x  40–80   «shadow»    16×16 depth24plus, drawn once: 0.25 on its left half, 1 on its
+//                          right, shown as greys 64 and 255
+//   x  80–120  «shadow32»  16×16 depth32float, drawn once: 0.5 on its left half, shown as
+//                          greys 128 and 255
+//
+// The frame's events: 0 the pass clears to (26, 26, 26); 1 to 3 draw the columns.
+// window.game.compressed is false where the adapter has no BC formats: column 0 is left out.
+const canvas = document.getElementById('game');
+const adapter = await navigator.gpu.requestAdapter();
+const bc = adapter.features.has('texture-compression-bc');
+const device = await adapter.requestDevice({ requiredFeatures: bc ? ['texture-compression-bc'] : [] });
+const context = canvas.getContext('webgpu');
+const format = navigator.gpu.getPreferredCanvasFormat();
+const state = window.game = { frame: 0, compressed: bc };
+
+context.configure({ device, format, alphaMode: 'opaque' });
+
+const module = device.createShaderModule({ label: 'columns', code: `
+    override z: f32 = 0.0;
+
+    struct Corner
+    {
+        @builtin(position) position: vec4f,
+        @location(0) uv: vec2f
+    }
+
+    // One triangle over the whole viewport; uv runs from the top left.
+    @vertex fn vertex (@builtin(vertex_index) index: u32) -> Corner
+    {
+        let p = vec2f(f32((index << 1u) & 2u), f32(index & 2u));
+
+        return Corner(vec4f(p * 2.0 - 1.0, z, 1.0), vec2f(p.x, 1.0 - p.y));
+    }
+
+    @group(0) @binding(0) var colour: texture_2d<f32>;
+
+    @fragment fn texels (corner: Corner) -> @location(0) vec4f
+    {
+        return vec4f(textureLoad(colour, vec2i(corner.uv * 8.0), 0).rgb, 1.0);
+    }
+
+    @group(0) @binding(1) var depth: texture_depth_2d;
+
+    @fragment fn greys (corner: Corner) -> @location(0) vec4f
+    {
+        return vec4f(vec3f(textureLoad(depth, vec2i(corner.uv * 16.0), 0)), 1.0);
+    }` });
+
+// «blocks»: each BC1 block is two RGB565 colours and sixteen 2-bit choices between them.
+let blocks = null;
+
+if (bc)
+{
+    const solid = (low, high) => [low, high, low, high, 0, 0, 0, 0];
+
+    blocks = device.createTexture({ label: 'blocks', size: [8, 8], format: 'bc1-rgba-unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
+    device.queue.writeTexture(
+        { texture: blocks },
+        new Uint8Array([...solid(0x00, 0xF8), ...solid(0xE0, 0x07), ...solid(0x1F, 0x00), ...solid(0xFF, 0xFF)]),
+        { bytesPerRow: 16, rowsPerImage: 2 },
+        [8, 8]
+    );
+}
+
+// The shadow maps: drawn to once, here, and only sampled from then on.
+function shadow (label, depthFormat, z)
+{
+    const texture = device.createTexture({ label, size: [16, 16], format: depthFormat, usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING });
+    const pipeline = device.createRenderPipeline({
+        label: `${label} fill`,
+        layout: device.createPipelineLayout({ bindGroupLayouts: [] }),
+        vertex: { module, entryPoint: 'vertex', constants: { z } },
+        depthStencil: { format: depthFormat, depthWriteEnabled: true, depthCompare: 'always' },
+        primitive: { topology: 'triangle-list' }
+    });
+    const encoder = device.createCommandEncoder();
+    const pass = encoder.beginRenderPass({
+        label: `${label} fill`,
+        colorAttachments: [],
+        depthStencilAttachment: { view: texture.createView(), depthClearValue: 1, depthLoadOp: 'clear', depthStoreOp: 'store' }
+    });
+
+    pass.setPipeline(pipeline);
+    pass.setScissorRect(0, 0, 8, 16);
+    pass.draw(3);
+    pass.end();
+    device.queue.submit([encoder.finish()]);
+
+    return texture;
+}
+
+const shadow24 = shadow('shadow', 'depth24plus', 0.25);
+const shadow32 = shadow('shadow32', 'depth32float', 0.5);
+
+const column = (label, entryPoint, binding, texture, sampleType) =>
+{
+    const layout = device.createBindGroupLayout({ label, entries: [{ binding, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType } }] });
+
+    return {
+        pipeline: device.createRenderPipeline({
+            label,
+            layout: device.createPipelineLayout({ bindGroupLayouts: [layout] }),
+            vertex: { module, entryPoint: 'vertex' },
+            fragment: { module, entryPoint, targets: [{ format }] },
+            primitive: { topology: 'triangle-list' }
+        }),
+        group: device.createBindGroup({ label, layout, entries: [{ binding, resource: texture.createView() }] })
+    };
+};
+
+const columns = [
+    blocks ? column('blocks', 'texels', 0, blocks, 'float') : null,
+    column('shadow', 'greys', 1, shadow24, 'depth'),
+    column('shadow32', 'greys', 1, shadow32, 'depth')
+];
+
+function frame ()
+{
+    state.frame++;
+
+    const encoder = device.createCommandEncoder();
+    const pass = encoder.beginRenderPass({
+        label: 'scene',
+        colorAttachments: [{ view: context.getCurrentTexture().createView(), clearValue: [0.1, 0.1, 0.1, 1], loadOp: 'clear', storeOp: 'store' }]
+    });
+
+    columns.forEach((each, index) =>
+    {
+        if (each)
+        {
+            pass.setViewport(index * 40, 0, 40, 120, 0, 1);
+            pass.setPipeline(each.pipeline);
+            pass.setBindGroup(0, each.group);
+            pass.draw(3);
+        }
+    });
+
+    pass.end();
+    device.queue.submit([encoder.finish()]);
+    requestAnimationFrame(frame);
+}
+
+requestAnimationFrame(frame);
+</script>

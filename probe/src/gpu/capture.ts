@@ -22,10 +22,11 @@ import type { ContextInfo } from '../contexts';
 import { METHOD_NAMES } from '../hooks/generated';
 import type { Rec } from '../hooks/hub';
 import { G } from '../natives';
-import { readBuffer, readGpuRaw } from '../readback';
+import { readBuffer, readGpuDepth, readGpuRaw } from '../readback';
 import { alive, all, deviceFor, entryOf, find, type Entry, type Kind } from '../registry';
 import { emit } from '../transport';
-import { copyBytes } from './formats';
+import { block } from './formats';
+import { depthNeedsSampling, isDepth } from './sample';
 import { mapWatch } from './rec';
 import { viewOf } from './tracker';
 
@@ -801,14 +802,20 @@ function unreadable (p: Record<string, any>): string | null
         return p.sampleCount > 1 ? 'multisampled' : 'no COPY_SRC usage';
     }
 
-    if (format.startsWith('depth') || format.includes('stencil'))
+    if (p.dimension === '3d' && (block(format) || isDepth(format)))
     {
-        return 'depth or stencil format';
+        return 'compressed 3D format';
     }
 
-    if (copyBytes(format) === 0)
+    // Depth is read by a copy where one works, and by drawing it where none does.
+    if (depthNeedsSampling(format) && !p.sampled)
     {
-        return 'compressed format';
+        return 'no TEXTURE_BINDING usage';
+    }
+
+    if (format === 'stencil8')
+    {
+        return 'stencil format';
     }
 
     return null;
@@ -817,7 +824,8 @@ function unreadable (p: Record<string, any>): string | null
 async function readLevels (capture: Capture, entry: Entry, levels: number): Promise<Array<Record<string, unknown>>>
 {
     const out: Array<Record<string, unknown>> = [];
-    const reads: Array<{ level: number; layer: number; read: ReturnType<typeof readGpuRaw> }> = [];
+    const reads: Array<{ level: number; layer: number; read: Promise<{ width: number; height: number; rows?: number; packed: Uint8Array }> }> = [];
+    const depth = isDepth(entry.p.format);
 
     // Every copy is submitted before the first is waited for, so that a texture about to be
     // destroyed (the flight recorder reads it at that moment) is read whole.
@@ -825,7 +833,8 @@ async function readLevels (capture: Capture, entry: Entry, levels: number): Prom
     {
         for (let layer = 0; layer < layersOf(entry.p, level); layer++)
         {
-            const read = readGpuRaw(entry, level, layer);
+            // Depth as floats, whatever the format keeps it as; anything else as stored.
+            const read = depth ? readGpuDepth(entry, level, layer) : readGpuRaw(entry, level, layer);
 
             read.catch(() => undefined);
             reads.push({ level, layer, read });
@@ -836,7 +845,19 @@ async function readLevels (capture: Capture, entry: Entry, levels: number): Prom
     {
         const done = await read;
 
-        out.push({ level, layer, blob: blob(capture, done.packed), width: done.width, height: done.height });
+        const part: Record<string, unknown> = { level, layer, blob: blob(capture, done.packed), width: done.width, height: done.height };
+
+        if (depth)
+        {
+            part.depth = true;
+        }
+        else if (done.rows !== undefined && done.rows !== done.height)
+        {
+            // A compressed level: this many rows of blocks.
+            part.rows = done.rows;
+        }
+
+        out.push(part);
     }
 
     return out;
@@ -1057,8 +1078,8 @@ async function describe (capture: Capture, entry: Entry): Promise<Record<string,
             {
                 out.unreadable = why ?? 'destroyed during the frame';
 
-                // A depth buffer or a multisampled target is cleared by the pass that uses it.
-                if (why === 'compressed format' || why === 'no COPY_SRC usage')
+                // A multisampled target is cleared by the pass that uses it.
+                if (why !== 'multisampled')
                 {
                     note(capture, 'unreadable-texture');
                 }

@@ -504,6 +504,7 @@ export class GpuRun
     makeTexture (record: Json): any
     {
         const multisampled = (record.sampleCount ?? 1) > 1;
+        const filled = (record.data ?? []).some((part: Json) => part.depth);
 
         const texture = this.device.createTexture({
             label: record.label ?? undefined,
@@ -512,7 +513,8 @@ export class GpuRun
             // Copies in and out, so it can be filled and read. A multisampled texture allows neither.
             // A depth or stencil texture can also be sampled, which is how its depth is read.
             // So can a multisampled one, which is how one sample of it is read.
-            usage: (multisampled ? record.usage : (record.usage | COPY_SRC | COPY_DST)) | (DEPTH_FORMATS[record.format] || multisampled ? TEXTURE_BINDING : 0),
+            // And a depth texture whose depth was captured is drawn to, which is how it is filled.
+            usage: (multisampled ? record.usage : (record.usage | COPY_SRC | COPY_DST)) | (DEPTH_FORMATS[record.format] || multisampled ? TEXTURE_BINDING : 0) | (filled ? RENDER_ATTACHMENT : 0),
             mipLevelCount: record.levels ?? 1,
             sampleCount: record.sampleCount ?? 1,
             dimension: record.dimension ?? '2d',
@@ -521,13 +523,22 @@ export class GpuRun
 
         for (const part of record.data ?? [])
         {
+            if (part.depth)
+            {
+                this.fillDepth(texture, record, part);
+
+                continue;
+            }
+
+            // A compressed level is rows of blocks, fewer than its height in texels.
             const bytes = this.blob(part.blob);
-            const perRow = bytes.length / Math.max(1, part.height);
+            const rows = part.rows ?? part.height;
+            const perRow = bytes.length / Math.max(1, rows);
 
             this.queue.writeTexture(
                 { texture, mipLevel: part.level, origin: [0, 0, part.layer] },
                 bytes,
-                { bytesPerRow: perRow, rowsPerImage: part.height },
+                { bytesPerRow: perRow, rowsPerImage: rows },
                 [part.width, part.height, 1]
             );
         }
@@ -540,6 +551,68 @@ export class GpuRun
         this.onTexture?.(texture, record.id);
 
         return texture;
+    }
+
+    // Depth cannot be written to most depth formats, so it is drawn: a triangle over the
+    // whole level whose fragments take their depth from a texture of the captured values.
+    depthFillers = new Map<string, { pipeline: any; layout: any }>();
+
+    fillDepth (texture: any, record: Json, part: Json): void
+    {
+        const device = this.device;
+        const format: string = record.format;
+
+        let filler = this.depthFillers.get(format);
+
+        if (!filler)
+        {
+            const module = device.createShaderModule({
+                code: `@group(0) @binding(0) var source: texture_2d<f32>;
+@vertex fn vertex (@builtin(vertex_index) index: u32) -> @builtin(position) vec4f
+{
+    return vec4f(vec2f(f32((index << 1u) & 2u), f32(index & 2u)) * 2.0 - 1.0, 0.0, 1.0);
+}
+@fragment fn fragment (@builtin(position) at: vec4f) -> @builtin(frag_depth) f32 { return textureLoad(source, vec2i(at.xy), 0).r; }`
+            });
+            const layout = device.createBindGroupLayout({ entries: [{ binding: 0, visibility: 2, texture: { sampleType: 'unfilterable-float', viewDimension: '2d' } }] });
+
+            filler = {
+                layout,
+                pipeline: device.createRenderPipeline({
+                    layout: device.createPipelineLayout({ bindGroupLayouts: [layout] }),
+                    vertex: { module, entryPoint: 'vertex' },
+                    fragment: { module, entryPoint: 'fragment', targets: [] },
+                    depthStencil: { format, depthWriteEnabled: true, depthCompare: 'always' },
+                    primitive: { topology: 'triangle-list' }
+                })
+            };
+
+            this.depthFillers.set(format, filler);
+        }
+
+        const source = device.createTexture({ size: [part.width, part.height], format: 'r32float', usage: TEXTURE_BINDING | COPY_DST });
+
+        this.queue.writeTexture({ texture: source }, this.blob(part.blob), { bytesPerRow: part.width * 4, rowsPerImage: part.height }, [part.width, part.height, 1]);
+
+        const stencil = DEPTH_FORMATS[format]?.stencil;
+        const encoder = device.createCommandEncoder();
+        const pass = encoder.beginRenderPass({
+            colorAttachments: [],
+            depthStencilAttachment: {
+                view: texture.createView({ dimension: '2d', baseMipLevel: part.level, mipLevelCount: 1, baseArrayLayer: part.layer, arrayLayerCount: 1 }),
+                depthClearValue: 1,
+                depthLoadOp: 'clear',
+                depthStoreOp: 'store',
+                ...(stencil ? { stencilClearValue: 0, stencilLoadOp: 'clear', stencilStoreOp: 'store' } : {})
+            }
+        });
+
+        pass.setPipeline(filler.pipeline);
+        pass.setBindGroup(0, device.createBindGroup({ layout: filler.layout, entries: [{ binding: 0, resource: source.createView() }] }));
+        pass.draw(3);
+        pass.end();
+        this.queue.submit([encoder.finish()]);
+        source.destroy();
     }
 
     makeBuffer (record: Json): any

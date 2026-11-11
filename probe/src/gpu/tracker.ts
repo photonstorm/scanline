@@ -14,8 +14,10 @@ import type { Tag } from '../tag';
 import { gpuDeviceTag, gpuViewTag } from '../tags.generated';
 import { textureBytes } from './formats';
 import { mapWatch, recordIntercepted } from './rec';
+import { depthNeedsSampling } from './sample';
 
 const TEXTURE_COPY_SRC = 0x01;
+const TEXTURE_BINDING = 0x04;
 const TEXTURE_TRANSIENT = 0x20;
 const BUFFER_MAP_READ = 0x0001;
 const BUFFER_COPY_SRC = 0x0004;
@@ -560,12 +562,17 @@ const intercept: Record<string, Intercept> = {
         // have no storage to copy, nor on multisampled textures, which cannot be copied.
         const add = !config.unmodified && typeof usage === 'number' && (usage & (TEXTURE_COPY_SRC | TEXTURE_TRANSIENT)) === 0 && samples === 1;
 
-        if (add)
+        // TEXTURE_BINDING lets the probe draw a depth24plus texture to read it, which is the
+        // only way: it cannot be copied.
+        const bind = !config.unmodified && typeof usage === 'number' && (usage & (TEXTURE_BINDING | TEXTURE_TRANSIENT)) === 0 && samples === 1 && depthNeedsSampling(G.String(given.format));
+        const wanted = typeof usage === 'number' ? usage | (add ? TEXTURE_COPY_SRC : 0) | (bind ? TEXTURE_BINDING : 0) : usage;
+
+        if (add || bind)
         {
             addedCopySrc = true;
         }
 
-        const texture = native.call(device, add ? amended(given, { usage: usage | TEXTURE_COPY_SRC }) : given);
+        const texture = native.call(device, add || bind ? amended(given, { usage: wanted }) : given);
 
         try
         {
@@ -584,7 +591,8 @@ const intercept: Record<string, Intercept> = {
                 mipLevelCount: mips,
                 sampleCount: samples,
                 dimension,
-                readable: add || (typeof usage === 'number' && (usage & TEXTURE_COPY_SRC) !== 0)
+                readable: add || (typeof usage === 'number' && (usage & TEXTURE_COPY_SRC) !== 0),
+                sampled: typeof wanted === 'number' && (wanted & TEXTURE_BINDING) !== 0
             }, given);
 
             if (entry)
@@ -680,7 +688,7 @@ export function installGpuTracking (): void
 {
     declare({
         id: 'webgpu-resource-copy-src',
-        what: 'COPY_SRC is added to the usage of WebGPU textures and buffers that lack it',
+        what: 'COPY_SRC is added to the usage of WebGPU textures and buffers that lack it (and TEXTURE_BINDING to depth24plus textures, which cannot be copied)',
         why: 'Reading back texture and buffer contents',
         optional: true,
         active: () => addedCopySrc

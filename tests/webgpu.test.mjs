@@ -517,6 +517,52 @@ describe('render bundles', () =>
     });
 });
 
+describe('textures a copy cannot read', () =>
+{
+    // fixtures/history/formats-webgpu.html: a BC1 texture and two shadow maps (depth24plus,
+    // which cannot be copied, and depth32float), all filled before the first frame.
+    test('compressed and depth textures are read back, held by a capture and replayed', async () =>
+    {
+        await scanline('launch', server.url('fixtures/history/formats-webgpu.html'), '--headless', '--paused');
+        await scanline('step', 3);
+
+        const state = JSON.parse((await scanline('eval', 'JSON.stringify(window.game)', '--json')).json.data.value);
+        const read = async (source, ...at) => (await scanline('pixels', ...at, '--source', source)).out;
+
+        if (state.compressed)
+        {
+            const blocks = await read('tex_1', 0, 3, 8, 2);
+
+            assert.match(blocks, /format bc1-rgba-unorm/);
+            assert.match(blocks, /y 3: \(255, 0, 0, 255\)×4 \(0, 255, 0, 255\)×4\n {2}y 4: \(0, 0, 255, 255\)×4 \(255, 255, 255, 255\)×4/, blocks);
+        }
+
+        // A region of a depth texture: the level is copied whole (or drawn) and cut.
+        assert.match(await read('tex_2', 6, 8, 4, 1), /format depth24plus.*\n {2}y 8: \(0\.25, 0, 0, 1\)×2 \(1, 0, 0, 1\)×2/);
+        assert.match(await read('tex_3', 6, 8, 4, 1), /format depth32float.*\n {2}y 8: \(0\.5, 0, 0, 1\)×2 \(1, 0, 0, 1\)×2/);
+        assert.match((await scanline('console')).out, /No console lines/, 'reading them raised no validation error');
+
+        // A capture holds all three, though the frame only samples them.
+        const taken = await scanline('capture', '--json');
+
+        assert.equal(taken.json.data.replay, 'identical', taken.json.summary);
+        assert.doesNotMatch(taken.json.summary, /could not be read|empty in the replay/);
+
+        const capture = taken.json.data.capture;
+        const pixel = async (x, y) => (await scanline('pixels', x, y, '--capture', capture, '--json')).json.data.rgba8;
+
+        // The replay's own picture, from the textures as the capture kept them.
+        assert.deepEqual([await pixel(50, 60), await pixel(70, 60), await pixel(90, 60), await pixel(110, 60)], [[64, 64, 64, 255], [255, 255, 255, 255], [128, 128, 128, 255], [255, 255, 255, 255]]);
+
+        if (state.compressed)
+        {
+            assert.deepEqual([await pixel(10, 30), await pixel(30, 30), await pixel(10, 90), await pixel(30, 90)], [[255, 0, 0, 255], [0, 255, 0, 255], [0, 0, 255, 255], [255, 255, 255, 255]]);
+        }
+
+        await scanline('stop');
+    });
+});
+
 describe('WebGPU in a worker', () =>
 {
     test('a device made in a worker is captured, replayed, analysed and patched', async () =>

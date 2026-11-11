@@ -25,6 +25,7 @@ import { CAP_CODES, slotOf, trackerFor, vaoStateOf, type GlTracker, type Uniform
 import { METHOD_NAMES } from './hooks/generated';
 import type { Rec } from './hooks/hub';
 import { G } from './natives';
+import { isCompressedFormat, isSrgbCompressed } from './gl/sample';
 import { base64, gzip, readBuffer, readGlTexture } from './readback';
 import { alive, all, entryOf, find, type Entry, type Kind } from './registry';
 import { emit, expose } from './transport';
@@ -590,6 +591,13 @@ function describeTexture (capture: Capture, entry: Entry): Record<string, unknow
         renderTarget: Boolean(p.renderTarget),
         params: p.params ?? {}
     };
+
+    // A compressed texture is read as the texels its blocks decode to, and replayed as a
+    // texture of those: 8-bit RGBA, sRGB where the blocks are.
+    if (p.compressed || isCompressedFormat(p.internalFormat))
+    {
+        out.decodedAs = capture.info.api === 'webgl2' ? (isSrgbCompressed(p.internalFormat) ? 0x8C43 : 0x8058) : 0x1908;
+    }
 
     if (!p.width || !p.height || p.createdInFrame)
     {

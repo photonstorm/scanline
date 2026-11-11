@@ -963,8 +963,13 @@ Known limits
   - Pointer lock and fullscreen have not been verified.
   - Windows is not supported yet. macOS only.
   - Draw and triangle counts are per frame as issued. Triangle counts leave out indirect draws.
-  - Texture readback: compressed, depth and stencil formats are not read yet, nor multisampled
-    textures. A capture that uses one replays it empty, and its replay check says so.
+  - Texture readback: a compressed texture is read as the texels its blocks decode to, and
+    a depth texture as its depth (WebGL to 24 bits), each by drawing it with a shader of
+    Scanline's own where it cannot be copied. A WebGL capture replays a compressed texture
+    as those texels (8-bit RGBA), not as its blocks; a WebGPU capture keeps the blocks.
+    Not read: multisampled textures (read what they resolve to), the stencil of a depth
+    and stencil texture, 3D compressed textures, and float textures on a WebGL page that
+    has not enabled the colour-buffer-float extension.
   - pixel_source lists the events that changed a pixel; pixel_history adds the draws that
     covered it and were rejected, and says by what: culling, the depth or stencil test, the
     scissor box, or the fragment shader discarding it (WebGL 2 and WebGPU). A multisampled
@@ -975,10 +980,11 @@ Known limits
     (and any frame stepped by hand or that makes an object): \"used ~f120\" is the last sampled frame it was used in,
     and \"not seen in use\" is weaker than \"never used\". A texture, buffer or sampler
     counts as used when a bind group or bundle holding it is, or a pass draws to it.
-  - A WebGPU capture does not hold external (video) textures, or the contents of depth,
-    stencil, multisampled and compressed textures. A call that uses an external texture
-    fails in replay; the summary says so. A render bundle is held as what was recorded
-    into it, whenever it was built (not in an unmodified session, which follows nothing).
+  - A WebGPU capture does not hold external (video) textures, or the contents of stencil
+    and multisampled textures (a pass that uses one is expected to clear it). A call that
+    uses an external texture fails in replay; the summary says so. A render bundle is held
+    as what was recorded into it, whenever it was built (not in an unmodified session,
+    which follows nothing).
   - A WebGPU frame that reads what the GPU wrote in an earlier frame through a buffer or a
     storage texture (a simulation stepped by a compute pass) is captured with their contents
     as the frame left them, so its replay is one step ahead. Render targets are read before

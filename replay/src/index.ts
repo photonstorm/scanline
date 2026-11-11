@@ -104,8 +104,45 @@ const UPLOAD: Record<number, [number, number]> = {
     0x1908: [0x1908, 4], 0x8058: [0x1908, 4], 0x8C43: [0x1908, 4], 0x8056: [0x1908, 4], 0x8057: [0x1908, 4], 0x881A: [0x1908, 4], 0x8814: [0x1908, 4],
     0x1907: [0x1907, 3], 0x8051: [0x1907, 3], 0x8C41: [0x1907, 3], 0x8D62: [0x1907, 3], 0x881B: [0x1907, 3], 0x8815: [0x1907, 3], 0x8C3A: [0x1907, 3], 0x8C3D: [0x1907, 3],
     0x8229: [0x1903, 1], 0x822D: [0x1903, 1], 0x822E: [0x1903, 1],
-    0x822B: [0x8227, 2], 0x822F: [0x8227, 2], 0x8230: [0x8227, 2]
+    0x822B: [0x8227, 2], 0x822F: [0x8227, 2], 0x8230: [0x8227, 2],
+    0x1909: [0x1909, 1], 0x1906: [0x1906, 1], 0x190A: [0x190A, 2]
 };
+
+// Which of a readback's four channels an upload takes, where it is not the first few:
+// alpha is the fourth, and luminance with alpha the first and the fourth.
+const PICKED: Record<number, number[]> = { 0x1906: [3], 0x190A: [0, 3] };
+
+// Depth as the bytes each depth format is uploaded in, from depth as floats in RGBA.
+function depthPixels (internalFormat: number, rgba: Float32Array, count: number): ArrayBufferView | null
+{
+    const depth = (i: number): number => Math.min(1, Math.max(0, rgba[i * 4]));
+
+    switch (internalFormat)
+    {
+        case 0x81A5:
+            return Uint16Array.from({ length: count }, (_, i) => Math.round(depth(i) * 65535));
+        case 0x81A6:
+            return Uint32Array.from({ length: count }, (_, i) => Math.round(depth(i) * 16777215) * 256);
+        case 0x8CAC:
+            return Float32Array.from({ length: count }, (_, i) => depth(i));
+        case 0x88F0:
+            // Depth in the top 24 bits, stencil (not captured) zero in the bottom 8.
+            return Uint32Array.from({ length: count }, (_, i) => Math.round(depth(i) * 16777215) * 256);
+        case 0x8CAD:
+        {
+            const out = new Float32Array(count * 2);
+
+            for (let i = 0; i < count; i++)
+            {
+                out[i * 2] = depth(i);
+            }
+
+            return out;
+        }
+        default:
+            return null;
+    }
+}
 
 class Run
 {
@@ -153,6 +190,126 @@ class Run
         {
             this.extensions.set(name, this.gl.getExtension(name));
         }
+    }
+
+    // WebGL 1: fills a depth texture with captured depth, by drawing a quad that writes
+    // each fragment's depth from a texture of it. False where the context cannot.
+    drawDepth (texture: Json, part: Json): boolean
+    {
+        const gl = this.gl;
+
+        if (!gl.getExtension('EXT_frag_depth'))
+        {
+            return false;
+        }
+
+        const [format, type] = DEPTH_UPLOAD[texture.internalFormat](texture.type);
+        const width: number = texture.width;
+        const height: number = texture.height;
+        const depth = new Float32Array(this.blob(part.blob).slice().buffer);
+        const bytes = new Uint8Array(width * height * 4);
+
+        for (let i = 0; i < width * height; i++)
+        {
+            const value = Math.round(Math.min(1, Math.max(0, depth[i * 4])) * 16777215);
+
+            bytes[i * 4] = value & 255;
+            bytes[i * 4 + 1] = (value >> 8) & 255;
+            bytes[i * 4 + 2] = (value >> 16) & 255;
+            bytes[i * 4 + 3] = 255;
+        }
+
+        const object = this.object('texture', texture.id);
+
+        gl.texImage2D(TEXTURE_2D, 0, texture.internalFormat, width, height, 0, format, type, null);
+
+        const make = (kind: number, source: string): WebGLShader =>
+        {
+            const shader = gl.createShader(kind);
+
+            gl.shaderSource(shader, source);
+            gl.compileShader(shader);
+
+            return shader;
+        };
+
+        const program = gl.createProgram();
+        const shaders = [
+            make(0x8B31, 'attribute vec2 corner;\nvoid main () { gl_Position = vec4(corner, 0.0, 1.0); }'),
+            make(0x8B30, `#extension GL_EXT_frag_depth : require
+precision highp float;
+uniform sampler2D depth;
+uniform vec2 size;
+void main ()
+{
+    vec3 t = floor(texture2D(depth, gl_FragCoord.xy / size).rgb * 255.0 + 0.5);
+
+    gl_FragDepthEXT = (t.r + t.g * 256.0 + t.b * 65536.0) / 16777215.0;
+    gl_FragColor = vec4(0.0);
+}`)
+        ];
+
+        shaders.forEach((shader) => gl.attachShader(program, shader));
+        gl.bindAttribLocation(program, 0, 'corner');
+        gl.linkProgram(program);
+
+        const source = gl.createTexture();
+        const colour = gl.createTexture();
+        const framebuffer = gl.createFramebuffer();
+        const corners = gl.createBuffer();
+
+        let drawn = false;
+
+        if (gl.getProgramParameter(program, 0x8B82))
+        {
+            gl.bindTexture(TEXTURE_2D, colour);
+            gl.texImage2D(TEXTURE_2D, 0, 0x1908, width, height, 0, 0x1908, 0x1401, null);
+            gl.bindTexture(TEXTURE_2D, source);
+            gl.pixelStorei(0x0CF5, 1);
+            gl.texImage2D(TEXTURE_2D, 0, 0x1908, width, height, 0, 0x1908, 0x1401, bytes);
+
+            for (const [pname, value] of [[0x2801, 0x2600], [0x2800, 0x2600], [0x2802, 0x812F], [0x2803, 0x812F]])
+            {
+                gl.texParameteri(TEXTURE_2D, pname, value);
+            }
+
+            gl.bindFramebuffer(0x8D40, framebuffer);
+            gl.framebufferTexture2D(0x8D40, 0x8CE0, TEXTURE_2D, colour, 0);
+            gl.framebufferTexture2D(0x8D40, texture.internalFormat === 0x84F9 ? 0x821A : 0x8D00, TEXTURE_2D, object, 0);
+
+            if (gl.checkFramebufferStatus(0x8D40) === 0x8CD5)
+            {
+                gl.viewport(0, 0, width, height);
+                gl.enable(0x0B71);
+                gl.depthFunc(0x0207);
+                gl.useProgram(program);
+                gl.uniform2f(gl.getUniformLocation(program, 'size'), width, height);
+                gl.bindBuffer(0x8892, corners);
+                gl.bufferData(0x8892, new Float32Array([-1, -1, 3, -1, -1, 3]), 0x88E4);
+                gl.enableVertexAttribArray(0);
+                gl.vertexAttribPointer(0, 2, 0x1406, false, 0, 0);
+                gl.drawArrays(4, 0, 3);
+                gl.disableVertexAttribArray(0);
+                gl.bindBuffer(0x8892, null);
+                gl.useProgram(null);
+                gl.depthFunc(0x0201);
+                gl.disable(0x0B71);
+                drawn = true;
+            }
+
+            gl.bindFramebuffer(0x8D40, null);
+        }
+
+        // Left as fillTexture expects: the texture being filled is the one bound.
+        gl.bindTexture(TEXTURE_2D, object);
+        gl.deleteFramebuffer(framebuffer);
+        gl.deleteTexture(source);
+        gl.deleteTexture(colour);
+        gl.deleteBuffer(corners);
+        shaders.forEach((shader) => gl.deleteShader(shader));
+        gl.deleteProgram(program);
+
+        return drawn;
     }
 
     note (text: string): void
@@ -452,20 +609,74 @@ class Run
         const three = target === TEXTURE_3D || target === TEXTURE_2D_ARRAY;
         const data: Json[] = texture.data ?? [];
         const kind: string = data[0]?.kind ?? 'unorm8';
-        const upload = UPLOAD[texture.internalFormat];
         const levels = texture.levels || 1;
+
+        // A compressed texture was captured as the texels its blocks decode to, and is
+        // replayed as a texture of those: the frame samples the same values from it.
+        const decoded = Boolean(texture.decodedAs && data.length && !texture.unreadable);
+        const internalFormat: number = decoded ? texture.decodedAs : texture.internalFormat;
+        const upload = UPLOAD[internalFormat];
+
+        if (decoded)
+        {
+            this.note(`A ${texture.format} texture is replayed as the texels it decodes to, not as its blocks.`);
+        }
 
         // Storage first.
         if (texture.immutable && this.gl2)
         {
             if (three)
             {
-                gl.texStorage3D(target, levels, texture.internalFormat, texture.width, texture.height, texture.depth);
+                gl.texStorage3D(target, levels, internalFormat, texture.width, texture.height, texture.depth);
             }
             else
             {
-                gl.texStorage2D(target, levels, texture.internalFormat, texture.width, texture.height);
+                gl.texStorage2D(target, levels, internalFormat, texture.width, texture.height);
             }
+        }
+
+        // A depth texture whose contents were captured: a shadow map drawn in an earlier frame.
+        const depths = this.gl2 && kind === 'float' && !texture.unreadable && data.length > 0 ? DEPTH_UPLOAD[internalFormat]?.(texture.type) : undefined;
+
+        if (depths)
+        {
+            for (const part of data)
+            {
+                const width = Math.max(1, texture.width >> part.level);
+                const height = Math.max(1, texture.height >> part.level);
+                const pixels = depthPixels(internalFormat, new Float32Array(this.blob(part.blob).slice().buffer), width * height);
+
+                if (!pixels)
+                {
+                    continue;
+                }
+
+                if (three)
+                {
+                    if (!texture.immutable && part.layer === 0)
+                    {
+                        gl.texImage3D(target, part.level, internalFormat, width, height, texture.depth, 0, depths[0], depths[1], null);
+                    }
+
+                    gl.texSubImage3D(target, part.level, 0, 0, part.layer, width, height, 1, depths[0], depths[1], pixels);
+                }
+                else if (texture.immutable)
+                {
+                    gl.texSubImage2D(target === TEXTURE_CUBE_MAP ? 0x8515 + part.layer : TEXTURE_2D, part.level, 0, 0, width, height, depths[0], depths[1], pixels);
+                }
+                else
+                {
+                    gl.texImage2D(target === TEXTURE_CUBE_MAP ? 0x8515 + part.layer : TEXTURE_2D, part.level, internalFormat, width, height, 0, depths[0], depths[1], pixels);
+                }
+            }
+
+            return;
+        }
+
+        // WebGL 1 takes no data for a depth texture, so the depth is drawn into it.
+        if (!this.gl2 && kind === 'float' && !texture.unreadable && data.length > 0 && target === TEXTURE_2D && DEPTH_UPLOAD[internalFormat] && this.drawDepth(texture, data[0]))
+        {
+            return;
         }
 
         if (texture.unreadable || !upload || kind === 'int')
@@ -478,7 +689,7 @@ class Run
             // A depth texture is never read back, and is nearly always a render target the
             // frame fills itself. Without storage its framebuffer is incomplete and every
             // draw to it is rejected, so it is given storage of the right format.
-            const empty: [number, number] | undefined = upload ? [upload[0], texture.type || 0x1401] : DEPTH_UPLOAD[texture.internalFormat]?.(texture.type);
+            const empty: [number, number] | undefined = upload ? [upload[0], texture.type || 0x1401] : DEPTH_UPLOAD[internalFormat]?.(texture.type);
 
             if (!texture.immutable && empty && !three)
             {
@@ -486,7 +697,7 @@ class Run
 
                 for (const face of faces)
                 {
-                    gl.texImage2D(face, 0, texture.internalFormat, texture.width, texture.height, 0, empty[0], empty[1], null);
+                    gl.texImage2D(face, 0, internalFormat, texture.width, texture.height, 0, empty[0], empty[1], null);
                 }
             }
 
@@ -507,13 +718,15 @@ class Run
 
             if (channels < 4)
             {
+                const picked = PICKED[internalFormat];
+
                 pixels = new (rgba.constructor as any)(width * height * channels);
 
                 for (let i = 0, o = 0; i < width * height; i++)
                 {
                     for (let channel = 0; channel < channels; channel++)
                     {
-                        pixels[o++] = rgba[i * 4 + channel];
+                        pixels[o++] = rgba[i * 4 + (picked ? picked[channel] : channel)];
                     }
                 }
             }
@@ -528,7 +741,7 @@ class Run
                 {
                     if (part.layer === 0)
                     {
-                        gl.texImage3D(target, part.level, texture.internalFormat, width, height, texture.depth, 0, format, type, null);
+                        gl.texImage3D(target, part.level, internalFormat, width, height, texture.depth, 0, format, type, null);
                     }
 
                     gl.texSubImage3D(target, part.level, 0, 0, part.layer, width, height, 1, format, type, pixels);
@@ -544,7 +757,7 @@ class Run
                 }
                 else
                 {
-                    gl.texImage2D(face, part.level, texture.internalFormat, width, height, 0, format, type, pixels);
+                    gl.texImage2D(face, part.level, internalFormat, width, height, 0, format, type, pixels);
                 }
             }
         }
@@ -580,7 +793,7 @@ class Run
                 }
                 else
                 {
-                    gl.texImage2D(TEXTURE_2D, level, texture.internalFormat, width, height, 0, format, 0x1401, pixels);
+                    gl.texImage2D(TEXTURE_2D, level, internalFormat, width, height, 0, format, 0x1401, pixels);
                 }
             }
 

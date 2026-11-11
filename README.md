@@ -58,7 +58,6 @@ Every milestone of the build plan up to 1.0 has been worked through on macOS (Ap
 
 - For WebGPU captures: external (video) textures; geometry and "which test rejected it" for a draw inside a render bundle.
 - An adapter for PlayCanvas (installing it was not allowed where this was built).
-- Readback of compressed and depth textures in the live page.
 - The fast binary channel for bulk data.
 - Windows and Linux.
 - Signed and notarised installers, and updates: these need the maintainer's Apple Developer identity and somewhere to publish releases. The packaging script has the steps and they have not been run.

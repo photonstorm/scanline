@@ -30,7 +30,7 @@ function texelBytes (format: string): number
 }
 
 // For block-compressed formats: [block width, block height, bytes per block].
-function block (format: string): [number, number, number] | null
+export function block (format: string): [number, number, number] | null
 {
     if (format.startsWith('bc'))
     {
@@ -76,12 +76,24 @@ export function textureBytes (format: string, width: number, height: number, dep
     return total * (dimension === '3d' ? 1 : depthOrLayers) * (samples > 1 ? samples : 1);
 }
 
-// Bytes per texel when a texture is copied to a buffer, or 0 if this probe cannot read it yet.
+// Bytes per texel when a texture is copied to a buffer, or 0 where a copy cannot give texels:
+// a compressed format (it gives blocks) and depth24plus (it cannot be copied).
 export function copyBytes (format: string): number
 {
-    if (block(format) || format.includes('stencil') || format === 'depth24plus')
+    if (block(format) || format === 'depth24plus' || format === 'depth24plus-stencil8')
     {
         return 0;
+    }
+
+    // The depth of a depth and stencil texture, or the stencil of a stencil one.
+    if (format === 'depth32float-stencil8')
+    {
+        return 4;
+    }
+
+    if (format === 'stencil8')
+    {
+        return 1;
     }
 
     return texelBytes(format);
