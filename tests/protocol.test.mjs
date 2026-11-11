@@ -368,6 +368,56 @@ describe('engine adapters: every draw resolves to an engine object', () =>
         });
     }
 
+    for (const [name, query, renderer] of [
+        ['its WebGL 2 device', '', /Engine: PlayCanvas 2\.24\.0 \(WebglGraphicsDevice, WebGL 2\) detected/],
+        ['its WebGPU device', '?device=webgpu', /Engine: PlayCanvas 2\.24\.0 \(WebgpuGraphicsDevice, WebGPU\) detected/]
+    ])
+    {
+        test(`PlayCanvas, ${name}: mesh instances, materials and the shadow map`, async () =>
+        {
+            const { capture, tree } = await adapted(`fixtures/engines/playcanvas.html${query}`, renderer);
+
+            // The frame, and inside it the engine's passes: the sun's shadow map, then the
+            // camera's pass over its layers.
+            assert.match(tree, /«Application» {2}events 0–9 {2}8 draws/);
+            assert.match(tree, /«shadow map of sun → ShadowMap2D_DEPTH 512×512» {2}events 0–3 {2}3 draws/);
+            assert.match(tree, /«World, Skybox, Immediate, UI \(camera camera\) → canvas» {2}events 4–9 {2}5 draws/);
+            assert.match(tree, /of MeshInstance «ground»/);
+
+            // A mesh instance drawn into the shadow map says so, and names its material.
+            const details = await scanline('query', capture, "SELECT draw, entity, entity_detail FROM draws WHERE kind = 'draw' ORDER BY draw", '--json');
+            const entities = details.json.data.rows.map((row) => JSON.parse(row[2]));
+            const names = entities.map((entity) => entity.name);
+
+            // The engine sorts what it draws, so within a pass only the membership is held
+            // to; the see-through box is drawn last, after everything opaque.
+            assert.deepEqual(names.slice(0, 3).sort(), ['ball', 'box 0', 'box 1'], 'the three that cast shadows');
+            assert.deepEqual(names.slice(3).sort(), ['ball', 'box 0', 'box 1', 'box 2', 'ground']);
+            assert.equal(names[7], 'box 2');
+            assert.deepEqual(entities.map((entity) => entity.shadowPass === true), [true, true, true, false, false, false, false, false]);
+            assert.deepEqual(entities.find((entity) => entity.name === 'ground').material, { type: 'StandardMaterial', name: 'grass' });
+            assert.ok(entities.every((entity) => entity.type === 'MeshInstance' && typeof entity.id === 'number'));
+
+            // What the engine says of itself comes with the page's state.
+            const said = await scanline('page');
+
+            assert.match(said.out, /What PlayCanvas says of itself: «\{"applications":\[\{"layers":\[\{"name":"World","enabled":true,"meshInstances":5\}/);
+
+            // With no light casting shadows there is no shadow pass, and switching it back restores it.
+            const set = await scanline('page', 'set_control', '--id', 'playcanvas.shadows', '--value', 'false');
+
+            assert.match(set.out, /«playcanvas\.shadows» was true and is now false/);
+            await scanline('step', 2);
+
+            assert.doesNotMatch((await scanline('pass_tree', (await captured()).capture)).out, /shadow map of sun/);
+
+            await scanline('page', 'set_control', '--id', 'playcanvas.shadows', '--value', 'true');
+            await scanline('step', 2);
+
+            assert.match((await scanline('pass_tree', (await captured()).capture)).out, /shadow map of sun/);
+        });
+    }
+
     test('an engine the adapter does not map says so: Phaser on its Canvas renderer', async () =>
     {
         await opened('fixtures/engines/phaser.html?renderer=canvas', 3);

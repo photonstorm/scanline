@@ -1,0 +1,99 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Engine: PlayCanvas with shadows (WebGL 2 or WebGPU)</title>
+<style>body { margin: 0; background: #111; } canvas { display: block; width: 480px; height: 320px; }</style>
+<canvas id="game" width="480" height="320"></canvas>
+<script type="module">
+// A PlayCanvas scene: a lit ground, three boxes (one see-through), a ball and a
+// directional light with a shadow map. On its WebGL 2 device, or with ?device=webgpu on
+// its WebGPU one. Every object has a name, so that a draw can be checked against it.
+import * as pc from '/node_modules/playcanvas/build/playcanvas.mjs';
+
+const canvas = document.getElementById('game');
+const webgpu = new URL(location.href).searchParams.get('device') === 'webgpu';
+const device = await pc.createGraphicsDevice(canvas, { deviceTypes: [webgpu ? pc.DEVICETYPE_WEBGPU : pc.DEVICETYPE_WEBGL2], antialias: false });
+
+// One device pixel to a CSS pixel, whatever the screen: the picture is the same everywhere.
+device.maxPixelRatio = 1;
+
+const app = new pc.Application(canvas, { graphicsDevice: device });
+
+app.setCanvasFillMode(pc.FILLMODE_NONE);
+app.setCanvasResolution(pc.RESOLUTION_FIXED, 480, 320);
+app.scene.ambientLight = new pc.Color(0.35, 0.35, 0.35);
+
+const camera = new pc.Entity('camera');
+
+camera.addComponent('camera', { clearColor: new pc.Color(0.1, 0.14, 0.24), fov: 45 });
+camera.setPosition(0, 4, 9);
+camera.lookAt(0, 0.8, 0);
+app.root.addChild(camera);
+
+const sun = new pc.Entity('sun');
+
+sun.addComponent('light', { type: 'directional', castShadows: true, shadowResolution: 512, shadowDistance: 30, shadowBias: 0.2, normalOffsetBias: 0.05 });
+sun.setEulerAngles(45, 30, 0);
+app.root.addChild(sun);
+
+function thing (name, type, materialName, colour, { opacity = 1, emissive = false, castShadows = true } = {})
+{
+    const material = new pc.StandardMaterial();
+
+    material.name = materialName;
+
+    if (emissive)
+    {
+        material.emissive = new pc.Color(...colour);
+    }
+    else
+    {
+        material.diffuse = new pc.Color(...colour);
+    }
+
+    if (opacity < 1)
+    {
+        material.opacity = opacity;
+        material.blendType = pc.BLEND_NORMAL;
+    }
+
+    material.update();
+
+    const entity = new pc.Entity(name);
+
+    entity.addComponent('render', { type, material, castShadows, receiveShadows: true });
+    app.root.addChild(entity);
+
+    return entity;
+}
+
+const ground = thing('ground', 'plane', 'grass', [0.25, 0.5, 0.25], { castShadows: false });
+
+ground.setLocalScale(12, 1, 12);
+
+const boxes = [[0.8, 0.5, 0.3], [0.7, 0.7, 0.75], [0.3, 0.5, 0.9]].map((colour, index) =>
+{
+    const box = thing(`box ${index}`, 'box', `paint ${index}`, colour, index === 2 ? { opacity: 0.5, castShadows: false } : {});
+
+    box.setLocalScale(1.2, 1.2, 1.2);
+    box.setPosition(-2.4 + index * 2.4, 0.6, 0);
+
+    return box;
+});
+
+const ball = thing('ball', 'sphere', 'glow', [1, 0.8, 0.3], { emissive: true });
+
+ball.setPosition(0, 2, 0);
+
+const state = window.game = { frame: 0, device: device.deviceType };
+
+app.on('update', () =>
+{
+    state.frame++;
+
+    // Driven by the frame count, not the clock, so a stepped frame is always the same.
+    boxes.forEach((box, index) => { box.setEulerAngles(0, state.frame * 1.2 * (index + 1), 0); });
+    ball.setPosition(0, 2 + 0.4 * Math.sin(state.frame * 0.05), 0);
+});
+
+app.start();
+</script>

@@ -46,7 +46,7 @@ Every milestone of the build plan up to 1.0 has been worked through on macOS (Ap
 - A recording as a video: `recording(video: true)` writes the frames kept before a Debug press as a WebM file, for the person to watch or attach to a report.
 - Assertions for a test run: `assert` holds the canvas to a baseline picture, a pixel to a colour, the console to "no errors" and a frame to budgets (draws, triangles, calls, GPU and CPU time), and exits 2 from a shell when anything fails. `scanline help testing` has the recipe.
 - MCP over loopback HTTP (`scanline serve --http`), for a client that cannot spawn a process: bound to 127.0.0.1, with a token and `Host` and `Origin` checks.
-- Engine adapters also cover Babylon.js (both engines).
+- Engine adapters also cover Babylon.js (both engines) and PlayCanvas (both devices).
 - A Claude Code plugin (`.claude-plugin/`): the MCP server and the skills, installed from this repository as a marketplace of one.
 - A release archive: `npm run package` builds the one binary (the probe, the replay page and the skills are inside it) and packs it with an install script. `scanline browser install` fetches the pinned Chrome for Testing; `--dry-run` says what it would do.
 - One owner of the input: when the agent takes control, the person's keys and mouse are kept out of the page; when the person has it, the agent may look but not act.
@@ -58,7 +58,6 @@ Every milestone of the build plan up to 1.0 has been worked through on macOS (Ap
 
 - For WebGPU captures: external (video) textures; geometry and "which test rejected it" for a draw inside a render bundle; more than one device in a capture.
 - The wireframe view on a running WebGPU page (a capture has it). Readback of multisampled textures, and of stencil.
-- An adapter for PlayCanvas (installing it was not allowed where this was built).
 - The fast binary channel for bulk data.
 - Linux. A WebKit or Firefox mode. WebXR. A single window that holds both the game and the strip.
 - Signed and notarised installers, and updates: these need the maintainer's Apple Developer identity, a code-signing certificate for Windows, and somewhere to publish releases. The packaging script has the steps and they have not been run.

@@ -50,7 +50,7 @@ Decided 10 November 2026, replacing the percentages in the PRD (section 9.1). Th
 
 | Criterion | Standing |
 |---|---|
-| Lists complete, checked against known scenes | Met for the pages there are: the inventory fixtures have known objects and the tests count them. The matrix still lacks PlayCanvas, a Unity build and an Emscripten build. |
+| Lists complete, checked against known scenes | Met for the pages there are: the inventory fixtures have known objects and the tests count them. The matrix still lacks a Unity build and an Emscripten build. |
 | Every texture can be previewed | **Met, but for multisampled textures.** Colour textures in 8-bit, float and integer formats are read back on both APIs, and compressed, depth, luminance and alpha textures by a sampling pass (see "Textures that cannot be read directly"). A multisampled texture is read through what it resolves to; the stencil of a depth and stencil texture is not read. WebGL 1 buffers cannot be read at all (the API has no call for it). |
 | Shadow state verifies after 1,000 frames | Met: no drift on eight WebGL pages (raw WebGL 1 and 2, a worker, three.js, PixiJS, Phaser, Babylon.js). `node spikes/m2-verify.mjs`. |
 
@@ -284,7 +284,7 @@ The build plan gives milestone 7 a list and no exit sentence: "Capture viewer an
 | Installers | Partly. `npm run package` builds the release binary and packs it with the skills, the plugin files and an install script that copies the binary onto the `PATH` (`dist/scanline-<version>-macos-arm64.tar.gz`, 4.4 MB). On Windows the archive is a `.zip` and the script is `install.ps1`, which copies `scanline.exe` under `%LOCALAPPDATA%\Programs\Scanline` and adds that folder to the person's own `PATH`. There is no `.pkg`, `.dmg` or Windows installer (`.msi`). |
 | Signing, notarisation | Not done. They need the maintainer's Apple Developer identity, and on Windows a code-signing certificate, for which nothing is written. The packaging script signs with the hardened runtime when `SCANLINE_SIGN_IDENTITY` is set and submits for notarisation when `SCANLINE_NOTARY_PROFILE` is too; neither path has been run. |
 | Updates | Not built. There is nowhere releases are published yet, so there is nothing to check against. |
-| First-run browser download | Built as a command, not a first-run step: `scanline browser install` fetches the pinned Chrome for Testing (157.0.8103.50) into Scanline's directory, and a launch then prefers it. It is deliberately only a shell command, so that an agent cannot start a download. The dry run and the unpacking (from a stand-in archive) are tested; **the download itself has never been run**, because downloading needed the person's say-so. |
+| First-run browser download | Built as a command, not a first-run step: `scanline browser install` fetches the pinned Chrome for Testing (157.0.8103.50) into Scanline's directory, and a launch then prefers it. It is deliberately only a shell command, so that an agent cannot start a download. The dry run and the unpacking (from a stand-in archive) are tested; the download itself was first run by the owner on the PC on 11 November 2026, where it fetched and unpacked the browser and a launch now uses it. It has not been run on the Mac. |
 | Full skill set | Built: seven skills (`skills/`), the six the specification lists and `scanline-debuggable-rendering`. Each is held in the binary: `scanline skill <name>`, `help(skill)`. A unit test checks every `gfx_` command a skill names exists. They have not been in front of an agent in an evaluation round as skills; round 3 gave agents `scanline help` only, as rounds 1 and 2 did. |
 | Claude Code plugin | Built: `.claude-plugin/plugin.json` (the MCP server, declared in the manifest) and `.claude-plugin/marketplace.json` (this repository as a marketplace of one). Written from the published plugin documentation. **Not loaded in Claude Code**: the `claude` command was not available where this was built. See `docs/BY-HAND.md`. |
 | Folders for other agents | Built: `scanline skill --to <dir>` writes each skill as `<dir>/<name>/SKILL.md`. |
@@ -300,7 +300,7 @@ The build plan gives milestone 7 a list and no exit sentence: "Capture viewer an
 | Median tool calls to a correct diagnosis | 12 or fewer | 9 in round 3. One bug is far outside it: the intermittent one (b13) took about 190 commands, because the agent did not find the flight recorder. The help now points at it; that has not been run past an agent. |
 | Tokens of tool results per diagnosis | Under 40,000 | Roughly 2,000 to 4,500 in rounds 1 and 2. Not measured in round 3; b13's 190 commands will have been well over it. |
 | Hand-off round trip with no manual steps | Works on both platforms | Works on macOS: checked by hand with a real F9 press on 11 November 2026, and by `tests/e2e.test.mjs` with `debug`. On Windows the same tests pass, and the helper that holds F9 system-wide is tested by a press it posts to itself; a real F9 press there is still to be made (`docs/BY-HAND.md`). |
-| Content matrix: launch, capture, replay matches | All pass | Pass: raw WebGL 1, WebGL 2 and WebGPU, a worker with an OffscreenCanvas (WebGL 2), three.js (both renderers), PixiJS (both), Phaser 4 (WebGL), Babylon.js (both). Not tried: PlayCanvas, a Unity WebGL build, an Emscripten build (none is in the repository, and fetching them needed the person's say-so), and a WebGPU device in a worker. Phaser 4 has no WebGPU renderer to try. |
+| Content matrix: launch, capture, replay matches | All pass | Pass: raw WebGL 1, WebGL 2 and WebGPU, a worker with an OffscreenCanvas (WebGL 2), three.js (both renderers), PixiJS (both), Phaser 4 (WebGL), Babylon.js (both), PlayCanvas (both). Not tried: a Unity WebGL build, an Emscripten build (neither is in the repository, and fetching them needed the person's say-so), and a WebGPU device in a worker. Phaser 4 has no WebGPU renderer to try. |
 | Replay fidelity | Identical, or the difference is reported | Met: every capture is replayed when taken and compared pixel for pixel, and the summary says which. |
 | Host survives a forced GPU-process crash | Always | Met, and tested: the GPU process and the whole browser are each killed mid-session, and the host reports it and carries on. |
 
@@ -334,7 +334,7 @@ The build plan gives milestone 8 one line of things for after 1.0. Each was buil
 | Item | State |
 |---|---|
 | Babylon.js adapter | Built, on both of its engines. See "The Babylon.js adapter". |
-| PlayCanvas adapter | **Not built.** Installing PlayCanvas to build and test against was not allowed where this was written. `docs/BY-HAND.md` has the one command that unblocks it. |
+| PlayCanvas adapter | Built on 11 November 2026, on both of its devices, once the owner had installed PlayCanvas. See "The PlayCanvas adapter". |
 | Native-capture profile | Built: `launch(profile: "native-capture")`. Attaching Xcode's Metal debugger is a by-hand check. |
 | CI assertions and baselines | Built: `assert`. See "Assertions for a test run". |
 | Frame sequences as video | Built: `recording(video: true)`. See "A recording as a video". |
@@ -405,7 +405,19 @@ Built after milestone 7 (the build plan puts it after 1.0). Babylon announces it
 
 Tested with 9.35.0 on the WebGL 2 and WebGPU engines, on `fixtures/engines/babylon-shadows.html`. Not named by mesh: draws made by a depth renderer, an outline or bounding-box renderer, or a GUI texture. They are grouped by their pass.
 
-**PlayCanvas has no adapter.** Installing it from npm was refused where this was built. See `docs/BY-HAND.md`.
+## The PlayCanvas adapter
+
+Built on the PC on 11 November 2026, against PlayCanvas 2.24.0. A PlayCanvas application announces itself to a devtools hook if one is there when it is made (`globalThis[Symbol.for('playcanvas.inspector')].register(app, { version, … })`), so the adapter is that hook, and passes each call on to a hook that was there first. For a version from before the hook there is also a setter on `Object.prototype` for `defaultLayerWorld`, which every application assigns as it sets itself up; such a version does not say which it is.
+
+PlayCanvas draws a frame as a list of passes and, inside a pass, loops over mesh instances, setting each one up and then calling the device's draw. It has no function that is "draw this mesh instance". So the adapter listens for the last thing the loop does for a mesh instance before it draws (`Renderer.setMeshInstanceMatrices`) and names the draw that follows (`GraphicsDevice.draw`). The frame is `AppBase.render`; the passes are found after `Renderer.buildFrameGraph` and wrapped at `FramePass.render` and `RenderPass.render`. A camera's pass is named for its layers and camera, a shadow map for its light. Each draw carries the mesh instance's node name and path, its material, its instance count, and whether it is a shadow-map draw. Controls: lights casting shadows (the engine has no one switch, so this stops every light that was casting and starts those same lights again), the time scale, the exposure and the device's pixel ratio.
+
+Tested on `fixtures/engines/playcanvas.html` on the WebGL 2 and WebGPU devices (`tests/protocol.test.mjs`), and on WebGL 2 in the probe's own state-mirror and replay tests. Not named by object: a draw made without a mesh instance, such as the full-screen quad of a post effect. It is grouped by its pass. Not tried: PlayCanvas's post effects, its Gaussian splats, XR, and any version but 2.24.0.
+
+**What PlayCanvas found in Scanline itself**, each fixed, and none about PlayCanvas alone:
+
+- **A buffer written through a mapping made before the capture began was captured empty.** PlayCanvas maps the buffers it will write the next frame's uniforms into as soon as the last frame is submitted. A capture learned of mapped ranges only while it was recording, so it never saw those, and what the frame wrote through them was lost; it then tried to copy from the buffers afterwards, when the engine had mapped them again, which the browser refuses with a warning in the page's console. The replay drew with zeros and did not match. The probe now remembers every mapped range from the moment it is handed out, and never copies from a buffer the page has mapped.
+- **Reading a texture by drawing it sampled the wrong texture unit.** The probe bound the texture to whichever unit the page had active and left its own shader sampling unit 0. Every page until now happened to leave unit 0 active. PlayCanvas does not, and keeps a shadow map there, so the browser rejected the draw and said so in the page's console. The shader now samples the unit the texture was bound to.
+- **Integer textures were not replayed on WebGL 2**, and a note said so. PlayCanvas keeps its lights in one (R8UI), in every frame. They are replayed now (one, two and four channels, 8, 16 and 32 bits, signed and unsigned; not RGB10_A2UI).
 
 ## Render bundles
 

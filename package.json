@@ -33,6 +33,7 @@
     "esbuild": "^0.28.2",
     "phaser": "^4.2.1",
     "pixi.js": "^8.22.0",
+    "playcanvas": "^2.24.0",
     "three": "^0.187.0",
     "typescript": "^7.0.2",
     "webidl2": "^24.5.0"

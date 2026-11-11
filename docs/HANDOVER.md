@@ -8,9 +8,9 @@ Read this first, then [DEPARTURES.md](DEPARTURES.md) (what was built and how it 
 
 - Everything is on `main` at github.com/photonstorm/scanline.
 - It builds and runs on two machines: the Mac (Apple silicon, Chrome 157, Metal) and the PC (Windows 11, x64, an NVIDIA RTX 3080 Ti, Chrome 157, Direct3D).
-- On the PC the full suite passed on the last build: 261 tests in ten groups and 40 Rust unit tests, none failing (`npm test`, about 12 minutes there). Both slow-frame journeys passed with their timing comparison reported and not asserted: see "Things learned the hard way".
+- **The full suite has not been run on either machine since the last two pieces of work** (`experiment` measuring turn about, and the PlayCanvas adapter with three fixes to capture that it turned up). The owner had to leave, so only the groups that work touched were run on the PC, and they passed: see section 1 for which. Before that, on the PC, the full suite passed: 261 tests in ten groups and 40 Rust unit tests, none failing (`npm test`, about 12 minutes there). Both slow-frame journeys passed with their timing comparison reported and not asserted: see "Things learned the hard way".
 - **On the Mac the suite has not been run since the Windows build**, and the shared code changed: see section 1.
-- Every milestone of the build plan up to 1.0 is worked through, and from the list for after 1.0: the Babylon.js adapter, the native-capture profile, assertions for a test run, a recording as a video, and "Send to agent".
+- Every milestone of the build plan up to 1.0 is worked through, and from the list for after 1.0: the Babylon.js and PlayCanvas adapters, the native-capture profile, assertions for a test run, a recording as a video, and "Send to agent".
 - **Nothing has been compiled or run on Linux.**
 - The specification is not in this repository. It is in the `render-debugger/` folder of the `render-debugger-spec` branch of the `v3-gameblocks` repository, which is pushed. Read it there. Do not edit it and do not copy it here.
 
@@ -52,7 +52,11 @@ npm ci --os=win32
 
 ## 1. Back on the Mac: run the whole suite
 
-The Windows build changed code both platforms share, and none of it has been run on the Mac since:
+**Do this first.** Two things make it due.
+
+The last two pieces of work on the PC were pushed without a full run, because the owner had to leave: `experiment` measuring turn about, and the PlayCanvas adapter with the three fixes to capture it turned up (mapped buffers on WebGPU, the texture unit a texture is read through on WebGL, integer textures in the WebGL 2 replay). Those fixes are in the probe and the replay page, which every group uses. What was run on the PC after them is in "What was run last", at the end of this section; the rest was not. On the Mac, PlayCanvas arrives with `npm install` (it is in `package.json` now).
+
+And the Windows build changed code both platforms share, none of which has been run on the Mac at all:
 
 - `crates/scanline/src/control.rs` was rewritten round a `channel` module with a Unix form and a Windows form. The Unix form is the old code moved, but it has only been read, not run.
 - `crates/scanline/src/http.rs` (`bind` and `new_token`), `crates/scanline/src/hotkey.rs` (its usage text became a constant) and `crates/scanline-browser/src/lib.rs` (`process_memory_measure`) have small changes on the Unix side.
@@ -79,6 +83,16 @@ npm test
 
 Expect it to pass. If `stats` on a WebGPU page now reports a lower GPU time than before, that is the timing change, and it is the truer figure: `DEPARTURES.md`, "Windows", says why.
 
+If a group fails on the Mac, the likeliest places are the ones nobody has run there: the Unix half of `control.rs`, the PlayCanvas tests (the adapter's tests name passes and count events as the PC drew them), and the tests that now take either of two pixel values.
+
+### What was run last
+
+On the PC, after the PlayCanvas adapter and the capture fixes: the Rust unit tests (40 pass), the type check, `npm run test:probe` (52 of 52, PlayCanvas among the engines), `npm run test:protocol` (16 of 16, PlayCanvas on both devices) and `npm run test:package` (5 of 5).
+
+After `experiment` and before the adapter: `test:e2e` (51 of 51), `test:journeys`, `test:security` and `test:package`.
+
+**Not run since the capture fixes:** `test:wgsl`, `test:bugs`, `test:e2e`, `test:findings`, `test:webgpu`, `test:journeys` and `test:security`. `npm test` runs them all.
+
 ## 2. What the Windows build left
 
 It is described in `DEPARTURES.md` under "Windows". Not done:
@@ -93,20 +107,14 @@ It is described in `DEPARTURES.md` under "Windows". Not done:
 - **An evaluation round through Direct3D** has not been run: every round so far was on the Mac.
 - **Edge.** `find_browser` lists Edge's usual paths on Windows, and nothing has been run in it.
 
-## 3. The PlayCanvas adapter
+## 3. The PlayCanvas adapter: built, and what it left
 
-Blocked only on an install the owner has to run or allow:
+Built on the PC on 11 November 2026, once the owner had installed PlayCanvas (`probe/src/adapters/playcanvas.ts`, `fixtures/engines/playcanvas.html`, tests in `tests/protocol.test.mjs` and `probe/test/probe.test.mjs`). `DEPARTURES.md`, "The PlayCanvas adapter", says how it works and what it found wrong in Scanline's own capture, which is fixed. Left:
 
-```bash
-npm install --save-dev playcanvas
-```
+- It has been run against one small scene. A real PlayCanvas game, with post effects, particles, text, batching or Gaussian splats, has not been tried: launch one, capture, and read the "Replay check" line and the pass tree.
+- Only version 2.24.0 has been tried. An older one is found by a second route and does not say which version it is.
+- Integer textures replay on WebGL 2 now. On WebGL 1 they do not exist; on WebGPU they were always copied as they are.
 
-Then:
-
-- Write `probe/src/adapters/playcanvas.ts` on the pattern of `babylon.ts`, with the helpers in `wrap.ts`, and register it in `index.ts`. Read the installed version to find what to wrap: the frame, each render pass or layer, and each mesh instance's draw, with its material.
-- PlayCanvas has a WebGL 2 device and a WebGPU one. Cover both, as the Babylon adapter does.
-- Fixtures in `fixtures/engines/`, tests in `tests/protocol.test.mjs` beside Babylon's.
-- Then take PlayCanvas out of the "not built" lists: `README.md`, `DEPARTURES.md` (the milestone 8 table), `BY-HAND.md`, `LIMITS` in `tools.rs`, and the skills.
 
 ## 4. A Firefox mode, and WebKit
 
@@ -141,7 +149,7 @@ Each is described where it bites, in `scanline help limits` and in `DEPARTURES.m
 - A `writeBuffer` call's data in a capture's call list (it shows as `<Uint8Array data>`). An agent in round 4 wanted it.
 - External (video) textures in a WebGPU capture.
 - The fast binary channel for bulk data. Images travel as compressed base64 over the protocol; spike S2 was never run.
-- The engines the specification's content matrix lists and the repository lacks: PlayCanvas, a Unity WebGL build, an Emscripten build.
+- The engines the specification's content matrix lists and the repository lacks: a Unity WebGL build, an Emscripten build.
 - What the GPU keeps alive and the page has let go of. A texture is now kept on record for as long as a view of it is. The same question for other pairs (a buffer or a sampler that only a bind group holds, a bind group the page dropped after its last use) has not been asked: the record of such an object ends when the collector takes the page's handle, though the GPU may hold the object longer.
 
 ## 8. The evaluation
@@ -158,4 +166,4 @@ In `BY-HAND.md`, and not something an agent can do:
 
 - Look at what nobody has seen on a screen: the control strip, the viewer, "Send to agent", pointer lock by a real click, a real F9 press from another application (made on the Mac, not yet on the PC), Xcode attaching to the native-capture profile, and PIX or RenderDoc doing the same on the PC.
 - Decide: a licence, the name, who the plugin is by, where releases live, the version.
-- Run or allow: the PlayCanvas install, the pinned Chrome for Testing download, the Claude Code plugin's first install, signing.
+- Run or allow: the pinned Chrome for Testing download on the Mac (done on the PC), the Claude Code plugin's first install, and, once it has been seen to work, signing.

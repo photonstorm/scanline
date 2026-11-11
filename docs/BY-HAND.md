@@ -8,7 +8,7 @@ Every milestone of the build plan up to 1.0 has been worked through on macOS, an
 
 1. **Things to look at.** The sections below. Start with the viewer and the control strip, which nobody has yet seen on a screen with their own eyes.
 2. **Things to decide or supply.** "Yours to decide" near the end: a licence, the name, where releases live, and the Apple Developer identity that signing needs. The pinned browser download and the Claude Code plugin are written and waiting on a first run by you.
-3. **Things not built, that need no one.** Listed in [DEPARTURES.md](DEPARTURES.md) under each milestone and in `scanline help limits`. The largest: Linux. Of the build plan's list for after 1.0, the Babylon.js adapter, the native-capture profile, assertions for a test run, a recording as a video and "Send to agent" are built; the PlayCanvas adapter waits on one install by you (below), and single-window builds, a WebKit or Firefox mode, Linux and WebXR are not built ([DEPARTURES.md](DEPARTURES.md), "Milestone 8").
+3. **Things not built, that need no one.** Listed in [DEPARTURES.md](DEPARTURES.md) under each milestone and in `scanline help limits`. The largest: Linux. Of the build plan's list for after 1.0, the Babylon.js adapter, the native-capture profile, assertions for a test run, a recording as a video and "Send to agent" are built; the PlayCanvas adapter is built too; single-window builds, a WebKit or Firefox mode, Linux and WebXR are not built ([DEPARTURES.md](DEPARTURES.md), "Milestone 8").
 
 Set-up, from the repository:
 
@@ -247,7 +247,6 @@ Work through "The control strip", "The viewer" and "Send to agent" above as writ
 - [ ] **JSON in each shell.** `scanline patch_draws --filter "{'draws': [6, 8]}"` is accepted (it answers with a patch, or says the session has no such draws) in `cmd`, in Windows PowerShell and in PowerShell 7. It must not say the filter is not an object.
 - [ ] **Characters in a console.** `scanline help limits` in a console window shows "65.5 µs", not "65.5 Âµs". Piped in PowerShell (`scanline help limits | Select-String 65.5`) it shows the wrong characters until `[Console]::OutputEncoding = [Text.Encoding]::UTF8` has been run: that is PowerShell decoding with the console's code page, and is described in the README.
 - [ ] **A release.** `npm run package` writes `dist\scanline-0.0.1-windows-x64.zip`. Unpacked somewhere else, `powershell -ExecutionPolicy Bypass -File install.ps1` puts `scanline.exe` in `%LOCALAPPDATA%\Programs\Scanline`, adds that folder to your own PATH, and `scanline --version` answers from a new terminal. Windows may warn that the program is unsigned: signing needs your certificate, and is not written.
-- [ ] **The pinned browser.** As "The pinned browser" above: the dry run names a directory under `%LOCALAPPDATA%\Scanline\browser`, and the real install (about 170 MB from Google, never run) unpacks with the `tar` that Windows ships with. Only a stand-in archive has been unpacked.
 - [ ] **A native debugger.** `$env:SCANLINE_ALLOW = "native-capture"`, then `scanline launch http://127.0.0.1:8765/fixtures/matrix/webgpu.html --profile native-capture`. The answer names the GPU process. Try attaching PIX or RenderDoc to it and say what happened: neither has been tried, and each may need the process to have been started its own way.
 - [ ] **Another user of the PC.** Signed in as a second, non-administrator user, `Get-Content C:\Users\<you>\AppData\Local\Scanline\host.log` is refused. The tests check the rule on the files and on the pipe; nobody has tried to get past it.
 
@@ -264,11 +263,11 @@ These are not tests. They are choices that were not mine to make, and each is a 
 
 ## Confirmed
 
+- 11 November 2026, on the PC: `scanline browser install` downloaded Chrome for Testing 157.0.8103.50 and unpacked it, and `scanline browser` says a launch would use it. Run by the owner. (Not yet run on the Mac. Nobody has yet launched a page in it and looked.)
 - 11 November 2026: a real F9 press froze `b13.html`, 128 frames were kept, and `recording` named the four frames that flicker. (No strip existed then.)
 
 ## Not possible on this machine
 
 - Linux: nothing has been built or run there.
 - Pointer lock and fullscreen, from your own click: see "Pointer lock without the shim" above. From an injected click both were checked on 11 November 2026 in a headed window: the browser grants them when its window is in front (after `Page.bringToFront`) and refuses when it is not (`WrongDocumentError`, "not granted"). Scanline does not bring its window to the front for an agent, so a refusal is reported as a warning event that points at the shim.
-- A PlayCanvas adapter. `npm install --save-dev playcanvas` was refused by the permission system where this was built (code from outside), so there is no PlayCanvas to write an adapter against. Run that install yourself and say so, and the adapter can be written the way Babylon's was (`probe/src/adapters/babylon.ts`).
-- PlayCanvas, a Unity WebGL build and an Emscripten build, which the specification's content matrix lists: none is in the repository, and fetching them needed your say-so. Put a build in `fixtures/engines/`, launch it, run `scanline capture`, and read the "Replay check" line.
+- A Unity WebGL build and an Emscripten build, which the specification's content matrix lists: neither is in the repository, and fetching them needed your say-so. Put a build in `fixtures/engines/`, launch it, run `scanline capture`, and read the "Replay check" line.

@@ -1,6 +1,6 @@
 ---
 name: scanline
-description: Debug WebGL and WebGPU rendering in a real browser you control. Use when writing or fixing canvas rendering code (raw WebGL or WebGPU, three.js, PixiJS, Phaser, Babylon.js) and you need to see what was drawn, read exact pixel values, step a game frame by frame, or send it input. Not for DOM, CSS or Canvas 2D work.
+description: Debug WebGL and WebGPU rendering in a real browser you control. Use when writing or fixing canvas rendering code (raw WebGL or WebGPU, three.js, PixiJS, Phaser, Babylon.js, PlayCanvas) and you need to see what was drawn, read exact pixel values, step a game frame by frame, or send it input. Not for DOM, CSS or Canvas 2D work.
 ---
 
 # Scanline
@@ -139,4 +139,4 @@ The person running Scanline decides what a client may do, and it cannot be chang
 
 ## What it cannot do
 
-On WebGPU captures a render bundle is one event: the views and live patches reach the draws inside it, but geometry and "which test rejected it" do not. PlayCanvas draws are not named by engine object. Linux is not supported. `gfx_help(topic: "limits")` has the current list. If the bug needs one of these, say so rather than guessing from screenshots.
+On WebGPU captures a render bundle is one event: the views and live patches reach the draws inside it, but geometry and "which test rejected it" do not. Linux is not supported. `gfx_help(topic: "limits")` has the current list. If the bug needs one of these, say so rather than guessing from screenshots.

@@ -612,6 +612,14 @@ export async function readBuffer (entry: Entry, offset: number, length: number):
         throw new Error('The device this buffer belongs to is not known. The buffer was created before the probe could record it.');
     }
 
+    // A buffer the page has mapped cannot be copied from: the browser would refuse the whole
+    // submission, say so in the console, and leave the copy as zeros. What the page writes
+    // there is read when it unmaps the buffer (gpu/capture.ts).
+    if (object.mapState !== undefined && object.mapState !== 'unmapped')
+    {
+        throw new Error('The page has this buffer mapped just now, so it cannot be copied from. What the page writes there is captured when it unmaps it.');
+    }
+
     // Copies must start and end on four-byte boundaries.
     const start = offset - (offset % 4);
     const span = G.Math.ceil((offset - start + length) / 4) * 4;

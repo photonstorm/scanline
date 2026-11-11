@@ -33,6 +33,13 @@ export function recordIntercepted (name: string, self: unknown, result: unknown,
     }
 }
 
-// Set while a capture records: told of every range of a buffer the page maps, so that
-// what it writes there can be read when the buffer is unmapped.
-export const mapWatch: { range: null | ((buffer: object, range: ArrayBuffer, offset: number) => void); unmap: null | ((buffer: object) => void) } = { range: null, unmap: null };
+// A range of a buffer the page has mapped, and where in the buffer it begins.
+export interface MappedRange
+{
+    range: ArrayBuffer;
+    offset: number;
+}
+
+// Set while a capture records: told when a buffer is about to be unmapped, with the ranges
+// of it the page had mapped, so that what it wrote there can be read before they go.
+export const mapWatch: { unmap: null | ((buffer: object, ranges: MappedRange[] | undefined) => void) } = { unmap: null };

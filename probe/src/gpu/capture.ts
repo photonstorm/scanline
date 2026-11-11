@@ -60,8 +60,7 @@ export interface GpuState
     firstLocal: number;
     passes: Map<object, PassState>;
     passCount: number;
-    // Ranges of buffers the page has mapped, and what they held when the buffer was unmapped.
-    mapped: Map<object, Array<{ range: ArrayBuffer; offset: number }>>;
+    // What the ranges of a buffer the page had mapped held when the buffer was unmapped.
     unmapped: Map<object, Array<{ o: number; b: number }>>;
     // Worked out once and used at every draw: what a pipeline's descriptor says of a draw
     // made with it, and the textures a bind group holds.
@@ -926,7 +925,6 @@ export async function gpuBegin (capture: Capture, info: ContextInfo): Promise<vo
         firstLocal: 1,
         passes: new G.Map(),
         passCount: 0,
-        mapped: new G.Map(),
         unmapped: new G.Map(),
         pipelines: new G.Map(),
         groups: new G.Map()
@@ -1002,7 +1000,6 @@ export function gpuWatchMaps (capture: Capture | null): void
 {
     if (capture === null)
     {
-        mapWatch.range = null;
         mapWatch.unmap = null;
 
         return;
@@ -1010,20 +1007,8 @@ export function gpuWatchMaps (capture: Capture | null): void
 
     const gpu = capture.gpu!;
 
-    mapWatch.range = (buffer, range, offset) =>
+    mapWatch.unmap = (buffer, ranges) =>
     {
-        const ranges = gpu.mapped.get(buffer) ?? [];
-
-        ranges.push({ range, offset });
-        gpu.mapped.set(buffer, ranges);
-    };
-
-    mapWatch.unmap = (buffer) =>
-    {
-        const ranges = gpu.mapped.get(buffer);
-
-        gpu.mapped.delete(buffer);
-
         // A buffer mapped for reading was not written to.
         if (!ranges || ((entryOf(buffer)?.p.usage ?? 0) & BUFFER_MAP_READ) !== 0)
         {
@@ -1175,6 +1160,14 @@ async function describe (capture: Capture, entry: Entry): Promise<Record<string,
                 break;
             }
 
+            // A buffer the page has mapped again by now cannot be copied from, and need not
+            // be: what the frame wrote into it came with the frame's unmap of it.
+            if (((entry.ref.deref() as any)?.mapState ?? 'unmapped') !== 'unmapped')
+            {
+                out.mapped = true;
+                break;
+            }
+
             // A storage buffer read before the frame: that is what the frame began with.
             if (capture.buffersBefore?.has(entry.id))
             {
@@ -1268,7 +1261,6 @@ export async function gpuFinish (capture: Capture): Promise<void>
 
     gpu.locals.clear();
     gpu.passes.clear();
-    gpu.mapped.clear();
     gpu.unmapped.clear();
 }
 

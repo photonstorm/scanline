@@ -108,6 +108,27 @@ const UPLOAD: Record<number, [number, number]> = {
     0x1909: [0x1909, 1], 0x1906: [0x1906, 1], 0x190A: [0x190A, 2]
 };
 
+// Integer formats: what each is uploaded as (format, channels, type) and the array that
+// holds it. A readback of one is four 32-bit integers a pixel. (RGB10_A2UI packs its
+// channels into one integer and is not here; the three-channel ones cannot be read back.)
+const RED_INTEGER = 0x8D94;
+const RG_INTEGER = 0x8228;
+const RGBA_INTEGER = 0x8D99;
+
+type Integers = Uint8ArrayConstructor | Int8ArrayConstructor | Uint16ArrayConstructor | Int16ArrayConstructor | Uint32ArrayConstructor | Int32ArrayConstructor;
+
+const INT_UPLOAD: Record<number, [number, number, number, Integers]> = {
+    0x8232: [RED_INTEGER, 1, 0x1401, Uint8Array], 0x8231: [RED_INTEGER, 1, 0x1400, Int8Array],
+    0x8234: [RED_INTEGER, 1, 0x1403, Uint16Array], 0x8233: [RED_INTEGER, 1, 0x1402, Int16Array],
+    0x8236: [RED_INTEGER, 1, 0x1405, Uint32Array], 0x8235: [RED_INTEGER, 1, 0x1404, Int32Array],
+    0x8238: [RG_INTEGER, 2, 0x1401, Uint8Array], 0x8237: [RG_INTEGER, 2, 0x1400, Int8Array],
+    0x823A: [RG_INTEGER, 2, 0x1403, Uint16Array], 0x8239: [RG_INTEGER, 2, 0x1402, Int16Array],
+    0x823C: [RG_INTEGER, 2, 0x1405, Uint32Array], 0x823B: [RG_INTEGER, 2, 0x1404, Int32Array],
+    0x8D7C: [RGBA_INTEGER, 4, 0x1401, Uint8Array], 0x8D8E: [RGBA_INTEGER, 4, 0x1400, Int8Array],
+    0x8D76: [RGBA_INTEGER, 4, 0x1403, Uint16Array], 0x8D88: [RGBA_INTEGER, 4, 0x1402, Int16Array],
+    0x8D70: [RGBA_INTEGER, 4, 0x1405, Uint32Array], 0x8D82: [RGBA_INTEGER, 4, 0x1404, Int32Array]
+};
+
 // Which of a readback's four channels an upload takes, where it is not the first few:
 // alpha is the fourth, and luminance with alpha the first and the fourth.
 const PICKED: Record<number, number[]> = { 0x1906: [3], 0x190A: [0, 3] };
@@ -615,7 +636,8 @@ void main ()
         // replayed as a texture of those: the frame samples the same values from it.
         const decoded = Boolean(texture.decodedAs && data.length && !texture.unreadable);
         const internalFormat: number = decoded ? texture.decodedAs : texture.internalFormat;
-        const upload = UPLOAD[internalFormat];
+        const ints = this.gl2 && kind === 'int' ? INT_UPLOAD[internalFormat] : undefined;
+        const upload: [number, number] | undefined = ints ? [ints[0], ints[1]] : UPLOAD[internalFormat];
 
         if (decoded)
         {
@@ -679,7 +701,7 @@ void main ()
             return;
         }
 
-        if (texture.unreadable || !upload || kind === 'int')
+        if (texture.unreadable || !upload || (kind === 'int' && !ints))
         {
             // Contents unknown. Allocate what can be allocated so the frame still runs.
             this.note(texture.unreadable
@@ -705,30 +727,35 @@ void main ()
         }
 
         const [format, channels] = upload;
-        const type = kind === 'float' ? 0x1406 : 0x1401;
+        const type = ints ? ints[2] : (kind === 'float' ? 0x1406 : 0x1401);
 
         for (const part of data)
         {
             const width = Math.max(1, texture.width >> part.level);
             const height = Math.max(1, texture.height >> part.level);
-            const rgba = kind === 'float' ? new Float32Array(this.blob(part.blob).slice().buffer) : this.blob(part.blob);
+            const rgba = kind === 'float'
+                ? new Float32Array(this.blob(part.blob).slice().buffer)
+                : (ints ? new Int32Array(this.blob(part.blob).slice().buffer) : this.blob(part.blob));
 
-            // The readback is always four channels; the upload is what the format takes.
-            let pixels: Float32Array | Uint8Array = rgba;
+            // The readback is always four channels; the upload is what the format takes. An
+            // integer one is also narrowed from 32 bits to the width of the format.
+            let pixels: ArrayBufferView & ArrayLike<number> = rgba;
 
-            if (channels < 4)
+            if (channels < 4 || ints)
             {
                 const picked = PICKED[internalFormat];
 
-                pixels = new (rgba.constructor as any)(width * height * channels);
+                const narrowed: Uint8Array = new ((ints ? ints[3] : rgba.constructor) as any)(width * height * channels);
 
                 for (let i = 0, o = 0; i < width * height; i++)
                 {
                     for (let channel = 0; channel < channels; channel++)
                     {
-                        pixels[o++] = rgba[i * 4 + (picked ? picked[channel] : channel)];
+                        narrowed[o++] = rgba[i * 4 + (picked ? picked[channel] : channel)];
                     }
                 }
+
+                pixels = narrowed;
             }
 
             if (three)

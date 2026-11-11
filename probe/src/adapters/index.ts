@@ -40,7 +40,7 @@ export function installAdapters (): void
 
     declare({
         id: 'engine-adapters',
-        what: 'Globals that three.js and PixiJS announce themselves to are defined (__THREE_DEVTOOLS__, __PIXI_APP_INIT__, __PIXI_RENDERER_INIT__); window.Phaser is watched with an accessor, and Object.prototype has setters for cameraRenderNode (the one property only Phaser\'s WebGL renderer assigns) and _renderingManager (which a Babylon.js scene assigns); a recognised engine has some of its render functions wrapped',
+        what: 'Globals that three.js, PixiJS and PlayCanvas announce themselves to are defined (__THREE_DEVTOOLS__, __PIXI_APP_INIT__, __PIXI_RENDERER_INIT__, and a devtools hook at Symbol.for("playcanvas.inspector")); window.Phaser is watched with an accessor, and Object.prototype has setters for cameraRenderNode (the one property only Phaser\'s WebGL renderer assigns), _renderingManager (which a Babylon.js scene assigns) and defaultLayerWorld (which a PlayCanvas application assigns); a recognised engine has some of its render functions wrapped',
         why: 'Mapping draws to the engine objects they belong to',
         optional: true,
         active: () => true

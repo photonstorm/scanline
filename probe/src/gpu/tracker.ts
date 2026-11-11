@@ -13,7 +13,7 @@ import { all, alive, create, destroy, deviceFor, entryOf, find, noteDevice, type
 import type { Tag } from '../tag';
 import { gpuDeviceTag, gpuViewTag } from '../tags.generated';
 import { textureBytes } from './formats';
-import { mapWatch, recordIntercepted } from './rec';
+import { mapWatch, recordIntercepted, type MappedRange } from './rec';
 import { depthNeedsSampling } from './sample';
 
 const TEXTURE_COPY_SRC = 0x01;
@@ -23,6 +23,10 @@ const BUFFER_MAP_READ = 0x0001;
 const BUFFER_COPY_SRC = 0x0004;
 
 // A view leads back to its texture; a device has a number, so its objects can be found.
+// The ranges of each buffer the page has mapped and not yet unmapped. They are the page's
+// own ArrayBuffers, held and not copied; the browser detaches them when the buffer is unmapped.
+const mappedRanges = new G.WeakMap() as WeakMap<object, MappedRange[]>;
+
 const viewTag: Tag<{ texture: Entry | undefined; descriptor: unknown; size?: [number, number]; of?: object }> = gpuViewTag;
 const deviceTag: Tag<number> = gpuDeviceTag;
 
@@ -533,9 +537,20 @@ const post: Record<string, Post> = {
         // A mapped buffer may be written anywhere: taken as written whole.
         wholeWritten(buffer);
 
-        if (mapWatch.range !== null && range)
+        // Kept whether or not a capture is recording. An engine maps the buffers it will
+        // write the next frame's numbers into as soon as the last frame is submitted, so
+        // by the time a capture begins the ranges it needs were handed out long before.
+        if (range)
         {
-            mapWatch.range(buffer, range, G.Number(offset) || 0);
+            let ranges = mappedRanges.get(buffer);
+
+            if (!ranges)
+            {
+                ranges = [];
+                mappedRanges.set(buffer, ranges);
+            }
+
+            ranges.push({ range, offset: G.Number(offset) || 0 });
         }
     },
 
@@ -726,9 +741,13 @@ const intercept: Record<string, Intercept> = {
         hub.gpu.calls++;
 
         // Before the browser detaches the mapped ranges, and their bytes with them.
+        const ranges = mappedRanges.get(buffer);
+
+        mappedRanges.delete(buffer);
+
         if (mapWatch.unmap !== null)
         {
-            mapWatch.unmap(buffer);
+            mapWatch.unmap(buffer, ranges);
         }
 
         const result = native.apply(buffer, args as any);

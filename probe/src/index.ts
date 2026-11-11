@@ -12,6 +12,7 @@ import './adapters/three';
 import './adapters/pixi';
 import './adapters/phaser';
 import './adapters/babylon';
+import './adapters/playcanvas';
 import { clock, startClockAtZero, installClock } from './clock/clock';
 import { frameAtWall, frameSamples, gateState, hold, installGate, letGo, notePageEvent, onFrameEnd, pause, resume, runUntil, setFixedStep, step } from './clock/gate';
 import { installTimers } from './clock/timers';

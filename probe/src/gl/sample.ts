@@ -74,6 +74,7 @@ export function mustBeSampled (p: Record<string, any>): boolean
 interface Program
 {
     program: object;
+    sampler: unknown;
     at: unknown;
     size: unknown;
     depth: unknown;
@@ -201,6 +202,7 @@ function programFor (gl: any, n: Record<string, Fn>, gl2: boolean, held: Scratch
     const made: Program | null = n.getProgramParameter.call(gl, program, 0x8B82)
         ? {
             program,
+            sampler: n.getUniformLocation.call(gl, program, 'u_texture'),
             at: n.getUniformLocation.call(gl, program, 'u_at'),
             size: n.getUniformLocation.call(gl, program, 'u_size'),
             depth: n.getUniformLocation.call(gl, program, 'u_depth')
@@ -366,6 +368,11 @@ export function sampleGlTexture (entry: Entry, info: ContextInfo, level: number,
         n.colorMask.call(gl, true, true, true, true);
         n.viewport.call(gl, 0, 0, area.w, area.h);
         n.useProgram.call(gl, program.program);
+
+        // The texture was bound to the unit the page has active, which need not be unit 0.
+        // Left at 0, the shader would sample whatever the page keeps there, and where that
+        // is a shadow map or an integer texture the browser rejects the draw.
+        n.uniform1i.call(gl, program.sampler, t.unit);
         n.uniform4f.call(gl, program.at, area.x, area.y, level, layer);
         n.uniform2f.call(gl, program.size, width, height);
         n.uniform1f.call(gl, program.depth, depth ? 1 : 0);

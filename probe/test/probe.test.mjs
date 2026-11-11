@@ -452,7 +452,8 @@ describe('the state mirror', () =>
         ['three.js', 'fixtures/engines/three.html'],
         ['PixiJS', 'fixtures/engines/pixi.html'],
         ['Phaser', 'fixtures/engines/phaser.html'],
-        ['Babylon.js', 'fixtures/engines/babylon.html']
+        ['Babylon.js', 'fixtures/engines/babylon.html'],
+        ['PlayCanvas', 'fixtures/engines/playcanvas.html']
     ];
 
     for (const [name, path] of pages)
@@ -500,7 +501,8 @@ describe('capture and replay', () =>
         ['three.js', 'fixtures/engines/three.html'],
         ['PixiJS', 'fixtures/engines/pixi.html'],
         ['Phaser', 'fixtures/engines/phaser.html'],
-        ['Babylon.js', 'fixtures/engines/babylon.html']
+        ['Babylon.js', 'fixtures/engines/babylon.html'],
+        ['PlayCanvas', 'fixtures/engines/playcanvas.html']
     ];
 
     for (const [name, path] of pages)
