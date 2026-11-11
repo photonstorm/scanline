@@ -252,10 +252,10 @@ Work through "The control strip", "The viewer" and "Send to agent" above as writ
 
 ## Yours to decide
 
-These are not tests. They are choices that were not mine to make, and each is a small edit. Two are still open.
+These are not tests. They are choices that were not mine to make, and each is a small edit. One is still open.
 
-- **A licence.** Open. The repository has none, which in law means nobody else may copy, change or pass on the code, whatever they can see on GitHub. Which one is the owner's choice and nobody else's: it decides what others may do with the work. Once chosen it is a `LICENSE` file and a `license` field in `packages/scanline-hooks/package.json`, `.claude-plugin/plugin.json` and `Cargo.toml`.
-- **The product's name.** Open. "Scanline" was a working name, and is in the binary, the socket and the pipe, the file suffix (`.scanline`), the plugin and every skill. If it is the name, nothing changes; if not, the sooner the cheaper.
+- **A licence.** Open, and the only choice still open. The repository has none, which in law means nobody else may copy, change or pass on the code, whatever they can see on GitHub. The owner wants the source open to read, change and use, and does not want anyone to package it and charge for it without a licence from him. That rules out MIT and the other open-source licences, all of which allow selling; it points at a source-available licence, and which one is his to choose. Once chosen it is a `LICENSE` file and a `license` field in `packages/scanline-hooks/package.json`, `.claude-plugin/plugin.json` and `Cargo.toml`, and the README should say "source-available", not "open source".
+- **The product's name.** Decided on 11 November 2026: Scanline, for the way a raster screen draws a picture. It is no longer a working name.
 - **Who the plugin is by.** Decided on 11 November 2026: the owner. `.claude-plugin/plugin.json` and `marketplace.json` name him as author and owner. (An organisation's name there instead is a one-word edit in each.)
 - **Where releases live.** Decided: GitHub Releases on this repository, for now. Nothing publishes there yet, and updates are still not built: `npm run package` makes the archive, and putting it up is by hand.
 - **The version.** Decided: 1.0 when it is released, and not before. Everything says 0.0.1 until the owner has seen it work and look as it should. `tools/package.mjs --check` fails if `Cargo.toml`, `package.json` and the plugin disagree.

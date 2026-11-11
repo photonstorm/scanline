@@ -163,5 +163,5 @@ Each is described where it bites, in `scanline help limits` and in `DEPARTURES.m
 In `BY-HAND.md`, and not something an agent can do:
 
 - Look at what nobody has seen on a screen: the control strip, the viewer, "Send to agent", pointer lock by a real click, a real F9 press from another application (made on the Mac, not yet on the PC), Xcode attaching to the native-capture profile, and PIX or RenderDoc doing the same on the PC.
-- Decide: a licence, the name, who the plugin is by, where releases live, the version.
+- Decide: a licence. (The name is Scanline, the plugin is by the owner, releases go on GitHub Releases, and the version is 1.0 at release: `BY-HAND.md`, "Yours to decide".)
 - Run or allow: the pinned Chrome for Testing download on the Mac (done on the PC), the Claude Code plugin's first install, and, once it has been seen to work, signing.

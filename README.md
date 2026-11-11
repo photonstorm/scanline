@@ -4,8 +4,6 @@ A browser for debugging WebGL and WebGPU rendering, driven by an AI agent and sh
 
 Scanline runs any page in a Chromium it launches and supervises, with instrumentation in place before the page's first line of script. An agent can then pause the page at a frame boundary, step it frame by frame, send it input, and read back exactly what the GPU drew. Every capability is a command; the command line and the MCP server are two front ends over the same commands.
 
-"Scanline" is a working name.
-
 ## Status
 
 Every milestone of the build plan up to 1.0 has been worked through on macOS (Apple silicon), and the result builds and passes its tests on Windows 11 (x64) as well. What each one's exit criteria asked for, and where this build falls short of them, is in [docs/DEPARTURES.md](docs/DEPARTURES.md). What only a person at the machine can confirm, and what needs the maintainer's own accounts (signing, a licence, a release host), is in [docs/BY-HAND.md](docs/BY-HAND.md). What to do next is in [docs/HANDOVER.md](docs/HANDOVER.md).
