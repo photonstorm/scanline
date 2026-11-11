@@ -179,7 +179,7 @@ w13 is the one to compare with round 3. There the WebGL flicker was found by bru
 | w15 | The summary's "alpha below 1" line was a side effect of the frame being dropped, and could mislead | Not reported for a frame in which a call was rejected |
 | w09, w13, w14 | `help` never says how to close a session; two agents left theirs open | `close()` is the last step of the loop in `help` |
 | w14 | `stats` gives GPU time by pass, not by draw, so the costly draw was inferred | `stats` and `help` now point to `profile(capture)` |
-| w04 | A `writeBuffer` call's data is shown as `<Uint8Array data>`, so what the page wrote cannot be read from the call | Not done. `resource(buffer)` shows the bytes the buffer holds |
+| w04 | A `writeBuffer` call's data is shown as `<Uint8Array data>`, so what the page wrote cannot be read from the call | The call list shows the data's first sixteen numbers, as the kind of array the page gave: `<Float32Array 16: 0, 260, 480, 100, …>` |
 | w04 | The buffer was written before the captured frame, so the capture holds no write to compare with | Nothing: `draw` reads the buffer as the frame found it, and now says when it was written short |
 | w04 | A SQL filter on `buf_2` also matched `buf_20` and `buf_21` | Nothing: it is SQL's `like` |
 | w05 | A `beginRenderPass` call's arguments were cut off in a query | Nothing: the clear depth the agent wanted is also in `draw` on the clear event |

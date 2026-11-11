@@ -367,6 +367,10 @@ Most were already answered by what was built. Planting them found these gaps, no
 - **The viewport finding** looked for a run of events that all used one viewport. A WebGPU pass's clear is listed with the whole target, so the run never matched; the draws now decide. It is reported only for a viewport that starts at the target's corner, which is what one left over from another target looks like: a viewport placed elsewhere in the target was put there on purpose.
 - **A uniform buffer written short of what its shader reads.** `draw` gives each member's byte offset, and says when the page has only ever written part of what the struct covers: the usual sign of a layout written without WGSL's padding.
 
+## Data in the call list
+
+A call that is given data (`writeBuffer`, `bufferData`, `texImage2D`) used to show it in a capture's `commands` table as `<Uint8Array data>`. It now shows what kind of array the page gave, how many numbers, and the first sixteen: `<Float32Array 16: 0, 260, 480, 100, …>`. Data over 1 MB is named and not read. An agent in round 4 asked for this to see what a page had written to a uniform buffer.
+
 ## State set up long before the frame
 
 A capture begins from the state the frame began with. Three parts of that state were missing for WebGL 2, and a page that used them replayed wrongly or not at all:

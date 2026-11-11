@@ -253,10 +253,42 @@ fn gl_error_name(code: u64) -> String {
     }
 }
 
+/// Data a call was given, for reading: what kind of array, how long, and its first numbers.
+/// `bytes` is None where the data is too large to be worth reading for a line of text.
+fn shown_data(kind: &str, bytes: Option<Vec<u8>>) -> String {
+    let Some(bytes) = bytes else { return format!("<{kind} data>") };
+    let each = match kind {
+        "Float64Array" | "BigInt64Array" | "BigUint64Array" => 8,
+        "Float32Array" | "Int32Array" | "Uint32Array" => 4,
+        "Int16Array" | "Uint16Array" => 2,
+        _ => 1,
+    };
+    let count = bytes.len() / each;
+    let number = |chunk: &[u8]| -> String {
+        let round = |value: f64| if value.is_finite() { format!("{}", (value * 1e6).round() / 1e6) } else { value.to_string() };
+
+        match kind {
+            "Float32Array" => round(f32::from_le_bytes(chunk.try_into().unwrap_or_default()) as f64),
+            "Float64Array" => round(f64::from_le_bytes(chunk.try_into().unwrap_or_default())),
+            "Int32Array" => i32::from_le_bytes(chunk.try_into().unwrap_or_default()).to_string(),
+            "Uint32Array" => u32::from_le_bytes(chunk.try_into().unwrap_or_default()).to_string(),
+            "Int16Array" => i16::from_le_bytes(chunk.try_into().unwrap_or_default()).to_string(),
+            "Uint16Array" => u16::from_le_bytes(chunk.try_into().unwrap_or_default()).to_string(),
+            "BigInt64Array" => i64::from_le_bytes(chunk.try_into().unwrap_or_default()).to_string(),
+            "BigUint64Array" => u64::from_le_bytes(chunk.try_into().unwrap_or_default()).to_string(),
+            "Int8Array" => (chunk[0] as i8).to_string(),
+            _ => chunk[0].to_string(),
+        }
+    };
+    let first: Vec<String> = bytes.chunks_exact(each).take(16).map(number).collect();
+
+    format!("<{kind} {count}: {}{}>", first.join(", "), if count > first.len() { ", …" } else { "" })
+}
+
 /// A call's arguments for reading: object references become handles, uniform locations
 /// become `prg_1.name`, and where an argument is one of WebGL's named numbers, its name.
-fn readable(method: &str, args: &Value, tag: u64) -> Value {
-    fn objects(value: &Value, tag: u64) -> Value {
+fn readable(method: &str, args: &Value, tag: u64, data: &dyn Fn(u64) -> Option<Vec<u8>>) -> Value {
+    fn objects(value: &Value, tag: u64, data: &dyn Fn(u64) -> Option<Vec<u8>>) -> Value {
         match value {
             Value::Object(map) if map.contains_key("o") && map.contains_key("i") => {
                 json!(handle_for(map["o"].as_str().unwrap_or(""), &map["i"], tag).unwrap_or_default())
@@ -274,16 +306,19 @@ fn readable(method: &str, args: &Value, tag: u64) -> Value {
             Value::Object(map) if map.len() == 1 && map.contains_key("q") => json!("queue"),
             Value::Object(map) if map.len() == 1 && map.contains_key("ctx") => json!("canvas context"),
             Value::Object(map) if map.len() == 1 && map.contains_key("$u") => Value::Null,
-            Value::Object(map) if map.len() == 2 && map.contains_key("b") && map.contains_key("a") => {
-                json!(format!("<{} data>", map["a"].as_str().unwrap_or("")))
+            // Data given to a call: its first numbers, read as the kind of array the page gave.
+            Value::Object(map) if map.contains_key("b") && (map.contains_key("a") || map.contains_key("t")) && map.len() <= 3 => {
+                let kind = map.get("was").or(map.get("a")).or(map.get("t")).and_then(Value::as_str).unwrap_or("");
+
+                json!(shown_data(kind, map["b"].as_u64().and_then(data)))
             }
-            Value::Object(map) => Value::Object(map.iter().map(|(key, value)| (key.clone(), objects(value, tag))).collect()),
-            Value::Array(items) => Value::Array(items.iter().map(|item| objects(item, tag)).collect()),
+            Value::Object(map) => Value::Object(map.iter().map(|(key, value)| (key.clone(), objects(value, tag, data))).collect()),
+            Value::Array(items) => Value::Array(items.iter().map(|item| objects(item, tag, data)).collect()),
             other => other.clone(),
         }
     }
 
-    let mut out = objects(args, tag);
+    let mut out = objects(args, tag, data);
 
     // Which arguments of which methods are named numbers.
     let named: &[usize] = match method.strip_prefix("gl.").unwrap_or("") {
@@ -984,7 +1019,7 @@ pub(crate) fn entity_text(entity: &Value) -> String {
     }
 }
 
-fn tables(body: &Value, tag: u64, errors: &HashMap<i64, String>, effects: &HashMap<i64, Value>) -> (Vec<Table>, Value) {
+fn tables(body: &Value, tag: u64, errors: &HashMap<i64, String>, effects: &HashMap<i64, Value>, data: &dyn Fn(u64) -> Option<Vec<u8>>) -> (Vec<Table>, Value) {
     let sizes = Sizes::of(body);
     let groups = groups_of(body);
     let webgpu = is_webgpu(body);
@@ -1155,7 +1190,7 @@ fn tables(body: &Value, tag: u64, errors: &HashMap<i64, String>, effects: &HashM
         .skip(first_command)
         .map(|(index, command)| {
             let method = command[0].as_u64().and_then(|id| methods.get(id as usize)).cloned().unwrap_or_default();
-            let mut args = readable(&method, &command[1], tag).to_string();
+            let mut args = readable(&method, &command[1], tag, data).to_string();
 
             if args.len() > 400 {
                 args = format!("{}…", args.chars().take(400).collect::<String>());
@@ -1169,7 +1204,7 @@ fn tables(body: &Value, tag: u64, errors: &HashMap<i64, String>, effects: &HashM
                 leads_to(index as i64),
                 text(errors.get(&(index as i64)).cloned()),
                 // What a WebGPU call was made on: "#4" is an encoder or a pass made during the frame.
-                text(command.get(3).map(|receiver| readable("", &json!([receiver]), tag)[0].as_str().map(str::to_string).unwrap_or_default())),
+                text(command.get(3).map(|receiver| readable("", &json!([receiver]), tag, data)[0].as_str().map(str::to_string).unwrap_or_default())),
             ]
         })
         .collect();
@@ -1578,7 +1613,19 @@ pub(crate) async fn build(host: &Arc<Host>, session: &Arc<Session>, body: Value,
         }
     }
 
-    let (capture_tables, mut counts) = tables(&body, tag, &errors, &effects);
+    // The data a call was given, for the call list: small blobs only, read from the store.
+    let blob_base = body["header"]["blobBase"].as_u64().unwrap_or(0);
+    let call_data = |index: u64| -> Option<Vec<u8>> {
+        let place = index.checked_sub(blob_base)? as usize;
+
+        if body["blobs"][place].as_u64().is_none_or(|size| size > 1 << 20) {
+            return None;
+        }
+
+        host.store.get_blob(body["blob_hashes"][place].as_str()?).ok()
+    };
+
+    let (capture_tables, mut counts) = tables(&body, tag, &errors, &effects, &call_data);
 
     counts["gl_errors"] = json!(raised);
 

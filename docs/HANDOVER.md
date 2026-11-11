@@ -114,7 +114,6 @@ Each is described where it bites, in `scanline help limits` and in `DEPARTURES.m
 - Reading back multisampled textures, and the stencil of a depth and stencil texture.
 - More than one WebGPU device in one capture.
 - The `half_resolution` experiment.
-- A `writeBuffer` call's data in a capture's call list (it shows as `<Uint8Array data>`). An agent in round 4 wanted it.
 - External (video) textures in a WebGPU capture.
 - The fast binary channel for bulk data. Images travel as compressed base64 over the protocol; spike S2 was never run.
 - The engines the specification's content matrix lists and the repository lacks: a Unity WebGL build, an Emscripten build.

@@ -256,7 +256,8 @@ function encodeArgs (capture: Capture, method: number, args: any[]): unknown[]
         const from = (G.Number(args[3]) || 0) * unit;
         const length = args[4] === undefined ? all.byteLength - from : G.Number(args[4]) * unit;
 
-        return [encode(capture, args[0]), encode(capture, args[1]), { b: blob(capture, all.slice(from, from + length)), a: 'Uint8Array' }];
+        // `was` is the kind of array the page gave, so that a reader sees floats as floats.
+        return [encode(capture, args[0]), encode(capture, args[1]), { b: blob(capture, all.slice(from, from + length)), a: 'Uint8Array', was: G.ArrayBuffer.isView(data) ? G.String((data as any).constructor?.name ?? 'Uint8Array') : 'ArrayBuffer' }];
     }
 
     if (qualified === 'GPUBuffer.unmap')

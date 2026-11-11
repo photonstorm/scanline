@@ -318,6 +318,11 @@ describe('what a capture says about each planted WebGPU bug', () =>
         assert.match(list.out, /25 events/);
         assert.equal(list.out.match(/⇒ \d+ px at/g).length, 25);
         assert.match(list.out, / 5 {2}triangle-strip ×4 {2}pip_1 → canvas .*⇒ 48000 px at 0, 260, 480, 100/);
+
+        // What a call wrote can be read from the call: the sparks' uniforms, as the floats the page gave.
+        const writes = await scanline('query', capture, "select method, args from commands where method = 'GPUQueue.writeBuffer' limit 1", '--session', session);
+
+        assert.match(writes.out, /GPUQueue\.writeBuffer \| \["buf_\d+",0,"<Float32Array 16: [\d.]+, [\d.]+, 16, 16, 480, 360, 0\.2, 0, 1, 0\.9, 0\.4, 0\.9, 0, 0, 0, 0>"\]/);
     });
 
     test('w01: the crates are culled, and draw says so', async () =>
