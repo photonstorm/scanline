@@ -1587,6 +1587,23 @@ describe('live patches', () =>
             assert.ok(flat.json.data.gpu_ms.with < flat.json.data.gpu_ms.without * 0.6, `${page}: ${JSON.stringify(flat.json.data.gpu_ms)}`);
             assert.match((await scanline('patches')).out, /No patches are in force/);
         }
+
+        // Every plain colour texture stood in for by a tiny one, on each API; what a pass
+        // draws to, and depth, are left alone. The page is itself again afterwards.
+        for (const [page, stood, left, crate] of [['fixtures/bugs/b00.html', 2, 1, [187, 131, 75, 255]], ['fixtures/bugs/w00.html', 3, 2, [188, 132, 75, 255]]])
+        {
+            await scanline('close');
+            await scanline('launch', server.url(page), '--paused', '--headless');
+            await scanline('step', '4');
+
+            const tiny = await scanline('experiment', 'textures_2x2', '--frames', '12', '--json');
+
+            assert.equal(tiny.code, 0, tiny.out);
+            assert.match(tiny.json.summary, new RegExp(`Tried for 12 frames: every plain 2D colour texture stood in for by a 2×2 one \\(${stood} textures stood in for; ${left} left as they are`), tiny.json.summary);
+            assert.match(tiny.json.summary, /What went is the cost of fetching texels from large textures/);
+            assert.match((await scanline('patches')).out, /No patches are in force/);
+            assert.deepEqual((await scanline('pixels', 100, 220, '--json')).json.data.rgba8, crate, `${page}: the crate has its own picture again`);
+        }
     });
 
     test('webgpu: pipelines are rebuilt with the change, and the page\'s own are put back', async () =>

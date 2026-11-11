@@ -27,6 +27,7 @@
 
 import { onFrameBegin } from './clock/gate';
 import { allContexts, contextById, type ContextInfo } from './contexts';
+import { isDepthFormat } from './gl/sample';
 import { clearWatch, trackerFor, uniformWatch, type GlTracker, type UniformSlot } from './gl/tracker';
 import { gpuPatchAdd, gpuPatchFrame, gpuPatchList, gpuPatchRemove } from './gpu/patch';
 import type { Rec } from './hooks/hub';
@@ -1117,6 +1118,19 @@ export function installPatches (): void
                 if (!entry || entry.context !== info.id || entry.destroyed)
                 {
                     throw new Error(`There is no live texture ${args.texture} in this context.`);
+                }
+
+                // For an experiment that stands in for every texture at once: only those a
+                // small colour texture can stand in for without changing what the frame does.
+                if (args.plain)
+                {
+                    const format: number = entry.p.internalFormat;
+                    const integer = (format >= 0x8231 && format <= 0x823C) || (format >= 0x8D70 && format <= 0x8D8F) || format === 0x906F;
+
+                    if (entry.p.target !== 0x0DE1 || entry.p.renderTarget || !entry.p.width || isDepthFormat(format) || integer)
+                    {
+                        throw new Error('not a plain 2D colour texture');
+                    }
                 }
 
                 const kind = ['checker', 'white', 'black', 'mips', 'file'].includes(args.with) ? args.with : 'checker';

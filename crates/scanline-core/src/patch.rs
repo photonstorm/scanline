@@ -641,7 +641,7 @@ pub async fn experiment(session: &Arc<Session>, params: &Value) -> Result<Value>
     let kind = params["kind"]
         .as_str()
         .ok_or_else(|| {
-            anyhow!("experiment needs kind: scissor_1px (is the cost in filling pixels?), flat_fragment (is it in computing their colour?) or skip with a filter (what do these draws cost?).")
+            anyhow!("experiment needs kind: scissor_1px (is the cost in filling pixels?), flat_fragment (is it in computing their colour?), textures_2x2 (is it in fetching texels?) or skip with a filter (what do these draws cost?).")
         })?;
     let frames = params["frames"].as_u64().unwrap_or(60).clamp(10, 600);
 
@@ -669,18 +669,66 @@ pub async fn experiment(session: &Arc<Session>, params: &Value) -> Result<Value>
             "every matching draw writing one flat colour".to_string(),
             "The draws are issued, their vertices processed and the same pixels filled, but each fragment writes one constant colour. Its shader still runs what it needs to decide a discard; the work that only made the colour (texture samples, lighting, loops) is gone. What went is the cost of computing the colour. If little went and scissor_1px takes a lot away, the cost is in how many pixels are filled, not in what each one computes: overdraw, or resolution.",
         ),
-        other => bail!("There is no \"{other}\" experiment. Kinds are scissor_1px, flat_fragment (optionally with a filter) and skip (with a filter)."),
+        // Not one patch but one for every texture: handled below.
+        "textures_2x2" => (
+            Value::Null,
+            "every plain 2D colour texture stood in for by a 2×2 one".to_string(),
+            "The draws, their vertices, their shaders and the pixels they fill are all as they were; only the textures are tiny, so every sample is a hit in the cache. What went is the cost of fetching texels from large textures: memory traffic. If little went, the textures are not what makes the frame slow.",
+        ),
+        other => {
+            bail!("There is no \"{other}\" experiment. Kinds are scissor_1px, flat_fragment (optionally with a filter), textures_2x2 and skip (with a filter).")
+        }
     };
 
     let before = measure(session, &context, frames).await?;
-    let (handle, made) = add(session, &context, patch).await?;
+    let mut handles = Vec::new();
+    let said_made;
+    let mut left = 0;
+
+    if kind == "textures_2x2" {
+        // A stand-in for each texture a small colour texture can stand in for. The rest
+        // (render targets, depth, cube maps, arrays, integer formats) are left as they are.
+        let listed =
+            session.probe(&context.instance, "registry.list", json!({ "kind": "texture", "sort": "bytes", "offset": 0, "limit": 2000 }), SHORT).await?;
+
+        for row in listed["rows"].as_array().into_iter().flatten() {
+            if row["api"] == "webgl" && row["context"] != json!(context.local) {
+                continue;
+            }
+
+            match add(session, &context, json!({ "kind": "texture", "texture": row["id"], "with": "white", "plain": true, "filter": {} })).await {
+                Ok((handle, _)) => handles.push(handle),
+                Err(_) => left += 1,
+            }
+        }
+
+        if handles.is_empty() {
+            bail!(
+                "This page has no plain 2D colour texture to stand in for ({left} left as they are: render targets, depth, cube maps, arrays and integer formats)."
+            );
+        }
+
+        said_made = format!(
+            "{} stood in for{}",
+            crate::capture::plural(handles.len() as i64, "texture"),
+            if left > 0 { format!("; {left} left as they are: render targets, depth, cube maps, arrays and integer formats") } else { String::new() }
+        );
+    } else {
+        let (handle, made) = add(session, &context, patch).await?;
+
+        said_made = said(session, &context, made["description"].as_str().unwrap_or(""));
+        handles.push(handle);
+    }
+
     let during = measure(session, &context, frames).await;
 
     // Whatever happened, the page goes back to drawing as it did.
-    let made_here = session.state.lock().unwrap().patches.remove(&handle);
+    for handle in &handles {
+        let made_here = session.state.lock().unwrap().patches.remove(handle);
 
-    if let Some((instance, id)) = made_here {
-        let _ = session.probe(&instance, "patch.remove", json!({ "patch": id }), SHORT).await;
+        if let Some((instance, id)) = made_here {
+            let _ = session.probe(&instance, "patch.remove", json!({ "patch": id }), SHORT).await;
+        }
     }
 
     // One more frame, so that the canvas shows the page's own drawing again and not the
@@ -688,7 +736,7 @@ pub async fn experiment(session: &Arc<Session>, params: &Value) -> Result<Value>
     let _ = step(session, &json!({ "frames": 1 })).await;
 
     let during = during?;
-    let description = said(session, &context, made["description"].as_str().unwrap_or(""));
+    let description = said_made;
     let mut lines = vec![format!("Tried for {frames} frames: {what} ({description}). The page is back as it was.")];
 
     match (before.0, during.0) {

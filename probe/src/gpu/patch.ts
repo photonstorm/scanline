@@ -1776,6 +1776,12 @@ export async function gpuPatchAdd (args: any, id: number): Promise<Record<string
                 throw new G.Error('The mips stand-in is for WebGL. On WebGPU use checker, white, black or a PNG file.');
             }
 
+            // For an experiment that stands in for every texture at once: not one a pass draws to.
+            if (args.plain && (entry.p.renderTarget || (typeof entry.p.usage === 'number' && (entry.p.usage & 0x18) !== 0)))
+            {
+                throw new G.Error('not a plain 2D colour texture');
+            }
+
             const image = args.with === 'file' ? imageOf(args) : undefined;
 
             patch.texture = entry.id;

@@ -28,6 +28,8 @@ Timings on a paused, stepped page are of the frames you stepped. A single frame 
 - **Frame gets much cheaper:** the cost is filling pixels: fragment shaders, overdraw, resolution, blending. Go to step 3.
 - **Frame hardly changes:** the cost is per draw or per vertex: too many draws, heavy vertex shaders, big buffers uploaded each frame. Look at the capture's counts, at what the frame created (`gfx_resources()` flags churn), and at `gfx_experiment(kind: "skip", filter: {…})` to find what a group of draws costs.
 
+If it is the pixels, two more experiments say which part of filling them. `gfx_experiment(kind: "flat_fragment")` has every draw write one flat colour: what went is the cost of computing colours. `gfx_experiment(kind: "textures_2x2")` stands a 2×2 texture in for every plain colour texture: what went is the cost of fetching texels from large textures (memory traffic), which smaller or compressed textures, or mipmaps, would cut.
+
 ## 3. Which shader?
 
 `gfx_capture()`, then `gfx_profile(capture, by: "pass")` to see which pass holds the time, and `gfx_profile(capture, by: "shader")` to rank the programs. It replays each draw several times inside a timer and says how it measured. Trust the order and the rough proportions, not the last digit.
