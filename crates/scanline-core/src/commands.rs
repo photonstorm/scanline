@@ -1299,6 +1299,8 @@ pub(crate) async fn grab(session: &Arc<Session>, params: &Value) -> Result<Grab>
         args["id"] = json!(object.id);
         args["level"] = json!(params["level"].as_u64().unwrap_or(0));
         args["layer"] = json!(params["layer"].as_u64().unwrap_or(0));
+        args["aspect"] = params["aspect"].clone();
+        args["sample"] = params["sample"].clone();
 
         if let Some(flip) = params["flip"].as_bool() {
             args["flip"] = json!(flip);
@@ -1389,6 +1391,8 @@ async fn texture_pixels(session: &Arc<Session>, handle: &str, params: &Value) ->
     args["id"] = json!(object.id);
     args["level"] = json!(params["level"].as_u64().unwrap_or(0));
     args["layer"] = json!(params["layer"].as_u64().unwrap_or(0));
+    args["aspect"] = params["aspect"].clone();
+    args["sample"] = params["sample"].clone();
     args["values"] = json!(true);
 
     if let Some(flip) = params["flip"].as_bool() {
@@ -1453,6 +1457,11 @@ async fn texture_pixels(session: &Arc<Session>, handle: &str, params: &Value) ->
     }
 
     lines.push("Channels a format lacks read as 0, and a missing alpha as fully opaque.".into());
+
+    // What the probe says about how it was read: one sample of several, depth and not stencil.
+    if let Some(note) = read["note"].as_str() {
+        lines.push(note.to_string());
+    }
 
     if read["flipped"] == true {
         lines.push(

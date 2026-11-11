@@ -111,7 +111,7 @@ Each is described where it bites, in `scanline help limits` and in `DEPARTURES.m
 
 - For a draw inside a WebGPU render bundle: the values in its uniform buffers, and a line of its own in `pixel_history`. (`draw` and `geometry` take one with `inside: n`.)
 - The wireframe view on a running WebGPU page. A capture has it.
-- Reading back multisampled textures, and the stencil of a depth and stencil texture.
+- Reading back, from a running page, a multisampled texture the page did not make with `TEXTURE_BINDING` usage, and stencil on WebGL. A capture reads both.
 - More than one WebGPU device in one capture.
 - The `half_resolution` experiment.
 - External (video) textures in a WebGPU capture.

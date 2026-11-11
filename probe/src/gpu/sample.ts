@@ -40,13 +40,13 @@ const VERTEX = `
     return vec4f(vec2f(f32((index << 1u) & 2u), f32(index & 2u)) * 2.0 - 1.0, 0.0, 1.0);
 }`;
 
-function pipelineFor (device: any, depth: boolean, target: string): { pipeline: object; layout: object }
+function pipelineFor (device: any, depth: boolean, target: string, sample: number | null): { pipeline: object; layout: object }
 {
     const made: Map<string, { pipeline: object; layout: object }> = pipelines.get(device) ?? new G.Map();
 
     pipelines.set(device, made);
 
-    const key = `${depth}:${target}`;
+    const key = `${depth}:${target}:${sample}`;
     const found = made.get(key);
 
     if (found)
@@ -54,20 +54,20 @@ function pipelineFor (device: any, depth: boolean, target: string): { pipeline: 
         return found;
     }
 
+    // One sample of a multisampled texture, or the texel of one that is not.
+    const kind = depth ? (sample === null ? 'texture_depth_2d' : 'texture_depth_multisampled_2d') : (sample === null ? 'texture_2d<f32>' : 'texture_multisampled_2d<f32>');
+    const loaded = `textureLoad(source, vec2i(at.xy), ${sample ?? 0})`;
+
     const module = call('GPUDevice', 'createShaderModule', device, {
         label: 'scanline: texture readback',
-        code: depth
-            ? `@group(0) @binding(0) var source: texture_depth_2d;
+        code: `@group(0) @binding(0) var source: ${kind};
 ${VERTEX}
-@fragment fn fragment (@builtin(position) at: vec4f) -> @location(0) vec4f { return vec4f(textureLoad(source, vec2i(at.xy), 0), 0.0, 0.0, 1.0); }`
-            : `@group(0) @binding(0) var source: texture_2d<f32>;
-${VERTEX}
-@fragment fn fragment (@builtin(position) at: vec4f) -> @location(0) vec4f { return textureLoad(source, vec2i(at.xy), 0); }`
+@fragment fn fragment (@builtin(position) at: vec4f) -> @location(0) vec4f { return ${depth ? `vec4f(${loaded}, 0.0, 0.0, 1.0)` : loaded}; }`
     });
 
     const layout = call('GPUDevice', 'createBindGroupLayout', device, {
         label: 'scanline: texture readback',
-        entries: [{ binding: 0, visibility: 2, texture: { sampleType: depth ? 'depth' : 'float', viewDimension: '2d' } }]
+        entries: [{ binding: 0, visibility: 2, texture: { sampleType: depth ? 'depth' : (sample === null ? 'float' : 'unfilterable-float'), viewDimension: '2d', multisampled: sample !== null } }]
     });
 
     const pipeline = call('GPUDevice', 'createRenderPipeline', device, {
@@ -93,7 +93,8 @@ export interface GpuSampled
 }
 
 // One region of one level of one layer, drawn and read.
-export async function sampleGpuTexture (entry: Entry, level: number, layer: number, area: { x: number; y: number; w: number; h: number }): Promise<GpuSampled>
+// `sample` picks one sample of a multisampled texture, which is read no other way.
+export async function sampleGpuTexture (entry: Entry, level: number, layer: number, area: { x: number; y: number; w: number; h: number }, sample = 0): Promise<GpuSampled>
 {
     const p = entry.p;
     const texture = entry.ref.deref() as any;
@@ -106,17 +107,32 @@ export async function sampleGpuTexture (entry: Entry, level: number, layer: numb
         throw new Error('The device this texture belongs to is not known. The texture was created before the probe could record it.');
     }
 
-    if (p.dimension === '3d' || p.sampleCount > 1)
+    const samples: number = p.sampleCount > 1 ? p.sampleCount : 1;
+
+    if (p.dimension === '3d')
     {
-        throw new Error(`A ${p.sampleCount > 1 ? 'multisampled' : '3D'} ${format} texture cannot be read back.`);
+        throw new Error(`A 3D ${format} texture cannot be read back.`);
+    }
+
+    if (samples > 1 && (format.includes('int') || format.includes('stencil')))
+    {
+        throw new Error(`A multisampled ${format} texture cannot be read back: one sample of a colour or depth texture can be.`);
+    }
+
+    if (sample < 0 || sample >= samples)
+    {
+        throw new Error(samples > 1 ? `This texture has ${samples} samples a texel, numbered from 0; there is no sample ${sample}.` : 'This texture is not multisampled: it has no samples to choose between.');
     }
 
     if (!p.sampled)
     {
-        throw new Error(`This ${format} texture has no TEXTURE_BINDING usage, so it cannot be drawn to be read. It was created in unmodified mode, or is a transient attachment.`);
+        throw new Error(samples > 1
+            ? `This multisampled ${format} texture has no TEXTURE_BINDING usage, so no sample of it can be read. Read the texture it resolves to, or capture the frame: a capture's replay reads its targets.`
+            : `This ${format} texture has no TEXTURE_BINDING usage, so it cannot be drawn to be read. It was created in unmodified mode, or is a transient attachment.`);
     }
 
-    const target = depth ? 'r32float' : (format.startsWith('bc6h') ? 'rgba16float' : (format.endsWith('-srgb') ? 'rgba8unorm-srgb' : 'rgba8unorm'));
+    const float = format.includes('float') || format.startsWith('bc6h');
+    const target = depth ? 'r32float' : (float ? 'rgba16float' : (format.endsWith('-srgb') ? 'rgba8unorm-srgb' : 'rgba8unorm'));
     const bytes = target === 'rgba16float' ? 8 : 4;
     const width = G.Math.max(1, p.width >> level);
     const height = G.Math.max(1, p.height >> level);
@@ -128,7 +144,7 @@ export async function sampleGpuTexture (entry: Entry, level: number, layer: numb
         return { packed, format: target, bytes };
     }
 
-    const { pipeline, layout } = pipelineFor(device, depth, target);
+    const { pipeline, layout } = pipelineFor(device, depth, target, samples > 1 ? sample : null);
     const into = call('GPUDevice', 'createTexture', device, { label: 'scanline: texture readback', size: [width, height], format: target, usage: 0x10 | 0x01 });
     const view = call('GPUTexture', 'createView', texture, {
         dimension: '2d',

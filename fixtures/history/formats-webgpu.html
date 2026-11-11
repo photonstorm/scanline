@@ -104,6 +104,52 @@ function shadow (label, depthFormat, z)
 const shadow24 = shadow('shadow', 'depth24plus', 0.25);
 const shadow32 = shadow('shadow32', 'depth32float', 0.5);
 
+// Two more that the frame never uses, for reading back from the running page.
+//
+//   «mask»     16×16 depth24plus-stencil8, drawn once and kept: stencil 7 and depth 0.75 on
+//              its left half, stencil 0 and depth 1 on its right.
+//   «samples»  16×16 rgba8unorm, four samples a texel, cleared to (51, 102, 153) and kept.
+//              It can be sampled (TEXTURE_BINDING), so one sample of it can be read.
+const mask = device.createTexture({ label: 'mask', size: [16, 16], format: 'depth24plus-stencil8', usage: GPUTextureUsage.RENDER_ATTACHMENT });
+const samples = device.createTexture({ label: 'samples', size: [16, 16], format: 'rgba8unorm', sampleCount: 4, usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING });
+
+{
+    const replace = { compare: 'always', passOp: 'replace' };
+    const stamp = device.createRenderPipeline({
+        label: 'mask fill',
+        layout: device.createPipelineLayout({ bindGroupLayouts: [] }),
+        vertex: { module, entryPoint: 'vertex', constants: { z: 0.75 } },
+        depthStencil: { format: 'depth24plus-stencil8', depthWriteEnabled: true, depthCompare: 'always', stencilFront: replace, stencilBack: replace },
+        primitive: { topology: 'triangle-list' }
+    });
+    const encoder = device.createCommandEncoder();
+    const stencilled = encoder.beginRenderPass({
+        label: 'mask fill',
+        colorAttachments: [],
+        depthStencilAttachment: {
+            view: mask.createView(),
+            depthClearValue: 1,
+            depthLoadOp: 'clear',
+            depthStoreOp: 'store',
+            stencilClearValue: 0,
+            stencilLoadOp: 'clear',
+            stencilStoreOp: 'store'
+        }
+    });
+
+    stencilled.setPipeline(stamp);
+    stencilled.setStencilReference(7);
+    stencilled.setScissorRect(0, 0, 8, 16);
+    stencilled.draw(3);
+    stencilled.end();
+
+    encoder.beginRenderPass({
+        label: 'samples fill',
+        colorAttachments: [{ view: samples.createView(), clearValue: [0.2, 0.4, 0.6, 1], loadOp: 'clear', storeOp: 'store' }]
+    }).end();
+    device.queue.submit([encoder.finish()]);
+}
+
 const column = (label, entryPoint, binding, texture, sampleType) =>
 {
     const layout = device.createBindGroupLayout({ label, entries: [{ binding, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType } }] });

@@ -414,16 +414,17 @@ async function readGpuBlocks (entry: Entry, level: number, layer: number, blocks
 
 // A region of a level as texels a caller can make sense of: copied where a copy gives
 // texels, drawn and read (gpu/sample.ts) where it gives blocks or nothing.
-async function readGpuTexels (entry: Entry, level: number, layer: number, region: Region): Promise<{ width: number; height: number; w: number; h: number; packed: Uint8Array; format: string; bytes: number }>
+async function readGpuTexels (entry: Entry, level: number, layer: number, region: Region, sample = 0): Promise<{ width: number; height: number; w: number; h: number; packed: Uint8Array; format: string; bytes: number }>
 {
     const p = entry.p;
 
-    if (block(p.format) || depthNeedsSampling(p.format))
+    // A multisampled texture cannot be copied at all: one sample of it is drawn and read.
+    if (block(p.format) || depthNeedsSampling(p.format) || p.sampleCount > 1)
     {
         const width = G.Math.max(1, p.width >> level);
         const height = G.Math.max(1, p.height >> level);
         const area = clip(width, height, region);
-        const sampled = await sampleGpuTexture(entry, level, layer, area);
+        const sampled = await sampleGpuTexture(entry, level, layer, area, sample);
 
         return { width, height, w: area.w, h: area.h, packed: sampled.packed, format: sampled.format, bytes: sampled.bytes };
     }
@@ -452,9 +453,66 @@ export async function readGpuDepth (entry: Entry, level: number, layer: number):
     return { width: read.width, height: read.height, packed: new G.Uint8Array(depth.buffer) };
 }
 
-async function readGpuTexture (entry: Entry, level: number, layer: number, region: Region): Promise<Pixels>
+// The stencil of a depth and stencil texture, or of a stencil one: 0 to 255 in the first channel.
+async function readGpuStencil (entry: Entry, level: number, layer: number, region: Region): Promise<Pixels>
 {
-    const { width, height, w, h, packed, format, bytes } = await readGpuTexels(entry, level, layer, region);
+    const p = entry.p;
+    const texture = entry.ref.deref() as any;
+    const device = texture ? deviceFor(texture) as any : null;
+    const n = natives;
+
+    if (!G.String(p.format).includes('stencil'))
+    {
+        throw new Error(`This texture is ${p.format}, which has no stencil.`);
+    }
+
+    if (!device || !p.readable)
+    {
+        throw new Error(p.sampleCount > 1
+            ? 'The stencil of a multisampled texture cannot be read from the running page. view(capture, view: "stencil") reads it from a capture.'
+            : 'This texture has no COPY_SRC usage, so its stencil cannot be read back. It was created in unmodified mode, or is a transient attachment.');
+    }
+
+    // A stencil level can only be copied whole; the region is cut from it here.
+    const width = G.Math.max(1, p.width >> level);
+    const height = G.Math.max(1, p.height >> level);
+    const area = clip(width, height, region);
+    const stride = G.Math.ceil(width / 256) * 256;
+    const buffer = n.GPUDevice.createBuffer.call(device, { label: 'scanline: texture readback', size: G.Math.max(4, stride * height), usage: 0x0001 | 0x0008 });
+    const encoder = n.GPUDevice.createCommandEncoder.call(device, { label: 'scanline: texture readback' });
+
+    n.GPUCommandEncoder.copyTextureToBuffer.call(
+        encoder,
+        { texture, mipLevel: level, origin: { x: 0, y: 0, z: layer }, aspect: 'stencil-only' },
+        { buffer, bytesPerRow: stride, rowsPerImage: height },
+        { width, height, depthOrArrayLayers: 1 }
+    );
+
+    n.GPUQueue.submit.call(device.queue, [n.GPUCommandEncoder.finish.call(encoder)]);
+
+    await n.GPUBuffer.mapAsync.call(buffer, 0x0001);
+
+    const mapped = new G.Uint8Array(n.GPUBuffer.getMappedRange.call(buffer)) as Uint8Array;
+    const channels = new G.Uint32Array(area.w * area.h * 4) as Uint32Array;
+
+    for (let y = 0; y < area.h; y++)
+    {
+        for (let x = 0; x < area.w; x++)
+        {
+            channels[(y * area.w + x) * 4] = mapped[(area.y + y) * stride + area.x + x];
+            channels[(y * area.w + x) * 4 + 3] = 1;
+        }
+    }
+
+    n.GPUBuffer.unmap.call(buffer);
+    n.GPUBuffer.destroy.call(buffer);
+
+    return { width, height, channels, kind: 'int', format: p.format, note: 'Stencil: 0 to 255, in the first channel.' };
+}
+
+async function readGpuTexture (entry: Entry, level: number, layer: number, region: Region, sample = 0): Promise<Pixels>
+{
+    const { width, height, w, h, packed, format, bytes } = await readGpuTexels(entry, level, layer, region, sample);
     const area = { w, h };
 
     // Spread whatever the format holds across four channels: missing colour channels are 0, missing alpha is 1.
@@ -536,7 +594,11 @@ async function readGpuTexture (entry: Entry, level: number, layer: number, regio
         channels,
         kind,
         format: own,
-        note: block(own) ? 'A compressed texture, read as the texels its blocks decode to.' : (own.includes('stencil') && own !== 'stencil8' ? 'Depth only: the stencil is not read.' : null)
+        note: block(own)
+            ? 'A compressed texture, read as the texels its blocks decode to.'
+            : (entry.p.sampleCount > 1
+                ? `Sample ${sample} of ${entry.p.sampleCount} a texel. The others may differ along an edge.`
+                : (own.includes('stencil') && own !== 'stencil8' ? 'Depth. Its stencil is read with aspect: "stencil".' : null))
     };
 }
 
@@ -667,7 +729,7 @@ function toRgba8 (pixels: Pixels, count: number): Uint8Array
 export function installReadback (): void
 {
     // A texture level (or part of one) as RGBA8 rows, plus exact values for small regions.
-    expose('registry.readTexture', async (args: Region & { id: number; level?: number; layer?: number; flip?: boolean; values?: boolean }) =>
+    expose('registry.readTexture', async (args: Region & { id: number; level?: number; layer?: number; flip?: boolean; values?: boolean; aspect?: string; sample?: number }) =>
     {
         const entry = find('texture', args.id);
 
@@ -707,7 +769,18 @@ export function installReadback (): void
             region = { x: args.x, w: args.w, h, y: height - (args.y ?? 0) - h };
         }
 
-        const pixels = entry.api === 'webgl' ? readGlTexture(entry, info!, level, layer, region) : await readGpuTexture(entry, level, layer, region);
+        const stencil = args.aspect === 'stencil';
+
+        if (entry.api === 'webgl' && (stencil || (args.sample ?? 0) > 0))
+        {
+            throw new Error(stencil
+                ? 'WebGL has no way to read the stencil of a texture from the running page. view(capture, view: "stencil") reads it from a capture.'
+                : 'A WebGL texture is not multisampled: it has no samples to choose between.');
+        }
+
+        const pixels = entry.api === 'webgl'
+            ? readGlTexture(entry, info!, level, layer, region)
+            : (stencil ? await readGpuStencil(entry, level, layer, region) : await readGpuTexture(entry, level, layer, region, args.sample ?? 0));
         const area = clip(pixels.width, pixels.height, region);
 
         if (flip)
@@ -734,6 +807,7 @@ export function installReadback (): void
             region: shown,
             format: pixels.format,
             kind: pixels.kind,
+            note: pixels.note,
             flipped: flip,
             values: args.values && count <= 256 ? G.Array.from(pixels.channels) : null,
             encoding: 'rgba8+gzip+base64',

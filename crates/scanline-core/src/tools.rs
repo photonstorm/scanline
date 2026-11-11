@@ -136,6 +136,8 @@ pub const TOOLS: &[Tool] = &[
             r#""target": { "type": "string", "description": "With capture: canvas (default), a texture the frame drew to (tex_4), or a framebuffer whose colour is a renderbuffer (fbo_1)." }"#,
             r#""level": { "type": "integer", "description": "Mip level, for a texture. Default 0." }"#,
             r#""layer": { "type": "integer", "description": "Array layer, 3D slice or cube face (0–5), for a texture." }"#,
+            r#""aspect": { "type": "string", "enum": ["stencil"], "description": "WebGPU: the stencil of a depth and stencil texture, in place of its depth." }"#,
+            r#""sample": { "type": "integer", "description": "WebGPU: which sample of a multisampled texture. Default 0." }"#,
             region!(),
             r#""max_edge": { "type": "integer", "description": "Longest edge of the returned image. Default 1024." }"#,
             r#""zoom": { "type": "integer", "description": "Magnify with no smoothing. 8 or more adds a pixel grid." }"#,
@@ -157,6 +159,8 @@ pub const TOOLS: &[Tool] = &[
             r#""source": { "type": "string", "description": "A texture handle such as tex_3, to read a texture instead of the canvas." }"#,
             r#""level": { "type": "integer" }"#,
             r#""layer": { "type": "integer" }"#,
+            r#""aspect": { "type": "string", "enum": ["stencil"], "description": "WebGPU: the stencil of a depth and stencil texture, in place of its depth." }"#,
+            r#""sample": { "type": "integer", "description": "WebGPU: which sample of a multisampled texture. Default 0." }"#,
             r#""capture": { "type": "string", "description": "Read from a capture's replay instead of the live page." }"#,
             r#""at_draw": { "type": "integer", "description": "With capture: the target as it stood after this event. Default: the end of the frame." }"#,
             r#""target": { "type": "string", "description": "With capture: canvas (default), a texture the frame drew to (tex_4), or a framebuffer whose colour is a renderbuffer (fbo_1)." }"#,
@@ -982,9 +986,12 @@ Known limits
     a depth texture as its depth (WebGL to 24 bits), each by drawing it with a shader of
     Scanline's own where it cannot be copied. A WebGL capture replays a compressed texture
     as those texels (8-bit RGBA), not as its blocks; a WebGPU capture keeps the blocks.
-    Not read: multisampled textures (read what they resolve to), the stencil of a depth
-    and stencil texture, 3D compressed textures, and float textures on a WebGL page that
-    has not enabled the colour-buffer-float extension.
+    On WebGPU, pixels and screenshot of a texture take aspect: \"stencil\" for the stencil
+    of a depth and stencil texture, and sample: n for one sample of a multisampled texture
+    the page made with TEXTURE_BINDING usage. Not read from a running page: a multisampled
+    texture without that usage (read what it resolves to, or capture the frame), stencil
+    on WebGL, 3D compressed textures, and float textures on a WebGL page that has not
+    enabled the colour-buffer-float extension.
   - pixel_source lists the events that changed a pixel; pixel_history adds the draws that
     covered it and were rejected, and says by what: culling, the depth or stencil test, the
     scissor box, or the fragment shader discarding it (WebGL 2 and WebGPU). A multisampled

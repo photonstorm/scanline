@@ -588,6 +588,16 @@ describe('textures a copy cannot read', () =>
         // A region of a depth texture: the level is copied whole (or drawn) and cut.
         assert.match(await read('tex_2', 6, 8, 4, 1), /format depth24plus.*\n {2}y 8: \(0\.25, 0, 0, 1\)×2 \(1, 0, 0, 1\)×2/);
         assert.match(await read('tex_3', 6, 8, 4, 1), /format depth32float.*\n {2}y 8: \(0\.5, 0, 0, 1\)×2 \(1, 0, 0, 1\)×2/);
+        // The stencil of a depth and stencil texture, beside its depth.
+        assert.match(await read('tex_4', 6, 8, 4, 1, '--aspect', 'stencil'), /rgba integer, format depth24plus-stencil8.*\n {2}y 8: \(7, 0, 0, 1\)×2 \(0, 0, 0, 1\)×2\n.*\nStencil: 0 to 255/);
+        assert.match(await read('tex_4', 6, 8, 4, 1), /y 8: \(0\.75, 0, 0, 1\)×2 \(1, 0, 0, 1\)×2\n.*\nDepth\. Its stencil is read with aspect: "stencil"/);
+        assert.match(await read('tex_3', 0, 0, 1, 1, '--aspect', 'stencil'), /This texture is depth32float, which has no stencil/);
+
+        // One sample of a multisampled texture the page can sample.
+        assert.match(await read('tex_5', 0, 0, 2, 1), /y 0: \(51, 102, 153, 255\)×2\n.*\nSample 0 of 4 a texel/);
+        assert.match(await read('tex_5', 0, 0, 2, 1, '--sample', 3), /y 0: \(51, 102, 153, 255\)×2\n.*\nSample 3 of 4 a texel/);
+        assert.match(await read('tex_5', 0, 0, 1, 1, '--sample', 4), /has 4 samples a texel, numbered from 0; there is no sample 4/);
+
         assert.match((await scanline('console')).out, /No console lines/, 'reading them raised no validation error');
 
         // A capture holds all three, though the frame only samples them.

@@ -55,7 +55,7 @@ Every milestone of the build plan up to 1.0 has been worked through on macOS (Ap
 **Not built**
 
 - For WebGPU captures: external (video) textures; uniform values and a pixel-history line of its own for a draw inside a render bundle; more than one device in a capture.
-- The wireframe view on a running WebGPU page (a capture has it). Readback of multisampled textures, and of stencil.
+- The wireframe view on a running WebGPU page (a capture has it). Readback from a running page of a multisampled texture the page cannot itself sample, and of stencil on WebGL (a capture has both).
 - The fast binary channel for bulk data.
 - Linux. A WebKit or Firefox mode. WebXR. A single window that holds both the game and the strip.
 - Signed and notarised installers, and updates: these need the maintainer's Apple Developer identity, a code-signing certificate for Windows, and somewhere to publish releases. The packaging script has the steps and they have not been run.
