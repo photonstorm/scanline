@@ -1309,11 +1309,14 @@ describe('the viewer and the activity log', () =>
 {
     test('every command is logged, with who ran it, how long it took and what it said', async () =>
     {
+        // The host has run every earlier test's commands: start from where the log stands.
+        const from = (await scanline('activity', '--json')).json?.data.next ?? 0;
+
         await scanline('launch', server.url('fixtures/bugs/b00.html'), '--paused', '--headless');
         await scanline('step', '3');
         await scanline('pixels', '9999', '1');
 
-        const log = await scanline('activity', '--json');
+        const log = await scanline('activity', '--since', String(from), '--json');
         const rows = log.json.data.activity;
 
         assert.deepEqual(rows.map((row) => [row.command, row.ok, row.by]), [['launch', true, 'agent'], ['step', true, 'agent'], ['pixels', false, 'agent']]);
@@ -1321,7 +1324,7 @@ describe('the viewer and the activity log', () =>
         assert.match(rows[1].result, /^Frame 3 \(stepped 3\)\. Paused\./);
         assert.match(rows[2].result, /That point is outside ctx_1/);
         assert.ok(rows.every((row) => typeof row.ms === 'number' && row.at > 1.7e12));
-        assert.match(log.json.summary, /\[3\] pixels \{"x":9999,"y":1\} {2}FAILED/);
+        assert.match(log.json.summary, /\[\d+\] pixels \{"x":9999,"y":1\} {2}FAILED/);
 
         // Asking again from where it left off gives only what is new, and the log does not log itself.
         await scanline('status');

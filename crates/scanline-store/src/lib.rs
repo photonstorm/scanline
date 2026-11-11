@@ -386,7 +386,158 @@ impl Store {
     pub fn root(&self) -> &Path {
         &self.root
     }
+
+    // ---- One file ----
+    //
+    // A capture as a single file, to send to someone or keep with a bug report: its
+    // database, its stream, its final picture and every blob it names. The parts are
+    // already compressed, so the file is just one after another, each with its name and
+    // length in front.
+
+    /// Writes a capture to one file. Returns the file's size.
+    pub fn export_capture(&self, handle: &str, to: &Path) -> Result<u64> {
+        // Opening the database is what says the capture exists.
+        drop(self.database(handle)?);
+
+        let dir = self.capture_dir(handle);
+        let stream = self.stream(handle)?;
+        let mut parts: Vec<(String, Vec<u8>)> = Vec::new();
+
+        for name in ["capture.sqlite", "stream.zst", "final.png"] {
+            match std::fs::read(dir.join(name)) {
+                Ok(bytes) => parts.push((name.to_string(), bytes)),
+                Err(_) if name == "final.png" => {}
+                Err(error) => return Err(error).with_context(|| format!("reading {}", dir.join(name).display())),
+            }
+        }
+
+        let mut seen = std::collections::HashSet::new();
+
+        for hash in stream["blob_hashes"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+            if seen.insert(hash.to_string()) {
+                // Read whole and checked, so that a damaged store is found here and not by whoever opens the file.
+                self.get_blob(hash)?;
+                parts.push((format!("blob/{hash}"), std::fs::read(self.blob_path(hash)).with_context(|| format!("reading blob {hash}"))?));
+            }
+        }
+
+        let mut out = EXPORT_MAGIC.to_vec();
+
+        for (name, bytes) in &parts {
+            out.extend_from_slice(&(name.len() as u32).to_le_bytes());
+            out.extend_from_slice(name.as_bytes());
+            out.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
+            out.extend_from_slice(bytes);
+        }
+
+        if let Some(parent) = to.parent() {
+            std::fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+        }
+
+        std::fs::write(to, &out).with_context(|| format!("writing {}", to.display()))?;
+
+        Ok(out.len() as u64)
+    }
+
+    /// Whether a file is a capture written by `export_capture`.
+    pub fn is_capture_file(path: &Path) -> bool {
+        use std::io::Read;
+
+        let mut start = [0u8; EXPORT_MAGIC.len()];
+
+        std::fs::File::open(path).and_then(|mut file| file.read_exact(&mut start)).is_ok() && start == *EXPORT_MAGIC
+    }
+
+    /// Reads a capture from one file into the store, under a handle of its own. Returns the
+    /// handle and the handle it had where it was taken.
+    pub fn import_capture(&self, from: &Path) -> Result<(String, String)> {
+        let bytes = std::fs::read(from).with_context(|| format!("reading {}", from.display()))?;
+
+        if !bytes.starts_with(EXPORT_MAGIC) {
+            bail!("{} is not a Scanline capture file (it does not begin with the words \"SCANLINE CAPTURE 1\").", from.display());
+        }
+
+        let mut at = EXPORT_MAGIC.len();
+        let mut parts: Vec<(String, &[u8])> = Vec::new();
+        let cut_short = || anyhow::anyhow!("{} is cut short: it ends in the middle of a part.", from.display());
+
+        while at < bytes.len() {
+            let name_len = u32::from_le_bytes(bytes.get(at..at + 4).ok_or_else(cut_short)?.try_into().unwrap()) as usize;
+
+            at += 4;
+
+            let name = std::str::from_utf8(bytes.get(at..at + name_len).ok_or_else(cut_short)?).context("a part's name is not text")?.to_string();
+
+            at += name_len;
+
+            let size = u64::from_le_bytes(bytes.get(at..at + 8).ok_or_else(cut_short)?.try_into().unwrap()) as usize;
+
+            at += 8;
+            parts.push((name, bytes.get(at..at.checked_add(size).ok_or_else(cut_short)?).ok_or_else(cut_short)?));
+            at += size;
+        }
+
+        // Names are checked: nothing in the file says where on disk it is written.
+        for (name, _) in &parts {
+            let known = matches!(name.as_str(), "capture.sqlite" | "stream.zst" | "final.png")
+                || name.strip_prefix("blob/").is_some_and(|hash| hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit()));
+
+            if !known {
+                bail!("{} holds a part named \"{name}\", which a capture file does not have.", from.display());
+            }
+        }
+
+        let part = |name: &str| parts.iter().find(|(other, _)| other == name).map(|(_, bytes)| *bytes);
+        let (Some(database), Some(stream)) = (part("capture.sqlite"), part("stream.zst")) else {
+            bail!("{} is missing its database or its stream.", from.display());
+        };
+
+        // Blobs first, each checked against its name.
+        for (name, packed) in &parts {
+            let Some(hash) = name.strip_prefix("blob/") else { continue };
+            let unpacked = zstd::decode_all(*packed).with_context(|| format!("unpacking blob {hash} of {}", from.display()))?;
+
+            if blake3::hash(&unpacked).to_hex().as_str() != hash {
+                bail!("Blob {hash} in {} is damaged: its contents do not match its name.", from.display());
+            }
+
+            self.put_blob(&unpacked)?;
+        }
+
+        let handle = self.reserve_handle()?;
+        let dir = self.capture_dir(&handle);
+
+        std::fs::write(dir.join("stream.zst"), stream).with_context(|| format!("writing {}", dir.join("stream.zst").display()))?;
+
+        if let Some(picture) = part("final.png") {
+            std::fs::write(dir.join("final.png"), picture)?;
+        }
+
+        // The database last, under another name first: its presence is what makes the capture exist.
+        let partial = dir.join("capture.partial");
+
+        std::fs::write(&partial, database).with_context(|| format!("writing {}", partial.display()))?;
+
+        let was = {
+            let db = Connection::open(&partial).with_context(|| format!("opening the database in {}", from.display()))?;
+            let was: String = db.query_row("SELECT value FROM capture WHERE key = 'capture'", [], |row| row.get(0)).unwrap_or_default();
+
+            // It is this store's capture now, and says where it came from.
+            db.execute("INSERT OR REPLACE INTO capture VALUES ('capture', ?1)", [&handle])?;
+            db.execute("INSERT OR REPLACE INTO capture VALUES ('imported_as', ?1)", [&was])?;
+            db.execute("INSERT OR REPLACE INTO capture VALUES ('session', '')", [])?;
+
+            was
+        };
+
+        std::fs::rename(&partial, dir.join("capture.sqlite")).with_context(|| format!("naming {}", dir.join("capture.sqlite").display()))?;
+
+        Ok((handle, was))
+    }
 }
+
+/// How a capture file begins.
+const EXPORT_MAGIC: &[u8; 19] = b"SCANLINE CAPTURE 1\n";
 
 #[cfg(test)]
 mod tests {

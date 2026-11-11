@@ -1705,20 +1705,86 @@ pub fn captures(host: &Arc<Host>, params: &Value) -> Result<Value> {
         let meta = host.store.meta(handle)?;
 
         lines.push(format!(
-            "  {handle}  frame {} of {} {}×{}, {} draws, replay {}  «{}»",
+            "  {handle}  frame {} of {} {}×{}, {} draws, replay {}  «{}»{}",
             meta["frame"],
             meta["api"].as_str().unwrap_or("?"),
             meta["width"],
             meta["height"],
             meta["counts"]["draws"],
             meta["replay"].as_str().unwrap_or("?"),
-            page_text(meta["url"].as_str().unwrap_or(""), 80)
+            page_text(meta["url"].as_str().unwrap_or(""), 80),
+            if meta["imported_as"].is_null() { "" } else { "  (imported)" }
         ));
 
         rows.push(meta);
     }
 
     Ok(result(lines.join("\n"), json!({ "captures": rows, "total": handles.len() })))
+}
+
+// ---- A capture as one file ----
+
+/// What every capture file is named, so that an export can never be pointed at a file of
+/// another kind (a shell profile, a script) and fill it with a page's text.
+const EXPORT_SUFFIX: &str = ".scanline";
+
+pub fn export(host: &Arc<Host>, params: &Value) -> Result<Value> {
+    let (handle, meta) = the_capture(host, params)?;
+    let path = match params["path"].as_str() {
+        Some(path) => crate::tiers::file(host, path, "The file")?,
+        None => host.artefacts().join("exports").join(format!("{handle}{EXPORT_SUFFIX}")),
+    };
+
+    if !path.to_string_lossy().ends_with(EXPORT_SUFFIX) {
+        bail!(
+            "A capture is exported to a file whose name ends in {EXPORT_SUFFIX}, and {} does not. Leave path out to write {handle}{EXPORT_SUFFIX} in Scanline's exports directory.",
+            path.display()
+        );
+    }
+
+    // An export may replace an export, and nothing else.
+    if path.exists() && !scanline_store::Store::is_capture_file(&path) {
+        bail!("{} exists and is not a Scanline capture file, so it has not been replaced. Choose another name.", path.display());
+    }
+
+    let bytes = host.store.export_capture(&handle, &path)?;
+
+    Ok(result(
+        format!(
+            "Exported {handle} (frame {} of {}, {} draws) to {} ({}). It holds the frame's commands, every texture and buffer it uses, its tables and its final picture: import(path) on any machine gives a capture that answers the same questions.",
+            meta["frame"],
+            page_text(meta["url"].as_str().unwrap_or(""), 80),
+            meta["counts"]["draws"],
+            path.display(),
+            size(bytes as f64)
+        ),
+        json!({ "capture": handle, "path": path, "bytes": bytes }),
+    ))
+}
+
+pub fn import(host: &Arc<Host>, params: &Value) -> Result<Value> {
+    let Some(path) = params["path"].as_str() else {
+        bail!("import needs path: the {EXPORT_SUFFIX} file that export wrote.");
+    };
+    let path = crate::tiers::file(host, path, "The file")?;
+    let (handle, was) = host.store.import_capture(&path)?;
+    let meta = host.store.meta(&handle)?;
+
+    Ok(result(
+        format!(
+            "Imported {} as {handle}{}: frame {} of {} {}×{}, {} draws, taken on {} with replay {}. Everything that reads a capture works on it (pass_tree, draw_list, draw, query, lint); what replays it (draw, pixel_history, view, profile) needs a session open, and replays on this machine's GPU, which may not be the one it was taken on.",
+            path.display(),
+            if was.is_empty() || was == handle { String::new() } else { format!(" (it was {was} where it was taken)") },
+            meta["frame"],
+            meta["api"].as_str().unwrap_or("?"),
+            meta["width"],
+            meta["height"],
+            meta["counts"]["draws"],
+            meta["browser"].as_str().unwrap_or("an unknown browser"),
+            meta["replay"].as_str().unwrap_or("?"),
+        ),
+        json!({ "capture": handle, "imported_as": was, "meta": meta }),
+    ))
 }
 
 // ---- What the frame says: answered from the capture's tables ----

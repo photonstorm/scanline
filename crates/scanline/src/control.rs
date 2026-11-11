@@ -71,8 +71,12 @@ pub async fn serve() -> Result<()> {
     let home = home();
     let socket = socket_path();
 
+    // The directory and the socket in it are the person's alone. This is the boundary that
+    // keeps other users of the machine out, so failing to set it is failing to start.
     std::fs::create_dir_all(&home).with_context(|| format!("creating {}", home.display()))?;
-    std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700)).ok();
+    std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700)).with_context(|| {
+        format!("making {} private to you. Scanline keeps its control socket there; set SCANLINE_HOME to a directory you own.", home.display())
+    })?;
 
     // Never disturb a host that is running. One that cannot be reached is not the same as
     // one that is gone: a sandbox may be blocking this process and not the host.
@@ -89,19 +93,27 @@ pub async fn serve() -> Result<()> {
         }
     }
 
+    // Before anything is put on disk: a host that cannot start (a misspelt tier) leaves nothing.
+    let host = Host::new(home.clone())?;
+
     // A socket file left by a host that did not exit cleanly.
     let _ = std::fs::remove_file(&socket);
 
-    let listener = tokio::net::UnixListener::bind(&socket).with_context(|| {
+    // Made private from the instant it exists, not a moment after.
+    let mask = unsafe { libc::umask(0o177) };
+    let bound = tokio::net::UnixListener::bind(&socket);
+
+    unsafe { libc::umask(mask) };
+
+    let listener = bound.with_context(|| {
         format!("binding the control socket at {}. If the path is too long for a socket, set SCANLINE_HOME to a shorter directory.", socket.display())
     })?;
 
-    std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).ok();
+    std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).with_context(|| format!("making {} private to you", socket.display()))?;
 
     std::fs::write(runtime_path(), json!({ "socket": socket, "pid": std::process::id(), "version": env!("CARGO_PKG_VERSION") }).to_string())
         .with_context(|| format!("writing {}", runtime_path().display()))?;
 
-    let host = Host::new(home.clone())?;
     let stop = Arc::new(tokio::sync::Notify::new());
 
     eprintln!("scanline {} serving on {}", env!("CARGO_PKG_VERSION"), socket.display());
@@ -261,6 +273,9 @@ impl Link {
 #[cfg(unix)]
 fn start_host() -> Result<()> {
     use std::os::unix::process::CommandExt;
+
+    // Said here, where the person will see it, and not only in the host's log.
+    scanline_core::tiers::Tiers::from_env()?;
 
     let executable = std::env::current_exe().context("finding the scanline binary to start the host")?;
     let home = home();

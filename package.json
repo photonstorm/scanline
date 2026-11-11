@@ -13,13 +13,14 @@
     "typecheck": "tsc -p probe/tsconfig.json --noEmit && tsc -p replay/tsconfig.json --noEmit",
     "test:probe": "node --test --test-concurrency=1 --test-timeout=60000 probe/test/*.test.mjs",
     "test:e2e": "node --test --test-concurrency=1 --test-timeout=120000 tests/e2e.test.mjs",
-    "test": "npm run build && npm run typecheck && npm run test:probe && npm run test:bugs && cargo test && cargo build && npm run test:e2e && npm run test:findings && npm run test:journeys && npm run test:protocol",
+    "test": "npm run build && npm run typecheck && npm run test:probe && npm run test:bugs && cargo test && cargo build && npm run test:e2e && npm run test:findings && npm run test:journeys && npm run test:protocol && npm run test:security",
     "build:replay": "node replay/build.mjs",
     "build": "npm run build:probe && npm run build:replay",
     "test:bugs": "node --test --test-concurrency=1 --test-timeout=60000 tests/bugs.test.mjs",
     "test:findings": "node --test --test-concurrency=1 --test-timeout=120000 tests/findings.test.mjs",
     "test:journeys": "node --test --test-concurrency=1 --test-timeout=180000 tests/journeys.test.mjs",
-    "test:protocol": "node --test --test-concurrency=1 --test-timeout=120000 tests/protocol.test.mjs"
+    "test:protocol": "node --test --test-concurrency=1 --test-timeout=120000 tests/protocol.test.mjs",
+    "test:security": "node --test --test-concurrency=1 --test-timeout=120000 tests/security.test.mjs"
   },
   "devDependencies": {
     "@webgpu/types": "^0.1.74",

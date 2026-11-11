@@ -1699,13 +1699,14 @@ pub async fn region_stats(session: &Arc<Session>, params: &Value) -> Result<Valu
 }
 
 /// One side of a diff: an image file, or something to read back now.
-async fn diff_side(session: Option<&Arc<Session>>, spec: &Value, params: &Value) -> Result<(Image, String)> {
+async fn diff_side(host: &Host, session: Option<&Arc<Session>>, spec: &Value, params: &Value) -> Result<(Image, String)> {
     let Some(spec) = spec.as_str() else {
         bail!("diff needs a and b: each an image file (the \"original\" path of an earlier screenshot), \"canvas\", a context handle, or a texture handle.");
     };
 
     if spec.ends_with(".png") || spec.contains('/') || spec.contains('\\') {
-        let bytes = std::fs::read(spec).with_context(|| format!("Could not read the image {spec}"))?;
+        let path = crate::tiers::file(host, spec, "The image")?;
+        let bytes = std::fs::read(&path).with_context(|| format!("Could not read the image {spec}"))?;
 
         return Ok((Image::from_png(&bytes)?, spec.rsplit(['/', '\\']).next().unwrap_or(spec).to_string()));
     }
@@ -1728,8 +1729,8 @@ async fn diff_side(session: Option<&Arc<Session>>, spec: &Value, params: &Value)
 }
 
 pub async fn diff(host: &Arc<Host>, session: Option<&Arc<Session>>, params: &Value) -> Result<Value> {
-    let (a, a_name) = diff_side(session, &params["a"], params).await?;
-    let (b, b_name) = diff_side(session, &params["b"], params).await?;
+    let (a, a_name) = diff_side(host, session, &params["a"], params).await?;
+    let (b, b_name) = diff_side(host, session, &params["b"], params).await?;
     let threshold = params["threshold"].as_u64().unwrap_or(0).min(255) as u8;
     let difference = a.difference(&b, threshold)?;
     let percent = if difference.pixels > 0 { difference.changed as f64 * 100.0 / difference.pixels as f64 } else { 0.0 };

@@ -24,7 +24,8 @@ fn positional(command: &str) -> &'static [&'static str] {
         "pixels" => &["x", "y", "w", "h"],
         "eval" => &["expression"],
         "resources" => &["kind"],
-        "draw_list" | "pass_tree" | "profile" => &["capture"],
+        "draw_list" | "pass_tree" | "profile" | "export" => &["capture"],
+        "import" => &["path"],
         "draw" | "geometry" => &["capture", "draw"],
         "view" => &["capture", "view"],
         "draw_diff" => &["capture", "a", "b"],
@@ -172,6 +173,8 @@ pub fn command_usage(name: &str) -> Option<String> {
         "shader_analysis" => "scanline shader_analysis prg_1",
         "lint" => "scanline lint --capture cap_1",
         "geometry" => "scanline geometry cap_1 6",
+        "export" => "scanline export cap_1 --path ~/Desktop/water-flicker.scanline",
+        "import" => "scanline import ~/Downloads/water-flicker.scanline",
         "trace" => "scanline trace --frames 120",
         "view" => "scanline view cap_1 overdraw",
         "profile" => "scanline profile cap_1 --by shader",
@@ -245,14 +248,15 @@ fn parse(args: Vec<String>) -> Result<Parsed> {
             };
 
             // An expression or a URL is text even when it happens to parse as JSON.
-            params[*place] =
-                if matches!(*place, "url" | "expression" | "topic" | "kind" | "handle" | "capture" | "sql" | "instruction" | "recording" | "run" | "view")
-                    || (matches!(command.as_str(), "diff" | "compare") && matches!(*place, "a" | "b"))
-                {
-                    Value::String(arg.clone())
-                } else {
-                    value(arg)
-                };
+            params[*place] = if matches!(
+                *place,
+                "url" | "expression" | "topic" | "kind" | "handle" | "capture" | "sql" | "instruction" | "recording" | "run" | "view" | "path"
+            ) || (matches!(command.as_str(), "diff" | "compare") && matches!(*place, "a" | "b"))
+            {
+                Value::String(arg.clone())
+            } else {
+                value(arg)
+            };
             placed += 1;
 
             continue;
@@ -305,6 +309,13 @@ fn parse(args: Vec<String>) -> Result<Parsed> {
         }
     }
 
+    // The host has a working directory of its own: a file named here is named from here.
+    if matches!(command.as_str(), "export" | "import") {
+        if let Some(path) = params["path"].as_str().map(std::path::PathBuf::from).filter(|path| path.is_relative()) {
+            params["path"] = json!(std::env::current_dir().unwrap_or_default().join(path));
+        }
+    }
+
     Ok(Parsed { command, params, json: json_out, out, help })
 }
 
@@ -317,9 +328,20 @@ pub async fn run(args: Vec<String>) -> Result<ExitCode> {
     } else if parsed.command == "help" {
         // A command's name is a topic too.
         let topic = parsed.params["topic"].as_str();
-        let is_topic = |topic: &str| ["workflow", "input", "capture", "analysis", "patch", "page", "handoff", "sql", "limits", "help"].contains(&topic);
+        let is_topic =
+            |topic: &str| ["workflow", "input", "capture", "analysis", "patch", "page", "handoff", "sql", "security", "limits", "help"].contains(&topic);
         let text = match topic.filter(|topic| !is_topic(topic)).and_then(|topic| command_usage(&topic.replace('-', "_"))) {
             Some(usage) => usage,
+            // What is in force is the running host's to say. With none running, what a host
+            // started from here would have.
+            None if topic == Some("security") => match Link::try_connect().await {
+                Some(mut link) => link.call("help", json!({ "topic": "security" })).await?["summary"].as_str().unwrap_or("").to_string(),
+                None => format!(
+                    "{}\n\nNo host is running. One started from this shell would have:\n{}",
+                    scanline_core::help(topic),
+                    scanline_core::tiers::Tiers::from_env()?.describe()
+                ),
+            },
             None => format!("{}\n\n{CALLS}", scanline_core::help(topic)),
         };
 

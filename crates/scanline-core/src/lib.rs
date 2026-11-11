@@ -19,6 +19,7 @@ mod page;
 mod patch;
 mod runs;
 mod session;
+pub mod tiers;
 mod tools;
 mod trace;
 mod viewer;
@@ -39,6 +40,8 @@ pub struct Host {
     pub home: PathBuf,
     /// Captures and their blobs.
     pub store: scanline_store::Store,
+    /// What a client may do, fixed when the host starts (tiers.rs).
+    pub tiers: tiers::Tiers,
     sessions: Mutex<BTreeMap<String, Arc<Session>>>,
     next_session: AtomicU32,
     /// Every command run, newest last: what the person follows the agent by.
@@ -75,12 +78,18 @@ pub fn result(summary: impl Into<String>, data: Value) -> Value {
 }
 
 impl Host {
+    /// A host with the tiers the environment asks for.
     pub fn new(home: PathBuf) -> Result<Arc<Self>> {
+        Self::with_tiers(home, tiers::Tiers::from_env()?)
+    }
+
+    pub fn with_tiers(home: PathBuf, tiers: tiers::Tiers) -> Result<Arc<Self>> {
         let store = scanline_store::Store::open(home.join("artefacts"))?;
 
         Ok(Arc::new(Host {
             home,
             store,
+            tiers,
             sessions: Mutex::new(BTreeMap::new()),
             next_session: AtomicU32::new(1),
             activity: Mutex::new(std::collections::VecDeque::new()),
@@ -212,6 +221,8 @@ impl Host {
             Ok(session)
         };
 
+        tiers::check(self, method, &params, self.session(&params).ok().as_ref())?;
+
         // One owner of the input at a time. While the person has it, the agent may look but
         // may not move time or send input: that would fight them for the game.
         if matches!(method, "input" | "step" | "run_until" | "resume" | "navigate" | "replay_run" | "policy") {
@@ -271,6 +282,8 @@ impl Host {
             "save_run" => runs::save_run(self, &live()?).await,
             "replay_run" => runs::replay_run(self, &live()?, &params).await,
             "captures" => capture::captures(self, &params),
+            "export" => capture::export(self, &params),
+            "import" => capture::import(self, &params),
             "pass_tree" => capture::pass_tree(self, &params),
             "draw_list" => capture::draw_list(self, &params),
             "draw" => capture::draw(self, &params).await,
@@ -293,6 +306,11 @@ impl Host {
             "eval" => commands::eval(&live()?, &params).await,
             "events" => commands::events(&self.session(&params)?, &params).await,
             "wait" => commands::wait(&self.session(&params)?, &params).await,
+            // What is in force on this host is part of the answer about security.
+            "help" if params["topic"] == "security" => Ok(result(
+                format!("{}\n\nIn force on this host:\n{}", help(Some("security")), self.tiers.describe()),
+                json!({ "tiers": { "read": true, "control": self.tiers.control, "patch": self.tiers.patch, "remote_patch": self.tiers.remote_patch, "files": self.tiers.files, "navigate": self.tiers.navigate } }),
+            )),
             "help" => Ok(result(help(params["topic"].as_str()), json!({}))),
             other => {
                 let names: Vec<&str> = TOOLS.iter().map(|tool| tool.name).collect();

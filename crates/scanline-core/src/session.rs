@@ -198,6 +198,10 @@ pub struct Session {
     pub(crate) net_gate: tokio::sync::Mutex<()>,
     /// Whether this session fixes the clock and random numbers, and so keeps the network.
     pub(crate) deterministic: bool,
+    /// The origin the session was launched on, which navigate keeps to (tiers.rs).
+    pub(crate) launch_origin: String,
+    /// The URL it was launched on: for a file, navigation keeps to its directory.
+    pub(crate) launch_url: String,
     key: String,
     binding: String,
     source: String,
@@ -307,6 +311,8 @@ impl Session {
             dir,
             browser_version: version["product"].as_str().unwrap_or("unknown").to_string(),
             state: Mutex::new(State { url: options.url.clone(), ..State::default() }),
+            launch_origin: crate::tiers::origin_of(&options.url),
+            launch_url: options.url.clone(),
             changed: Notify::new(),
             debug: Notify::new(),
             browser,
@@ -1126,15 +1132,27 @@ fn handle(session: &Arc<Session>, event: Event) {
                     session.state.lock().unwrap().actions.push_back("debug:key".into());
                     session.debug.notify_one();
                 }
-                kind => {
+                // What the probe reports, and nothing else. The binding is in the page's own
+                // world, so a page that finds it can call it: it must not be able to queue an
+                // event that reads as the host's (capture_ready, owner_changed) or the person's.
+                kind @ ("annotation" | "context" | "context-lost" | "context-restored" | "mark" | "probe-fault" | "stopped") => {
                     let mut data = payload.clone();
 
                     if let Some(object) = data.as_object_mut() {
                         object.remove("t");
+
+                        // A mark on the picture is a place. Words come only from the control
+                        // strip, which the page cannot reach.
+                        if kind == "annotation" {
+                            object.retain(|key, value| {
+                                matches!(key.as_str(), "x" | "y" | "w" | "h" | "frame") && value.is_number() || key == "space" && value == "canvas_px"
+                            });
+                        }
                     }
 
                     session.queue(kind, data);
                 }
+                _ => {}
             }
         }
 
