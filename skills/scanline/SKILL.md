@@ -139,4 +139,4 @@ The person running Scanline decides what a client may do, and it cannot be chang
 
 ## What it cannot do
 
-On WebGPU captures a render bundle is one event: the views and live patches reach the draws inside it, but geometry and "which test rejected it" do not. Babylon.js and PlayCanvas draws are not named by engine object. Windows is not supported. `gfx_help(topic: "limits")` has the current list. If the bug needs one of these, say so rather than guessing from screenshots.
+On WebGPU captures a render bundle is one event: the views and live patches reach the draws inside it, but geometry and "which test rejected it" do not. PlayCanvas draws are not named by engine object. Windows is not supported. `gfx_help(topic: "limits")` has the current list. If the bug needs one of these, say so rather than guessing from screenshots.

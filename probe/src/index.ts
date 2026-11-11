@@ -11,6 +11,7 @@ import { installAdapters } from './adapters';
 import './adapters/three';
 import './adapters/pixi';
 import './adapters/phaser';
+import './adapters/babylon';
 import { clock, startClockAtZero, installClock } from './clock/clock';
 import { frameAtWall, frameSamples, gateState, hold, installGate, letGo, notePageEvent, onFrameEnd, pause, resume, runUntil, setFixedStep, step } from './clock/gate';
 import { installTimers } from './clock/timers';

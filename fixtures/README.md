@@ -96,7 +96,7 @@ The WebGPU page labels its objects; WebGL has no labels.
 
 ## Babylon.js with shadows (`engines/babylon-shadows.html`)
 
-Scanline has no adapter for Babylon.js, so its draws are not named by mesh, but the engine must still be launched, captured and replayed to the same picture. `engines/babylon.html` is three unlit boxes on WebGL 2. `engines/babylon-shadows.html` is a harder scene (a lit ground, three boxes, one see-through, a ball, and a shadow map), on the WebGL 2 engine or, with `?engine=webgpu`, the WebGPU engine. It found two faults when it was added (a depth texture as a render target, and a command encoder made before the frame), both written up in `docs/DEPARTURES.md`.
+Babylon.js is launched, captured and replayed to the same picture, and its adapter names each draw by its mesh (`tests/protocol.test.mjs`). `engines/babylon.html` is three unlit boxes on WebGL 2. `engines/babylon-shadows.html` is a harder scene (a lit ground, three boxes, one see-through, a ball, and a shadow map), on the WebGL 2 engine or, with `?engine=webgpu`, the WebGPU engine. It found two faults when it was added (a depth texture as a render target, and a command encoder made before the frame), both written up in `docs/DEPARTURES.md`.
 
 ## Views with known answers (`history/views.html`)
 

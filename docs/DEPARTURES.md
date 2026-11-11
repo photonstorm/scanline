@@ -327,6 +327,14 @@ Two things the new Babylon.js page (`fixtures/engines/babylon-shadows.html`) fou
 - More than one device in a capture. Calls on another device's objects are left out.
 - A call rejected in replay is found by wrapping every call in an error scope. WebGPU reports most errors when an encoder is finished, so the call named is `finish`, with the browser's message saying which pass call was at fault.
 
+## The Babylon.js adapter
+
+Built after milestone 7 (the build plan puts it after 1.0). Babylon announces itself to nobody, so the adapter finds a scene the way Phaser's finds a renderer: a setter on `Object.prototype` for `_renderingManager`, which every Babylon scene assigns as it is constructed. From the scene it finds the classes it needs by looking at what the scene holds each frame, and wraps on their prototypes: `Scene.render`, `RenderTargetTexture.render`, `Mesh.render`, `ShadowGenerator._renderSubMeshForShadowMap`, the post-process manager, sprite managers, particle systems, layers and effect layers. Each mesh draw carries the mesh's class, name and material, and whether it is a shadow-map draw. The scene's switches (shadows, lights, textures, post-processes, fog, wireframe) and the hardware scaling level are controls.
+
+Tested with 9.35.0 on the WebGL 2 and WebGPU engines, on `fixtures/engines/babylon-shadows.html`. Not named by mesh: draws made by a depth renderer, an outline or bounding-box renderer, or a GUI texture. They are grouped by their pass.
+
+**PlayCanvas has no adapter.** Installing it from npm was refused where this was built. See `docs/BY-HAND.md`.
+
 ## Render bundles
 
 Built after milestone 7. The probe keeps what is recorded into every bundle encoder (each call, with the objects it names by reference), and the list becomes the bundle's when the encoder is finished. A bundle is a registry object like any other (`bnd_N`, in `resources`).

@@ -337,6 +337,37 @@ describe('engine adapters: every draw resolves to an engine object', () =>
         assert.equal(batches[4].ended, 'the camera had drawn everything it sees');
     });
 
+    for (const [name, query, renderer] of [['its WebGL engine', '', /Engine: Babylon\.js 9\.35\.0 \(Engine, WebGL 2\) detected/], ['its WebGPU engine', '?engine=webgpu', /Engine: Babylon\.js 9\.35\.0 \(WebGPUEngine, WebGPU\) detected/]])
+    {
+        test(`Babylon.js, ${name}: meshes, materials and the shadow map`, async () =>
+        {
+            const { capture, tree } = await adapted(`fixtures/engines/babylon-shadows.html${query}`, renderer);
+
+            assert.match(tree, /«Scene \(camera camera\) → canvas» {2}events 0–9 {2}8 draws/);
+            assert.match(tree, /«sun_shadowMap 512×512» {2}events 1–4 {2}3 draws/);
+            assert.match(tree, /of GroundMesh «ground»/);
+            assert.match(tree, /of Mesh «box 2»/);
+
+            // A mesh drawn into the shadow map says so, and names the material it is lit with.
+            const details = await scanline('query', capture, "SELECT draw, entity, entity_detail FROM draws WHERE kind = 'draw' ORDER BY draw", '--json');
+            const entities = details.json.data.rows.map((row) => JSON.parse(row[2]));
+
+            assert.deepEqual(entities.map((entity) => entity.name), ['box 0', 'box 1', 'ball', 'ground', 'box 0', 'box 1', 'ball', 'box 2']);
+            assert.deepEqual(entities.map((entity) => entity.shadowPass === true), [true, true, true, false, false, false, false, false]);
+            assert.equal(entities[3].material.type, 'StandardMaterial');
+
+            // The engine's own settings are controls: with shadows off there is no shadow pass.
+            const set = await scanline('page', 'set_control', '--id', 'babylon.shadows', '--value', 'false');
+
+            assert.match(set.out, /«babylon\.shadows» was true and is now false/);
+            await scanline('step', 2);
+
+            const after = await captured();
+
+            assert.doesNotMatch((await scanline('pass_tree', after.capture)).out, /sun_shadowMap/);
+        });
+    }
+
     test('an engine the adapter does not map says so: Phaser on its Canvas renderer', async () =>
     {
         await opened('fixtures/engines/phaser.html?renderer=canvas', 3);
