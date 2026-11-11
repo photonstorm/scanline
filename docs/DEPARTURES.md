@@ -64,7 +64,7 @@ Built for WebGL 1, WebGL 2 and WebGPU: the capture, the store (BLAKE3-named, zst
 
 | Criterion | Standing |
 |---|---|
-| Replay matches on every matrix page | Met for the pages there are: eight on WebGL, and on WebGPU the two raw pages, three.js and PixiJS. Babylon.js was added at milestone 7 and replays identically on WebGL 2 and WebGPU (`fixtures/engines/babylon.html`). A WebGPU device in a worker, and the engines the matrix still lacks, are untried. |
+| Replay matches on every matrix page | Met for the pages there are: eight on WebGL, and on WebGPU the two raw pages, three.js and PixiJS. At milestone 7 a Babylon.js scene with a shadow map was added, on its WebGL 2 and WebGPU engines (`fixtures/engines/babylon-shadows.html`); both replay identically. A WebGPU device in a worker, and the engines the matrix still lacks, are untried. |
 | Or reports why not | Met: every capture is replayed once when taken and compared with the frame's own image, the verdict is stored with it, and replay answers carry a warning when it failed. |
 | An agent diagnoses the planted bugs with no hints | Met for the bugs there are: twelve, in one small WebGL scene (`fixtures/bugs/`), all diagnosed by agents using only the command line, in a median of 8.5 commands. `evals/results/README.md` has both rounds and their limits. There is no runner that starts the agents; the rounds were started by hand. |
 
@@ -292,7 +292,7 @@ The build plan gives milestone 7 a list and no exit sentence: "Capture viewer an
 | Replay fidelity | Identical, or the difference is reported | Met: every capture is replayed when taken and compared pixel for pixel, and the summary says which. |
 | Host survives a forced GPU-process crash | Always | Met, and tested: the GPU process and the whole browser are each killed mid-session, and the host reports it and carries on. |
 
-Two things the Babylon.js pages found, both fixed:
+Two things the new Babylon.js page (`fixtures/engines/babylon-shadows.html`) found, both fixed:
 
 - **A depth texture used as a render target made its framebuffer incomplete in the replay.** A depth texture's contents are not read back, and the replay did not give it storage either, so every draw to Babylon's shadow map was rejected. The replay now allocates it empty, in its own format; the frame's shadow pass fills it.
 - **A WebGPU command encoder made before the captured frame was ignored, and the frame with it.** Babylon makes the next frame's encoder as soon as it has submitted this one's. The capture now makes such an encoder at the point it is first used, and says so in a note. Anything encoded on it before the frame began is not in the capture; the replay check shows whether that mattered.

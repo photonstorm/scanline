@@ -94,6 +94,6 @@ Objects with known sizes and contents, for checking what the live inventory repo
 
 The WebGPU page labels its objects; WebGL has no labels.
 
-## An engine with no adapter (`engines/`)
+## Babylon.js with shadows (`engines/babylon-shadows.html`)
 
-`engines/babylon.html` is a small Babylon.js scene (a lit ground, three boxes, one see-through, a ball, and a shadow), on its WebGL 2 engine or, with `?engine=webgpu`, its WebGPU engine. Scanline has no adapter for Babylon.js, so its draws are not named by mesh; the page is there to check that such an engine is still launched, captured and replayed to the same picture. It found two faults when it was added (a depth texture as a render target, and a command encoder made before the frame), both written up in `docs/DEPARTURES.md`.
+Scanline has no adapter for Babylon.js, so its draws are not named by mesh, but the engine must still be launched, captured and replayed to the same picture. `engines/babylon.html` is three unlit boxes on WebGL 2. `engines/babylon-shadows.html` is a harder scene (a lit ground, three boxes, one see-through, a ball, and a shadow map), on the WebGL 2 engine or, with `?engine=webgpu`, the WebGPU engine. It found two faults when it was added (a depth texture as a render target, and a command encoder made before the frame), both written up in `docs/DEPARTURES.md`.

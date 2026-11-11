@@ -1821,7 +1821,7 @@ describe('an engine Scanline has no adapter for', () =>
             ['?engine=webgpu', 'webgpu', /used a command encoder that was made before it began/]
         ])
         {
-            const launched = await scanline('launch', server.url(`fixtures/engines/babylon.html${query}`), '--paused', '--headless', '--json');
+            const launched = await scanline('launch', server.url(`fixtures/engines/babylon-shadows.html${query}`), '--paused', '--headless', '--json');
 
             assert.equal(launched.code, 0, launched.out);
 
