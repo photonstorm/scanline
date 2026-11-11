@@ -94,11 +94,17 @@ fn describe_row(session: &Session, instance: &Instance, row: &Value, full: bool)
 
     text.push_str(&format!("  created f{}", row["created"]));
 
-    // "Last used" is known for WebGL, where binding is observed; not yet for WebGPU.
+    // "Last used" is exact for WebGL, where binding is observed. For WebGPU it is sampled:
+    // a frame in sixteen, so "not seen in use" is weaker than "never used".
     if row["api"] == "webgl" && matches!(kind, "texture" | "buffer" | "program" | "framebuffer") {
         match row["used"].as_i64() {
             Some(frame) if frame >= 0 => text.push_str(&format!(", used f{frame}")),
             _ => text.push_str(", never used"),
+        }
+    } else if row["api"] == "webgpu" && matches!(kind, "texture" | "buffer" | "pipeline" | "bind_group" | "sampler" | "bundle") {
+        match row["used"].as_i64() {
+            Some(frame) if frame >= 0 => text.push_str(&format!(", used ~f{frame}")),
+            _ => text.push_str(", not seen in use"),
         }
     }
 
@@ -718,8 +724,14 @@ pub async fn resource(session: &Arc<Session>, params: &Value) -> Result<Value> {
         life.push_str(&format!(", contents last written in frame {}", detail["written"]));
     }
 
-    if detail["api"] == "webgl" && detail["used"].as_i64().unwrap_or(-1) >= 0 {
-        life.push_str(&format!(", last used in frame {}", detail["used"]));
+    if detail["used"].as_i64().unwrap_or(-1) >= 0 {
+        if detail["api"] == "webgl" {
+            life.push_str(&format!(", last used in frame {}", detail["used"]));
+        } else {
+            life.push_str(&format!(", last seen in use in frame {} (use is sampled, a frame in sixteen)", detail["used"]));
+        }
+    } else if detail["api"] == "webgpu" && matches!(object.kind, "texture" | "buffer" | "pipeline" | "bind_group" | "sampler" | "bundle") {
+        life.push_str(", not seen in use (use is sampled, a frame in sixteen)");
     }
 
     life.push('.');

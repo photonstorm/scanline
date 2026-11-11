@@ -413,7 +413,7 @@ Limits, all in `help limits`: targets of 8-bit or half-float RGBA for draw_id an
 ## Known gaps in what is built
 
 - Unlabelled WebGPU objects are not given generated labels, which the specification lists as a modification. They are named by handle in results instead.
-- "Last used" is tracked for WebGL objects (at bind, and once a frame for what is bound when drawing). WebGPU needs the pass recording of the capture level.
+- "Last used" is exact for WebGL objects (at bind, and once a frame for what is bound when drawing). For WebGPU it is sampled: on a frame in sixteen, on any frame that begins a quarter of a second or more after the last sampled one (so frames stepped by hand are each looked at), and for the rest of any frame in which the page makes an object (so one made and used within a frame is seen), the probe notes the pipelines, bind groups, vertex and index buffers and bundles a pass sets, and the textures it draws to. Textures, buffers and samplers held by a used bind group or bundle are marked when the inventory is read. Rows say `used ~f120` or `not seen in use`. Following every frame would put a lookup on every `setBindGroup`.
 - WebGPU pass timing measures one frame at a time: a frame that ends while the previous readback is in flight goes unmeasured (about one frame in three at 60 Hz here).
 - Timer queries and timestamp writes are only added at the `observe` level and above, and never in unmodified mode.
 - If a WebGL 2 page has set the default framebuffer's read buffer to `NONE`, the readback raises a GL error the page can see.

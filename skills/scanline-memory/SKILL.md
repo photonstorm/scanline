@@ -49,6 +49,6 @@ After the change: reload, take the same snapshot, do the same thing for the same
 
 ## Limits
 
-- "Last used" is tracked for WebGL objects only, so "created and never used again" cannot be said for WebGPU.
+- "Last used" is exact for WebGL. For WebGPU it is sampled, a frame in sixteen: `used ~f120` is the last sampled frame an object was used in, and `not seen in use` after the page has run a second or more means nothing bound it, set it or drew to it. Let the page run before trusting it.
 - Memory the browser keeps for its own purposes (decoded images, the compositor) is in the process figure and not in the estimate.
 - Compressed, depth and multisampled textures are counted by format rules; drivers may round up.

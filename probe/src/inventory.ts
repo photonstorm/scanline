@@ -5,6 +5,7 @@ import { allContexts, contextById, type ContextInfo } from './contexts';
 import { formatName } from './gl/formats';
 import { CAP_CODES, trackerFor, type UniformSlot } from './gl/tracker';
 import { verify } from './gl/verify';
+import { gpuPropagateUse } from './gpu/patch';
 import { natives } from './hooks/install';
 import { G } from './natives';
 import { alive, all, entryOf, find, kinds, prune, siteText, type Entry, type Kind } from './registry';
@@ -317,6 +318,9 @@ export function installInventory (): void
         const wanted = args.kind ? [args.kind] : kinds();
         const needle = args.filter ? args.filter.toLowerCase() : null;
 
+        // On WebGPU a texture or a buffer is used when a bind group that holds it is.
+        gpuPropagateUse();
+
         let rows = wanted.flatMap((kind) => all(kind)).filter((entry) => args.dead || alive(entry)).map(row);
 
         if (needle)
@@ -336,6 +340,8 @@ export function installInventory (): void
 
     expose('registry.get', (args: { kind: Kind; id: number }) =>
     {
+        gpuPropagateUse();
+
         const entry = find(args.kind, args.id);
 
         if (!entry)

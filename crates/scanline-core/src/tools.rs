@@ -971,7 +971,10 @@ Known limits
     target is read resolved. Neither reads depth values: view depth does.
   - What each event changed is measured when a capture is taken, by reading its target back
     around every event. A frame too large for that (many events on large targets) goes without.
-  - \"Last used\" is tracked for WebGL objects only.
+  - \"Last used\" is exact for WebGL objects. For WebGPU it is sampled, a frame in sixteen
+    (and any frame stepped by hand or that makes an object): \"used ~f120\" is the last sampled frame it was used in,
+    and \"not seen in use\" is weaker than \"never used\". A texture, buffer or sampler
+    counts as used when a bind group or bundle holding it is, or a pass draws to it.
   - A WebGPU capture does not hold external (video) textures, or the contents of depth,
     stencil, multisampled and compressed textures. A call that uses an external texture
     fails in replay; the summary says so. A render bundle is held as what was recorded

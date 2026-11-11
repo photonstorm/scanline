@@ -458,6 +458,38 @@ describe('render bundles', () =>
         assert.deepEqual(profile.json.data.rows.map((row) => row.draw).sort(), [1, 2], 'the bundle is timed whole');
     });
 
+    test('the inventory says which objects are in use, through bind groups and bundles', async () =>
+    {
+        await scanline('launch', server.url('fixtures/history/bundles-webgpu.html?spare'), '--headless', '--paused');
+        await scanline('step', 20);
+
+        const buffers = (await scanline('resources', 'buffer')).out;
+
+        // «red» is only ever set inside a bundle built before the first frame.
+        for (const label of ['corners', 'quad', 'red', 'blue', 'green', 'yellow'])
+        {
+            assert.match(buffers, new RegExp(`«${label}».* created f\\d+, used ~f\\d+`), `${label}\n${buffers}`);
+        }
+
+        assert.match(buffers, /«spare».* created f\d+, not seen in use/);
+
+        const groups = (await scanline('resources', 'bind_group')).out;
+
+        assert.match(groups, /«red».* used ~f\d+/);
+        assert.match(groups, /«spare».* not seen in use/);
+
+        // «late» is built and run within one frame, every frame: each is seen.
+        const bundles = (await scanline('resources', 'bundle', '--limit', 50)).out;
+
+        assert.doesNotMatch(bundles, /not seen in use/, bundles);
+        assert.match((await scanline('resources', 'pipeline')).out, /pip_2 «auto layout».* used ~f\d+/);
+
+        const spare = /(buf_\d+) «spare»/.exec(buffers)[1];
+
+        assert.match((await scanline('resource', spare)).out, /not seen in use \(use is sampled, a frame in sixteen\)/);
+        await scanline('stop');
+    });
+
     test('a live patch reaches the draws inside a bundle', async () =>
     {
         await scanline('launch', server.url('fixtures/history/bundles-webgpu.html'), '--headless', '--paused');

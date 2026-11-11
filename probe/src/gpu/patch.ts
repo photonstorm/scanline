@@ -27,10 +27,11 @@
 // browser has answered, and if it says no, the draw is issued as the page made it.
 
 import * as wgsl from '../../../shared/wgsl';
+import { currentFrame } from '../clock/gate';
 import { gpuTopology, hub, type Rec } from '../hooks/hub';
 import { natives } from '../hooks/install';
-import { G } from '../natives';
-import { all, deviceFor, entryOf, find, type Entry } from '../registry';
+import { G, nativeNow } from '../natives';
+import { all, deviceFor, entryOf, find, gpuUse, type Entry } from '../registry';
 import { imageOf } from '../standin';
 import { recordIntercepted } from './rec';
 import { bufferWatch, madeFromOf, viewOf } from './tracker';
@@ -1063,21 +1064,87 @@ function uniformNamed (entry: Entry, name: string): { group: number; binding: nu
         : 'No uniform buffer could be read from this pipeline\'s shaders.');
 }
 
-// A pipeline's topology as the WebGL mode it corresponds to, worked out once.
-const topologies = new G.WeakMap() as WeakMap<object, number>;
+// A pipeline's topology as the WebGL mode it corresponds to, with its registry entry,
+// worked out once.
+const known = new G.WeakMap() as WeakMap<object, { mode: number; entry: Entry | undefined }>;
 const MODES: Record<string, number> = { 'point-list': 0, 'line-list': 1, 'line-strip': 3, 'triangle-list': 4, 'triangle-strip': 5 };
 
-function topologyOf (pipeline: object): number
+function knownPipeline (pipeline: object): { mode: number; entry: Entry | undefined }
 {
-    let mode = topologies.get(pipeline);
+    let found = known.get(pipeline);
 
-    if (mode === undefined)
+    if (found === undefined)
     {
-        mode = MODES[G.String(entryOf(pipeline)?.p.descriptor?.primitive?.topology ?? 'triangle-list')] ?? -1;
-        topologies.set(pipeline, mode);
+        const entry = entryOf(pipeline);
+
+        found = { mode: MODES[G.String(entry?.p.descriptor?.primitive?.topology ?? 'triangle-list')] ?? -1, entry };
+        known.set(pipeline, found);
     }
 
-    return mode;
+    return found;
+}
+
+// Notes an object as used in the frame under way. Called only on the frames use is sampled on.
+function noteUsed (object: unknown): void
+{
+    const entry = object && typeof object === 'object' ? entryOf(object) : undefined;
+
+    if (entry)
+    {
+        entry.used = gpuUse.frame;
+    }
+}
+
+// A texture, buffer or sampler is used when a bind group that holds it is. That is worked
+// out when the inventory is read, not while the page draws.
+export function gpuPropagateUse (): void
+{
+    const visit = (value: any, frame: number, depth: number): void =>
+    {
+        if (!value || typeof value !== 'object' || depth > 6)
+        {
+            return;
+        }
+
+        if (G.Array.isArray(value))
+        {
+            for (const item of value)
+            {
+                visit(item, frame, depth + 1);
+            }
+
+            return;
+        }
+
+        if (typeof value.ref === 'string' && typeof value.id === 'number')
+        {
+            const entry = find(value.ref, value.id);
+
+            if (entry && entry.kind !== 'layout' && entry.used < frame)
+            {
+                entry.used = frame;
+            }
+
+            return;
+        }
+
+        for (const key in value)
+        {
+            visit(value[key], frame, depth + 1);
+        }
+    };
+
+    // Bundles first: a bind group a bundle sets is then followed to what it holds.
+    for (const kind of ['bundle', 'bind_group'] as const)
+    {
+        for (const entry of all(kind))
+        {
+            if (entry.used >= 0)
+            {
+                visit(kind === 'bundle' ? entry.p.commands : entry.p.descriptor?.entries, entry.used, 0);
+            }
+        }
+    }
 }
 
 // ---- What a pass has set, followed while a patch is in force ----
@@ -1089,7 +1156,14 @@ export const gpuPatchHandlers: Record<string, Post> = {
     'GPURenderPassEncoder.setPipeline' (_c, pass, _result, pipeline)
     {
         // Always: what the draws that follow are made of, for the frame's triangle count.
-        gpuTopology.mode = topologyOf(pipeline);
+        const found = knownPipeline(pipeline);
+
+        gpuTopology.mode = found.mode;
+
+        if (gpuUse.sampling && found.entry)
+        {
+            found.entry.used = gpuUse.frame;
+        }
 
         if (patches.length > 0)
         {
@@ -1099,6 +1173,11 @@ export const gpuPatchHandlers: Record<string, Post> = {
 
     'GPURenderPassEncoder.setBindGroup' (_c, pass, _result, index, group, a, b, c)
     {
+        if (gpuUse.sampling)
+        {
+            noteUsed(group);
+        }
+
         if (patches.length > 0)
         {
             const rest = c !== undefined ? [a, b, c] : (a !== undefined ? [a] : []);
@@ -1120,6 +1199,38 @@ export const gpuPatchHandlers: Record<string, Post> = {
         if (patches.length > 0)
         {
             stateOf(pass).blendConstant = colour;
+        }
+    },
+
+    'GPURenderPassEncoder.setVertexBuffer' (_c, _pass, _result, _slot, buffer)
+    {
+        if (gpuUse.sampling)
+        {
+            noteUsed(buffer);
+        }
+    },
+
+    'GPURenderPassEncoder.setIndexBuffer' (_c, _pass, _result, buffer)
+    {
+        if (gpuUse.sampling)
+        {
+            noteUsed(buffer);
+        }
+    },
+
+    'GPUComputePassEncoder.setPipeline' (_c, _pass, _result, pipeline)
+    {
+        if (gpuUse.sampling)
+        {
+            noteUsed(pipeline);
+        }
+    },
+
+    'GPUComputePassEncoder.setBindGroup' (_c, _pass, _result, _index, group)
+    {
+        if (gpuUse.sampling)
+        {
+            noteUsed(group);
         }
     },
 
@@ -1197,6 +1308,11 @@ export const gpuPatchIntercepts: Record<string, (self: any, native: (...args: an
             for (const bundle of G.Array.from(args[0] as Iterable<object> ?? []))
             {
                 const entry = entryOf(bundle);
+
+                if (entry && gpuUse.sampling)
+                {
+                    entry.used = gpuUse.frame;
+                }
 
                 if (entry?.p.counts)
                 {
@@ -1314,6 +1430,30 @@ export function gpuPassGiven (descriptor: any): any
 // Called as a render pass begins: how large its targets are, for putting a scissor box back.
 export function gpuPassBegan (pass: object, descriptor: any): void
 {
+    // What a pass draws to is used by it.
+    if (gpuUse.sampling)
+    {
+        try
+        {
+            for (const attachment of [...G.Array.from(descriptor?.colorAttachments ?? []), descriptor?.depthStencilAttachment] as any[])
+            {
+                for (const view of [attachment?.view, attachment?.resolveTarget])
+                {
+                    const texture = view ? viewOf(view)?.texture : undefined;
+
+                    if (texture)
+                    {
+                        texture.used = gpuUse.frame;
+                    }
+                }
+            }
+        }
+        catch
+        {
+            // A descriptor the probe cannot read is the page's business.
+        }
+    }
+
     if (patches.length === 0 || !pass)
     {
         return;
@@ -1727,9 +1867,25 @@ export function gpuPatchRemove (args: { patch?: number; all?: boolean; views?: b
     return gone;
 }
 
+let sampledFrame = -16;
+let sampledAt = 0;
+
 export function gpuPatchFrame (): void
 {
     events = 0;
+    gpuUse.frame = currentFrame();
+
+    // Use is sampled on a frame in sixteen, or on a frame a quarter of a second after the
+    // last one sampled: so frames stepped by hand are each looked at.
+    const now = nativeNow();
+
+    gpuUse.sampling = gpuUse.frame - sampledFrame >= 16 || gpuUse.frame < sampledFrame || now - sampledAt >= 250;
+
+    if (gpuUse.sampling)
+    {
+        sampledFrame = gpuUse.frame;
+        sampledAt = now;
+    }
 
     for (const patch of patches)
     {

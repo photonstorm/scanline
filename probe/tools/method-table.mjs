@@ -183,6 +183,9 @@ export const GPU = {
         setBindGroup: { post: true },
         setScissorRect: { post: true },
         setBlendConstant: { post: true },
+        // Noted on every sixteenth frame, for "last used" (gpu/patch.ts).
+        setVertexBuffer: { post: true },
+        setIndexBuffer: { post: true },
         // Intercepted: while a live patch is in force, what a bundle recorded is issued on
         // the pass draw by draw, so that the patch reaches it (gpu/patch.ts).
         executeBundles: { intercept: true },
@@ -192,6 +195,8 @@ export const GPU = {
         drawIndexedIndirect: { draw: { mode: null, count: null, instances: null } }
     },
     GPUComputePassEncoder: {
+        setPipeline: { post: true },
+        setBindGroup: { post: true },
         dispatchWorkgroups: { count: 'dispatches', post: true },
         dispatchWorkgroupsIndirect: { count: 'dispatches', post: true }
     },

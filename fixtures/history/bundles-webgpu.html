@@ -101,6 +101,9 @@ function bundle (label, draws)
 }
 
 const early = bundle('early', [[own, red], [auto, blue]]);
+
+// With ?spare, a bind group and its buffer that nothing ever sets: made, and never used.
+const spare = new URLSearchParams(location.search).has('spare') ? tinted('spare', tintLayout, [1, 1, 1, 1], 0) : null;
 const state = window.game = { frame: 0 };
 
 function frame ()

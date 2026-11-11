@@ -141,6 +141,11 @@ export function siteText (index: number): string
 
 // ---- Records ----
 
+// When WebGPU objects are noted as used: on a frame in sixteen, so that following use
+// costs nothing on the other fifteen, and for the rest of any frame that makes an object,
+// so that what is made and used within one frame is seen. `frame` is the frame under way.
+export const gpuUse = { sampling: false, frame: 0 };
+
 export function create (kind: Kind, api: Entry['api'], context: number, object: object, p: Record<string, any>, label: string | null = null): Entry
 {
     const id = (counters.get(kind) ?? 0) + 1;
@@ -148,6 +153,12 @@ export function create (kind: Kind, api: Entry['api'], context: number, object: 
     counters.set(kind, id);
 
     const frame = currentFrame();
+
+    if (api === 'webgpu')
+    {
+        gpuUse.sampling = true;
+        gpuUse.frame = frame;
+    }
 
     const entry: Entry = {
         id,
