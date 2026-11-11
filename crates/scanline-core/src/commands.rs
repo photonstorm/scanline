@@ -97,6 +97,14 @@ pub async fn launch(host: &Arc<Host>, params: &Value) -> Result<Value> {
     // The person's Debug key is acted on whether or not an agent is waiting for it.
     tokio::spawn(crate::handoff::watch(host.clone(), session.clone()));
 
+    if params["strip"] == true {
+        if let Err(error) = session.open_strip().await {
+            session.queue("warning", json!({ "text": format!("The control strip could not be opened: {error}") }));
+        }
+
+        crate::handoff::refresh(&session).await;
+    }
+
     // Give the page a moment to create its contexts before describing it.
     for _ in 0..12 {
         let reports = session.probe_all("status", json!({}), SHORT).await;
@@ -625,6 +633,19 @@ async fn key_event(session: &Arc<Session>, name: &str, down: bool) -> Result<()>
 
 /// Sets exactly which keys are held: releases the ones no longer listed, presses the new ones.
 pub(crate) async fn hold(session: &Arc<Session>, wanted: &Value) -> Result<()> {
+    // Every key about to be pressed or let go.
+    let mut names: Vec<String> = wanted["keys_down"].as_array().into_iter().flatten().filter_map(|key| key.as_str().map(str::to_string)).collect();
+
+    names.extend(session.state.lock().unwrap().keys_down.clone());
+
+    let codes: Vec<String> = names.iter().filter_map(|name| keys::lookup(name)).map(|key| key.code).collect();
+
+    announce(session, json!({ "keys": codes })).await;
+
+    hold_now(session, wanted).await
+}
+
+async fn hold_now(session: &Arc<Session>, wanted: &Value) -> Result<()> {
     let keys: Vec<String> = wanted["keys_down"]
         .as_array()
         .ok_or_else(|| anyhow!("hold needs keys_down: a list of key names (empty to release everything)."))?
@@ -645,7 +666,33 @@ pub(crate) async fn hold(session: &Arc<Session>, wanted: &Value) -> Result<()> {
     Ok(())
 }
 
+/// While the agent has taken the input, the probe keeps the person's out of the page. The
+/// browser cannot tell the agent's events from the person's, so the probe is told which
+/// are the agent's just before they are sent: the keys by their codes, pointer and touch
+/// events by where they land.
+async fn announce(session: &Arc<Session>, what: Value) {
+    if session.state.lock().unwrap().owner == "agent" {
+        session.probe_all("input.admit", what, SHORT).await;
+    }
+}
+
 async fn dispatch(session: &Arc<Session>, event: &Value, convert: &Converter) -> Result<()> {
+    let what = if let Some(name) = event["key"].as_str() {
+        json!({ "keys": keys::lookup(name).map(|key| vec![key.code]).unwrap_or_default() })
+    } else if event["touch"].is_string() {
+        json!({ "points": event["points"].as_array().into_iter().flatten().map(|point| { let (x, y) = convert.css(point); json!([x, y]) }).collect::<Vec<_>>() })
+    } else {
+        let (x, y) = convert.css(event);
+
+        json!({ "points": [[x, y]] })
+    };
+
+    announce(session, what).await;
+
+    dispatch_now(session, event, convert).await
+}
+
+async fn dispatch_now(session: &Arc<Session>, event: &Value, convert: &Converter) -> Result<()> {
     if let Some(name) = event["key"].as_str() {
         if event["press"] == true {
             key_event(session, name, true).await?;
@@ -751,7 +798,13 @@ pub async fn input(session: &Arc<Session>, params: &Value) -> Result<Value> {
     }
 
     for event in events.into_iter().flatten() {
-        dispatch(session, event, &convert).await?;
+        if params["as_person"] == true {
+            // Sent unannounced, exactly as the person's own input arrives: for checking that
+            // it is kept out of the page while the agent has the input.
+            dispatch_now(session, event, &convert).await?;
+        } else {
+            dispatch(session, event, &convert).await?;
+        }
     }
 
     let top = session.top()?;

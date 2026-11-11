@@ -858,6 +858,127 @@ describe('working with the person', () =>
     });
 });
 
+describe('the control strip and the input owner', () =>
+{
+    const shown = async () => (await scanline('strip', '--json')).json.data.shown;
+
+    test('the strip shows the person what was asked, and its buttons work', async () =>
+    {
+        await scanline('launch', server.url('fixtures/bugs/b13.html'), '--paused', '--headless');
+
+        assert.match((await scanline('strip')).out, /The control strip is not open/);
+
+        const asked = await scanline('request_human', 'Play until the glass flickers, then press Debug');
+
+        assert.match(asked.out, /A control strip under the game's window shows them the instruction, with Debug, Pause and Step buttons/);
+
+        // What the person sees.
+        let strip = await shown();
+
+        assert.equal(strip.who, 'You are driving');
+        assert.equal(strip.instruction, 'Play until the glass flickers, then press Debug');
+        assert.equal(strip.recording, true);
+        assert.equal(strip.pause, 'Pause');
+        assert.equal(strip.step_enabled, false);
+
+        // Its frame counter follows the page.
+        await new Promise((resolve) => setTimeout(resolve, 700));
+
+        const moved = Number((await shown()).frame.replace('frame ', ''));
+
+        assert.ok(moved > 5, `the strip shows frame ${moved}`);
+
+        // Pause, then one frame at a time, then on again: the person's buttons, not the agent's commands.
+        await scanline('strip', '--press', 'pause');
+
+        strip = await shown();
+
+        assert.equal(strip.pause, 'Resume');
+        assert.equal(strip.step_enabled, true);
+
+        const at = Number(strip.frame.replace('frame ', ''));
+
+        await scanline('strip', '--press', 'step');
+        assert.equal((await shown()).frame, `frame ${at + 1}`);
+
+        await scanline('strip', '--press', 'pause');
+        assert.equal((await shown()).pause, 'Pause');
+
+        // A picture of it, for whoever wants to see what the person sees.
+        const picture = await scanline('strip', '--output', '--json');
+
+        assert.deepEqual(readFileSync(picture.json.images[0].view).subarray(0, 4), PNG);
+
+        // Debug on the strip does what F9 does.
+        await new Promise((resolve) => setTimeout(resolve, 400));
+        await scanline('strip', '--press', 'debug');
+
+        const event = await scanline('wait', '--request', 'req_1', '--timeout-s', '20', '--json');
+
+        assert.equal(event.json.data.events[0].kind, 'debug_pressed');
+        assert.equal(event.json.data.events[0].data.by, 'strip');
+        assert.match(event.json.data.events[0].data.recording, /^rec_\d+$/);
+
+        strip = await shown();
+
+        assert.equal(strip.who, 'Nobody is driving');
+        assert.match(strip.instruction, /^Frozen at frame \d+\. The agent has this frame and the \d+ before it\.$/);
+        assert.equal(strip.recording, false);
+    });
+
+    test('while the agent has the input, the person\'s is kept out of the page', async () =>
+    {
+        await scanline('launch', server.url('fixtures/matrix/game.html'), '--paused', '--headless', '--deterministic', 'true', '--strip');
+
+        const position = async () => JSON.parse((await scanline('eval', 'JSON.stringify([game.x, game.y, game.clicks])')).out.slice(1, -1));
+
+        assert.equal((await shown()).who, 'Nobody is driving');
+
+        // Nobody in particular has the input: the person's reaches the page.
+        await scanline('input', '--as-person', '--events', '[{"key": "ArrowDown", "down": true}]');
+        await scanline('step', '6');
+        await scanline('input', '--as-person', '--events', '[{"key": "ArrowDown", "down": false}]');
+
+        const [, started] = await position();
+
+        assert.ok(started > 110, `the square moved down to ${started}`);
+
+        const taken = await scanline('take_control');
+
+        assert.match(taken.out, /The agent has the input: the person's keys and mouse are kept out of the page/);
+        assert.match((await shown()).who, /The agent is driving/);
+        assert.match((await shown()).instruction, /Your keys and mouse are kept out of the page; Debug still works/);
+
+        // The agent's own input arrives.
+        await scanline('step', '6', '--hold', 'ArrowRight');
+
+        const [x] = await position();
+
+        assert.ok(x > 40, `the agent moved the square right to ${x}`);
+
+        // The person's does not: neither a key nor a click.
+        await scanline('step', '1', '--hold', '');
+        await scanline('input', '--as-person', '--events', '[{"key": "ArrowDown", "down": true}, {"pointer": "down", "x": 100, "y": 100}, {"pointer": "up", "x": 100, "y": 100}]');
+        await scanline('step', '6');
+
+        assert.deepEqual(await position(), [x, started, 0], 'nothing the person did reached the game');
+
+        // And it is not in the run either, so a replay is not spoiled by it.
+        const run = await scanline('save_run', '--json');
+
+        assert.match(run.json.summary, /with 2 key presses\./);
+
+        // Given up, the person's input arrives again.
+        await scanline('input', '--as-person', '--events', '[{"key": "ArrowDown", "down": false}]');
+        await scanline('take_control', '--release');
+        await scanline('input', '--as-person', '--events', '[{"pointer": "down", "x": 100, "y": 100}, {"pointer": "up", "x": 100, "y": 100}]');
+        await scanline('step', '2');
+
+        assert.equal((await position())[2], 1);
+        assert.equal((await shown()).who, 'Nobody is driving');
+    });
+});
+
 describe('runs: play it again', () =>
 {
     const state = 'JSON.stringify([game.frame, game.time, game.x, game.y, game.clicks, game.sparks, Date.now(), performance.now()])';
@@ -887,12 +1008,14 @@ describe('runs: play it again', () =>
         const saved = await scanline('save_run', '--json');
 
         assert.equal(saved.code, 0, saved.out);
-        assert.equal(saved.json.data.run, 'run_1');
+        const run = saved.json.data.run;
+
+        assert.match(run, /^run_\d+$/);
         assert.equal(saved.json.data.frames, 180);
         assert.equal(saved.json.data.prints, 6);
-        assert.match(saved.json.summary, /run_1: the 180 frames since .*game\.html loaded, with 2 key presses, 2 clicks\./);
+        assert.match(saved.json.summary, /run_\d+: the 180 frames since .*game\.html loaded, with 2 key presses, 2 clicks\./);
 
-        const replayed = await scanline('replay_run', 'run_1', '--json');
+        const replayed = await scanline('replay_run', run, '--json');
 
         assert.equal(replayed.code, 0, replayed.out);
         assert.equal(replayed.json.data.frame, 180);
@@ -902,14 +1025,14 @@ describe('runs: play it again', () =>
         assert.equal((await scanline('eval', state)).out, before, 'every number the game holds is the same, to the last bit');
 
         // Going back: the same run, stopped early.
-        const earlier = await scanline('replay_run', 'run_1', '--to-frame', '75', '--json');
+        const earlier = await scanline('replay_run', run, '--to-frame', '75', '--json');
 
         assert.equal(earlier.json.data.frame, 75);
-        assert.match(earlier.json.summary, /Replayed run_1 to frame 75 of 180\. Paused\./);
+        assert.match(earlier.json.summary, /Replayed run_\d+ to frame 75 of 180\. Paused\./);
         assert.match((await scanline('eval', 'JSON.stringify([game.frame, game.clicks])')).out, /\[75,1\]/);
 
         // A replayed session can be saved again: it received the same input.
-        await scanline('replay_run', 'run_1');
+        await scanline('replay_run', run);
 
         const again = await scanline('save_run', '--json');
 

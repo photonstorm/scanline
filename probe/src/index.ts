@@ -206,6 +206,7 @@ function boot (): void
             level: config.level,
             unmodified: config.unmodified,
             deterministic: config.deterministic,
+            debugKey: config.debugKey,
             ...gate,
             clockEngaged: clock.engaged,
             contexts,

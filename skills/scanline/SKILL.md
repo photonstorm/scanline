@@ -80,7 +80,7 @@ Ask the person. `gfx_request_human(instruction: "Play until the water flickers, 
 
 The press freezes the page and gives you two things: `cap_N`, the frozen frame, and `rec_N`, the frames before it. Call `gfx_recording(recording: "rec_N")` first. It says which frames draw something different from the rest (an intermittent bug is usually one of those), which frames' pictures did not change, and returns a contact sheet. Then `gfx_capture(recording: "rec_N", frame: n)` makes a bad frame and a good neighbour into captures to compare.
 
-While the person has the input you can look but not step, resume or send input. `gfx_take_control()` takes it back.
+The person sees your instruction in a control strip under the game's window, with Debug, Pause and Step buttons; `gfx_strip()` says what it is showing them. While the person has the input you can look but not step, resume or send input. `gfx_take_control()` makes you the only source of input and keeps their keys and mouse out of the page, which matters when you are replaying a run; `gfx_take_control(release: true)` gives that up.
 
 ## Getting back to the bug after a change
 

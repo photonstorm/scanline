@@ -109,7 +109,8 @@ impl Host {
             if let Ok(session) = self.session(&params) {
                 let state = session.state.lock().unwrap();
 
-                if state.owner == "human" {
+                // Input sent as the person's own is the person's, whoever typed the command.
+                if state.owner == "human" && !(method == "input" && params["as_person"] == true) {
                     let asked = state.request.as_ref().map(|request| format!(" ({}: «{}»)", request.id, request.instruction)).unwrap_or_default();
 
                     return Err(anyhow!(
@@ -140,9 +141,10 @@ impl Host {
             "capture" if params["recording"].is_string() => handoff::frame_capture(self, &params).await,
             "capture" => capture::capture(self, &live()?, &params).await,
             "request_human" => handoff::request_human(&live()?, &params).await,
-            "take_control" => handoff::take_control(&live()?).await,
+            "take_control" => handoff::take_control(&live()?, &params).await,
             "debug" => handoff::debug(self, &live()?, &params).await,
             "recording" => handoff::recording(self, &params).await,
+            "strip" => handoff::strip(&live()?, &params).await,
             "save_run" => runs::save_run(self, &live()?).await,
             "replay_run" => runs::replay_run(self, &live()?, &params).await,
             "captures" => capture::captures(self, &params),

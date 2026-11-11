@@ -52,6 +52,7 @@ pub const TOOLS: &[Tool] = &[
             r#""level": { "type": "string", "enum": ["off", "observe"], "description": "off: hooks pass straight through. Default observe." }"#,
             r#""unmodified": { "type": "boolean", "description": "Change nothing the page can observe. Some readbacks stop working." }"#,
             r#""debug_key": { "type": "string", "description": "The key the person presses to freeze and capture. Default F9; \"none\" for no key." }"#,
+            r#""strip": { "type": "boolean", "description": "Open the control strip under the game's window at once. Default: it opens when request_human is called." }"#,
         ),
         read_only: false,
     },
@@ -116,6 +117,7 @@ pub const TOOLS: &[Tool] = &[
             session!(),
             r#""events": { "type": "array", "description": "For example {\"key\": \"Space\", \"press\": true}, {\"key\": \"a\", \"down\": true}, {\"pointer\": \"down\", \"x\": 100, \"y\": 80}, {\"wheel\": {\"dy\": 120}, \"x\": 100, \"y\": 80}.", "items": { "type": "object" } }"#,
             r#""state": { "type": "object", "description": "{\"keys_down\": [...]}: exactly these keys are held afterwards.", "properties": { "keys_down": { "type": "array", "items": { "type": "string" } } } }"#,
+            r#""as_person": { "type": "boolean", "description": "Send the events unannounced, the way the person's own input arrives. For checking that their input is kept out while the agent has it." }"#,
             context!(),
         ),
         read_only: false,
@@ -376,8 +378,20 @@ pub const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "take_control",
-        description: "Make the agent the owner of the page's input again after a request to the person. Pauses the page first.",
-        schema: schema!("[]", session!()),
+        description: "Make the agent the only source of input: the page is paused, and the person's keys and mouse are kept out of the page from then on, so nothing they touch can spoil a run. release: true gives that up. request_human hands the input to the person.",
+        schema: schema!("[]", session!(), r#""release": { "type": "boolean", "description": "Give the input up: the person's reaches the page again." }"#),
+        read_only: false,
+    },
+    Tool {
+        name: "strip",
+        description: "The control strip: the small window under the game that shows the person who is driving, what you asked of them, the frame number and whether frames are being recorded, with Debug, Pause and Step buttons. Says what it shows now. open: true opens it without a request; press presses a button as the person would.",
+        schema: schema!(
+            "[]",
+            session!(),
+            r#""open": { "type": "boolean" }"#,
+            r#""press": { "type": "string", "enum": ["debug", "pause", "step"] }"#,
+            r#""output": { "type": "boolean", "description": "Also return a picture of the strip." }"#,
+        ),
         read_only: false,
     },
     Tool {
@@ -522,10 +536,10 @@ Not built yet (planned, in this order):
   - For WebGPU captures: which test rejected a draw; uniform values by name (needs WGSL
     reflection; the buffers and textures in each bind group are listed).
   - The browser's real GPU memory; GPU time per pass on WebGL.
-  - Hand-off to a person, beyond what is built (request_human, the Debug key in the page,
-    the flight recorder): a control strip beside the game, a Debug hotkey that works when
-    another window has the keyboard, recording and replaying the person's input, and
-    keeping their input out while the agent has the game.
+  - Hand-off to a person, beyond what is built (request_human, the control strip, the Debug
+    key, the flight recorder, runs, one owner of the input): a Debug hotkey that works when
+    some other application has the keyboard, annotation by clicking on the frozen frame, a
+    gamepad, and pointer lock.
   - Analysis: pixel history, overdraw and other views, per-draw GPU time. A first set of
     lints is built: the capture's \"Worth a look\" list.
   - Live patching: shader replacement, uniform and state overrides.
@@ -681,10 +695,18 @@ level. Ask them, and let Scanline hold the evidence.
       makes any recorded frame a capture. Take a bad frame and a good neighbour and
       compare their draw lists.
   take_control()
-      takes the input back without a press. After a press the page is paused and yours.
+      makes you the only source of input: the page pauses and the person's keys and mouse
+      are kept out of it, so nothing they touch can spoil what you are doing. Their Debug
+      key still works. take_control(release: true) gives that up. After a Debug press the
+      page is paused and anyone's input reaches it, until one of you takes it.
+  strip()
+      what the control strip shows the person. It is a small window under the game's:
+      who is driving, what you asked, the frame number, a REC light, and Debug, Pause and
+      Step buttons. It opens with request_human; strip(open: true) or launch(strip: true)
+      opens it without one.
 
-While the person has the input, step, resume, run_until, input and navigate are refused:
-looking (screenshot, pixels, resources, console) is always allowed.
+While the person has the input, step, resume, run_until, input, navigate and replay_run
+are refused: looking (screenshot, pixels, resources, console) is always allowed.
 
 A recorded frame is replayed from the start of the recording, so the later the frame, the
 longer its questions take. Only the frozen frame has a picture from the page to check the

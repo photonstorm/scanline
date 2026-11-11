@@ -10,8 +10,8 @@
 
 import { config } from './config';
 import { currentFrame } from './clock/gate';
-import { G } from './natives';
-import { emit } from './transport';
+import { G, nAddEventListener, nativeNow } from './natives';
+import { emit, expose } from './transport';
 
 export function installHandoff (): void
 {
@@ -48,4 +48,124 @@ export function installHandoff (): void
             event.stopImmediatePropagation();
         }
     }, true);
+
+    installOwnership();
+}
+
+// ---- One owner of the input ----
+//
+// When the agent has taken the input, what the person does at the keyboard and mouse must
+// not reach the page: a stray key would spoil a replay. The browser cannot tell the two
+// apart, since both are real input to it, so the host says which events are its own just
+// before it sends them (admit) and everything else is stopped here, before the page's
+// listeners and before the input recorder.
+
+const INPUT_EVENTS = [
+    'keydown', 'keyup', 'keypress', 'mousedown', 'mouseup', 'mousemove', 'click', 'dblclick', 'auxclick', 'contextmenu', 'wheel',
+    'pointerdown', 'pointerup', 'pointermove', 'pointercancel', 'touchstart', 'touchmove', 'touchend', 'touchcancel'
+];
+
+let blocking = false;
+let stopped = 0;
+
+// What the host has said is its own: key codes, and points in the page, each good for a
+// short while. One call from the host becomes several events here (a click is a pointer
+// down, a mouse down, a pointer up, a mouse up and a click), so an entry is not used up.
+const GOOD_FOR = 1500;
+const keysAdmitted = new G.Map() as Map<string, number>;
+
+let pointsAdmitted: Array<{ x: number; y: number; until: number }> = [];
+
+function near (x: number, y: number, now: number): boolean
+{
+    for (const point of pointsAdmitted)
+    {
+        // A whole pixel either way: the browser rounds where an event lands.
+        if (point.until > now && G.Math.abs(point.x - x) <= 1.5 && G.Math.abs(point.y - y) <= 1.5)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+function admitted (event: any): boolean
+{
+    const now = nativeNow();
+
+    if (typeof event.code === 'string' && typeof event.key === 'string')
+    {
+        return (keysAdmitted.get(event.code) ?? 0) > now;
+    }
+
+    if (event.changedTouches)
+    {
+        for (const touch of event.changedTouches as Iterable<{ clientX: number; clientY: number }>)
+        {
+            if (near(touch.clientX, touch.clientY, now))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    return near(event.clientX, event.clientY, now);
+}
+
+function installOwnership (): void
+{
+    const stop = (event: any): void =>
+    {
+        if (!blocking || !event.isTrusted || admitted(event))
+        {
+            return;
+        }
+
+        stopped++;
+        event.stopImmediatePropagation();
+
+        if (event.cancelable)
+        {
+            event.preventDefault();
+        }
+    };
+
+    for (const type of INPUT_EVENTS)
+    {
+        nAddEventListener.call(G, type, stop, { capture: true, passive: false });
+    }
+
+    // on: the person's input is kept from the page from now.
+    expose('input.block', (args: { on: boolean }) =>
+    {
+        blocking = G.Boolean(args.on);
+        keysAdmitted.clear();
+        pointsAdmitted = [];
+
+        return { blocking, stopped };
+    });
+
+    // The host's own events are about to arrive.
+    expose('input.admit', (args: { keys?: string[]; points?: Array<[number, number]> }) =>
+    {
+        const now = nativeNow();
+        const until = now + GOOD_FOR;
+
+        for (const code of args.keys ?? [])
+        {
+            keysAdmitted.set(code, until);
+        }
+
+        pointsAdmitted = pointsAdmitted.filter((point) => point.until > now);
+
+        for (const [x, y] of args.points ?? [])
+        {
+            pointsAdmitted.push({ x, y, until });
+        }
+
+        return { keys: keysAdmitted.size, points: pointsAdmitted.length };
+    });
 }

@@ -162,6 +162,8 @@ pub fn command_usage(name: &str) -> Option<String> {
         "wait" => "scanline wait --request req_1",
         "debug" => "scanline debug --x 412 --y 288 --note \"this corner\"",
         "recording" => "scanline recording rec_1",
+        "strip" => "scanline strip --open",
+        "take_control" => "scanline take_control",
         "save_run" => "scanline save_run",
         "replay_run" => "scanline replay_run run_1 --to-frame 900",
         _ => "",

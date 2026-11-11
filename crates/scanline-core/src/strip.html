@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Scanline</title>
+<style>
+    :root
+    {
+        color-scheme: dark;
+        --ground: #16181d;
+        --raised: #22252c;
+        --line: #343843;
+        --text: #e8eaf0;
+        --quiet: #9aa1b2;
+        --person: #f2b84b;
+        --agent: #6cb6ff;
+        --nobody: #7d8494;
+        --record: #ff5d5d;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body { height: 100%; margin: 0; }
+
+    body
+    {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        padding: 0 14px;
+        background: var(--ground);
+        color: var(--text);
+        font: 13px/1.3 system-ui, -apple-system, "Segoe UI", sans-serif;
+        overflow: hidden;
+        user-select: none;
+    }
+
+    #who
+    {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex: none;
+        font-weight: 600;
+        white-space: nowrap;
+    }
+
+    #who i
+    {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: var(--nobody);
+    }
+
+    body[data-owner="human"] #who i { background: var(--person); }
+    body[data-owner="agent"] #who i { background: var(--agent); }
+
+    #say
+    {
+        flex: 1;
+        min-width: 0;
+        color: var(--quiet);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    body[data-owner="human"] #say { color: var(--text); }
+
+    #frame
+    {
+        flex: none;
+        color: var(--quiet);
+        font-variant-numeric: tabular-nums;
+        white-space: nowrap;
+    }
+
+    #rec
+    {
+        display: none;
+        align-items: center;
+        gap: 6px;
+        flex: none;
+        color: var(--record);
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+    }
+
+    #rec i
+    {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--record);
+        animation: pulse 1.2s ease-in-out infinite;
+    }
+
+    body[data-recording="true"] #rec { display: flex; }
+
+    @keyframes pulse { 50% { opacity: 0.35; } }
+
+    @media (prefers-reduced-motion: reduce) { #rec i { animation: none; } }
+
+    button
+    {
+        flex: none;
+        height: 30px;
+        padding: 0 12px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: var(--raised);
+        color: var(--text);
+        font: inherit;
+        cursor: pointer;
+    }
+
+    button:hover { border-color: var(--quiet); }
+    button:active { transform: translateY(1px); }
+    button:focus-visible { outline: 2px solid var(--agent); outline-offset: 2px; }
+    button:disabled { opacity: 0.45; cursor: default; }
+
+    #debug
+    {
+        border-color: var(--person);
+        background: var(--person);
+        color: #1b1400;
+        font-weight: 700;
+    }
+
+    #debug kbd
+    {
+        margin-left: 6px;
+        padding: 1px 5px;
+        border-radius: 4px;
+        background: rgb(0 0 0 / 0.18);
+        font: inherit;
+        font-size: 11px;
+    }
+</style>
+<body data-owner="" data-recording="false">
+    <div id="who"><i></i><span id="who-text">Nobody is driving</span></div>
+    <div id="say" title=""></div>
+    <div id="rec"><i></i>REC</div>
+    <div id="frame">frame 0</div>
+    <button id="pause" type="button">Pause</button>
+    <button id="step" type="button" disabled>Step</button>
+    <button id="debug" type="button">Debug<kbd>F9</kbd></button>
+<script>
+    // What the person at the keyboard sees while they and the agent share a page: who has
+    // the input, what the agent asked for, and the Debug button. The host tells this page
+    // what to show (update) and is told what was pressed (the scanlineStrip binding).
+    const send = (action) =>
+    {
+        if (typeof window.scanlineStrip === 'function')
+        {
+            window.scanlineStrip(JSON.stringify({ action }));
+        }
+    };
+
+    const $ = (id) => document.getElementById(id);
+
+    let paused = false;
+
+    $('debug').addEventListener('click', () => send('debug'));
+    $('step').addEventListener('click', () => send('step'));
+    $('pause').addEventListener('click', () => send(paused ? 'resume' : 'pause'));
+
+    // The key works here too, for when this window has the keyboard instead of the game.
+    addEventListener('keydown', (event) =>
+    {
+        if (event.code === window.debugKey && !event.repeat)
+        {
+            event.preventDefault();
+            send('debug');
+        }
+    });
+
+    window.debugKey = 'F9';
+
+    window.update = (state) =>
+    {
+        paused = Boolean(state.paused);
+        window.debugKey = state.debug_key || 'F9';
+
+        document.body.dataset.owner = state.owner || '';
+        document.body.dataset.recording = String(Boolean(state.recording));
+
+        $('who-text').textContent = state.owner === 'human' ? 'You are driving' : (state.owner === 'agent' ? 'The agent is driving' : 'Nobody is driving');
+
+        const say = state.instruction
+            ? state.instruction
+            : (state.owner === 'agent' ? 'The agent is working. Your keys and mouse are kept out of the page; Debug still works.' : (paused ? 'Paused.' : ''));
+
+        $('say').textContent = say;
+        $('say').title = say;
+        $('frame').textContent = `frame ${state.frame ?? 0}`;
+        $('pause').textContent = paused ? 'Resume' : 'Pause';
+        $('step').disabled = !paused;
+        $('debug').querySelector('kbd').textContent = window.debugKey === 'none' ? '' : window.debugKey;
+        $('debug').querySelector('kbd').hidden = window.debugKey === 'none';
+
+        return true;
+    };
+
+    // What is on show, for the host to read back.
+    window.shown = () => ({
+        owner: document.body.dataset.owner,
+        who: $('who-text').textContent,
+        instruction: $('say').textContent,
+        frame: $('frame').textContent,
+        recording: document.body.dataset.recording === 'true',
+        pause: $('pause').textContent,
+        step_enabled: !$('step').disabled
+    });
+</script>
+</body>
+</html>

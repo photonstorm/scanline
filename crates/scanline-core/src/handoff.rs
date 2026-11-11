@@ -37,6 +37,7 @@ pub async fn request_human(session: &Arc<Session>, params: &Value) -> Result<Val
 
         state.next_request += 1;
         state.owner = "human".into();
+        state.strip_note = None;
         state.recorder = recorder.is_ok().then(|| context.clone());
 
         let id = format!("req_{}", state.next_request);
@@ -47,7 +48,15 @@ pub async fn request_human(session: &Arc<Session>, params: &Value) -> Result<Val
     };
 
     session.queue("owner_changed", json!({ "owner": "human", "request": id, "instruction": instruction }));
+
+    // The person's input reaches the page again, if the agent had been keeping it out.
+    session.probe_all("input.block", json!({ "on": false }), SHORT).await;
+
+    // The person has to be able to see what was asked of them.
+    let strip = session.open_strip().await;
+
     session.probe_all("resume", json!({}), SHORT).await;
+    refresh(session).await;
 
     let mut lines = vec![format!("{id}: the person has been asked: «{}». They have the input and the page is running.", page_text(instruction, 300))];
 
@@ -58,49 +67,209 @@ pub async fn request_human(session: &Arc<Session>, params: &Value) -> Result<Val
         )),
     }
 
+    lines.push(match &strip {
+        Ok(()) => "A control strip under the game's window shows them the instruction, with Debug, Pause and Step buttons.".to_string(),
+        Err(error) => format!(
+            "The control strip could not be opened ({error}), so the person sees nothing from Scanline: tell them what you asked, and that Debug is F9."
+        ),
+    });
+
     lines.push(format!(
-        "Debug is F9 with the page focused, or the debug command. Call wait(session: \"{}\", request: \"{id}\") for the press: it is acted on when it happens, and nothing is lost if you are busy.",
+        "Debug is F9 with the page focused, the strip's button, or the debug command. Call wait(session: \"{}\", request: \"{id}\") for the press: it is acted on when it happens, and nothing is lost if you are busy.",
         session.id
     ));
 
     Ok(result(lines.join("\n"), json!({ "request": id, "cursor": cursor, "owner": "human", "recording": recorder.is_ok(), "flight_frames": frames })))
 }
 
-/// Gives the input back to the agent. The page is paused first, so nothing happens in between.
-pub async fn take_control(session: &Arc<Session>) -> Result<Value> {
+/// Makes the agent the owner of the input, and keeps the person's out of the page until it
+/// is given up again. The page is paused first, so nothing happens in between.
+pub async fn take_control(session: &Arc<Session>, params: &Value) -> Result<Value> {
+    if params["release"] == true {
+        // Nobody in particular: the person's input reaches the page, and so does the agent's.
+        let changed = {
+            let mut state = session.state.lock().unwrap();
+            let changed = state.owner == "agent";
+
+            if changed {
+                state.owner = String::new();
+            }
+
+            changed
+        };
+
+        session.probe_all("input.block", json!({ "on": false }), SHORT).await;
+
+        if changed {
+            session.queue("owner_changed", json!({ "owner": "none" }));
+        }
+
+        refresh(session).await;
+
+        return Ok(result("The agent has given up the input. The person's input reaches the page again.", json!({ "owner": "none" })));
+    }
+
     let results = session.probe_all("pause", json!({}), SHORT).await;
     let frame = primary(&results)?["frame"].clone();
+
+    // Nothing either of them was holding may stay held across the change.
+    hold(session, &json!({ "keys_down": [] })).await?;
+
     let changed = {
         let mut state = session.state.lock().unwrap();
         let changed = state.owner != "agent";
 
         state.owner = "agent".into();
+        state.request = None;
+        state.strip_note = None;
 
         changed
     };
+
+    session.probe_all("input.block", json!({ "on": true }), SHORT).await;
 
     if changed {
         session.queue("owner_changed", json!({ "owner": "agent" }));
     }
 
-    Ok(result(format!("The agent has the input. Paused at frame {frame}."), json!({ "owner": "agent", "paused": true, "frame": frame })))
+    refresh(session).await;
+
+    Ok(result(
+        format!(
+            "The agent has the input: the person's keys and mouse are kept out of the page until take_control(release: true) or request_human. The Debug key still works. Paused at frame {frame}."
+        ),
+        json!({ "owner": "agent", "paused": true, "frame": frame }),
+    ))
 }
 
-/// Acts on Debug presses in the page for as long as the session lives.
+/// Tells the control strip what to show: who is driving, what was asked, where the page is.
+pub async fn refresh(session: &Arc<Session>) {
+    let (owner, instruction, recording, open) = {
+        let state = session.state.lock().unwrap();
+
+        (
+            state.owner.clone(),
+            state.request.as_ref().map(|request| request.instruction.clone()).or(state.strip_note.clone()),
+            state.recorder.is_some(),
+            state.strip.is_some(),
+        )
+    };
+
+    if !open {
+        return;
+    }
+
+    let Ok(top) = session.top() else { return };
+    let Ok(status) = session.probe(&top, "status", json!({}), SHORT).await else { return };
+
+    let shown = json!({
+        "owner": owner,
+        "instruction": instruction,
+        "recording": recording,
+        "frame": status["frame"],
+        "paused": status["paused"],
+        "debug_key": status["debugKey"],
+    });
+
+    let _ = session.strip_eval(&format!("update({shown})")).await;
+}
+
+/// Acts on what the person presses, the Debug key in the page or a button on the control
+/// strip, and keeps the strip up to date, for as long as the session lives.
 pub async fn watch(host: Arc<Host>, session: Arc<Session>) {
     loop {
-        if tokio::time::timeout(Duration::from_secs(5), session.debug.notified()).await.is_err() {
-            if session.check_alive().is_err() {
-                return;
+        let open = session.state.lock().unwrap().strip.is_some();
+
+        // With the strip open, look often enough that its frame counter moves.
+        let _ = tokio::time::timeout(Duration::from_millis(if open { 250 } else { 5000 }), session.debug.notified()).await;
+
+        if session.check_alive().is_err() {
+            return;
+        }
+
+        loop {
+            let Some(action) = session.state.lock().unwrap().actions.pop_front() else { break };
+
+            let outcome = match action.as_str() {
+                "debug:key" => debug(&host, &session, &json!({ "by": "key" })).await.map(|_| ()),
+                "debug" => debug(&host, &session, &json!({ "by": "strip" })).await.map(|_| ()),
+                "pause" => crate::commands::pause(&session).await.map(|_| ()),
+                "resume" => crate::commands::resume(&session, &json!({})).await.map(|_| ()),
+                "step" => crate::commands::step(&session, &json!({ "frames": 1 })).await.map(|_| ()),
+                _ => Ok(()),
+            };
+
+            if let Err(error) = outcome {
+                session
+                    .queue("warning", json!({ "text": format!("The person pressed {}, but it could not be done: {error}", action.trim_end_matches(":key")) }));
             }
-
-            continue;
         }
 
-        if let Err(error) = debug(&host, &session, &json!({ "by": "key" })).await {
-            session.queue("warning", json!({ "text": format!("Debug was pressed, but the frame could not be captured: {error}") }));
-        }
+        refresh(&session).await;
     }
+}
+
+/// The control strip: opens it, says what it shows, or presses one of its buttons as the
+/// person would.
+pub async fn strip(session: &Arc<Session>, params: &Value) -> Result<Value> {
+    if params["open"] == true || (params["press"].is_string() && session.state.lock().unwrap().strip.is_none()) {
+        session.open_strip().await?;
+        refresh(session).await;
+    }
+
+    if session.state.lock().unwrap().strip.is_none() {
+        return Ok(result("The control strip is not open. It opens when request_human is called; strip(open: true) opens it now.", json!({ "open": false })));
+    }
+
+    let mut lines = Vec::new();
+
+    if let Some(button) = params["press"].as_str() {
+        if !["debug", "pause", "step"].contains(&button) {
+            bail!("The strip has three buttons: debug, pause (which is Resume while paused) and step. There is no \"{button}\".");
+        }
+
+        let pressed = session
+            .strip_eval(&format!(
+                "(() => {{ const button = document.getElementById('{button}'); if (button.disabled) {{ return false; }} button.click(); return true; }})()"
+            ))
+            .await;
+
+        if pressed != Some(json!(true)) {
+            bail!("The strip's {button} button is disabled just now{}.", if button == "step" { ": Step works while the page is paused" } else { "" });
+        }
+
+        lines.push(format!("Pressed {button} on the strip, as the person would. It is acted on at once; wait or status shows the result."));
+
+        // Give the host's own loop a moment to act, so what is reported is the state after the press.
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        refresh(session).await;
+    }
+
+    let shown = session.strip_eval("shown()").await.unwrap_or(Value::Null);
+
+    lines.push(format!(
+        "The strip shows: {}{}{}. {}. Buttons: {}, Step{}, Debug.",
+        shown["who"].as_str().unwrap_or("?"),
+        match shown["instruction"].as_str().filter(|text| !text.is_empty()) {
+            Some(text) => format!(" — «{}»", page_text(text, 200)),
+            None => String::new(),
+        },
+        if shown["recording"] == true { ", REC" } else { "" },
+        shown["frame"].as_str().unwrap_or("frame ?"),
+        shown["pause"].as_str().unwrap_or("Pause"),
+        if shown["step_enabled"] == true { "" } else { " (disabled)" }
+    ));
+
+    let mut value = result(lines.join("\n"), json!({ "open": true, "shown": shown }));
+
+    if params["output"] == true {
+        let path = session.dir.join("images").join("strip.png");
+
+        std::fs::write(&path, session.strip_picture().await?).with_context(|| format!("writing {}", path.display()))?;
+        value["images"] = json!([{ "view": path, "original": path, "space": "strip_px" }]);
+    }
+
+    Ok(value)
 }
 
 /// Debug: freeze, keep the recording, capture the frozen frame, and tell whoever is listening.
@@ -203,8 +372,20 @@ pub async fn debug(host: &Arc<Host>, session: &Arc<Session>, params: &Value) -> 
         data["annotation"] = Value::Object(annotation);
     }
 
-    session.state.lock().unwrap().owner = String::new();
+    {
+        let mut state = session.state.lock().unwrap();
+
+        state.owner = String::new();
+        state.strip_note = Some(match data["recording"].as_str() {
+            Some(_) => {
+                format!("Frozen at frame {frame}. The agent has this frame and the {} before it.", data["frames"].as_u64().unwrap_or(1).saturating_sub(1))
+            }
+            None => format!("Frozen at frame {frame}. The agent has the frame after it."),
+        });
+    }
+
     session.queue("debug_pressed", data.clone());
+    refresh(session).await;
 
     lines.push(value["summary"].as_str().unwrap_or("").to_string());
 

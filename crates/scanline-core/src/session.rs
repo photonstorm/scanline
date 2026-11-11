@@ -121,6 +121,14 @@ pub struct State {
     pub recorder: Option<ContextRef>,
     /// The browser's name for the probe script it runs in every new document of the page.
     probe_script: Option<String>,
+    /// The control strip's protocol session, while its window is open.
+    pub strip: Option<String>,
+    /// Set while the strip's window is being opened: the next page target to appear is it.
+    strip_pending: bool,
+    /// What the person has pressed (the Debug key, a button on the strip), not yet acted on.
+    pub actions: VecDeque<String>,
+    /// What the strip says when nothing has been asked of the person: how the last press went.
+    pub strip_note: Option<String>,
     worker_urls: HashMap<String, String>,
     /// Workers stopped at start, waiting for the instrumentation pause where the probe goes in.
     waiting_workers: HashSet<String>,
@@ -173,6 +181,13 @@ struct ReplayPage {
     /// Captures whose stream and blobs it already holds.
     loaded: HashSet<String>,
 }
+
+/// The control strip: its page, its address, the function it calls the host through, and
+/// how tall its window's content is.
+const STRIP: &str = include_str!("strip.html");
+const STRIP_URL: &str = "https://strip.scanline.invalid/";
+const STRIP_BINDING: &str = "scanlineStrip";
+const STRIP_HEIGHT: i64 = 56;
 
 /// Where the replay page lives. Nothing is fetched from it: the host answers the request.
 const REPLAY_URL: &str = "https://replay.scanline.invalid/";
@@ -588,6 +603,163 @@ impl Session {
         self.client.send_with_timeout(method, params, Some(&self.page), Duration::from_secs(10)).await
     }
 
+    /// Sends one of the host's own pages (the replay page, the control strip) to an address
+    /// that is never fetched: the request is answered here with the page's text. The address
+    /// is https, so the page is a secure context.
+    async fn serve(&self, cdp_session: &str, url: &str, html: &str) -> Result<()> {
+        let s = Some(cdp_session);
+        let paused = self.client.subscribe();
+        let loaded = self.client.subscribe();
+
+        self.client.send("Page.enable", json!({}), s).await?;
+        self.client.send("Fetch.enable", json!({ "patterns": [{ "urlPattern": format!("{url}*") }] }), s).await?;
+        self.client.post("Page.navigate", json!({ "url": url }), s)?;
+
+        let mine = cdp_session.to_string();
+        let request = self
+            .client
+            .wait_for(paused, Duration::from_secs(10), |event| event.method == "Fetch.requestPaused" && event.session.as_deref() == Some(mine.as_str()))
+            .await?;
+
+        self.client
+            .send(
+                "Fetch.fulfillRequest",
+                json!({
+                    "requestId": request.params["requestId"],
+                    "responseCode": 200,
+                    "responseHeaders": [{ "name": "Content-Type", "value": "text/html; charset=utf-8" }],
+                    "body": base64::engine::general_purpose::STANDARD.encode(html),
+                }),
+                s,
+            )
+            .await?;
+
+        let mine = cdp_session.to_string();
+
+        self.client
+            .wait_for(loaded, Duration::from_secs(10), |event| event.method == "Page.loadEventFired" && event.session.as_deref() == Some(mine.as_str()))
+            .await?;
+
+        self.client.send("Fetch.disable", json!({}), s).await?;
+
+        Ok(())
+    }
+
+    /// Opens the control strip: a small window under the game's, in the same browser, that
+    /// shows the person who is driving and what the agent asked, with a Debug button.
+    /// Does nothing if it is already open.
+    pub async fn open_strip(&self) -> Result<()> {
+        if self.state.lock().unwrap().strip.is_some() {
+            return Ok(());
+        }
+
+        // Under the game's window, as wide as it is.
+        let window = self.client.send("Browser.getWindowForTarget", json!({}), Some(&self.page)).await.unwrap_or(Value::Null);
+        let bounds = &window["bounds"];
+        let (left, top) = (bounds["left"].as_i64().unwrap_or(40), bounds["top"].as_i64().unwrap_or(40) + bounds["height"].as_i64().unwrap_or(720));
+        let width = bounds["width"].as_i64().unwrap_or(900).clamp(620, 1600);
+
+        // A popup has no tabs and no toolbar. It is opened from a world of the game's page
+        // that the page's own scripts cannot see into, and with no link back to the page.
+        let tree = self.page_command("Page.getFrameTree", json!({})).await?;
+        let frame = tree["frameTree"]["frame"]["id"].as_str().ok_or_else(|| anyhow!("The page has no main frame."))?;
+        let world = self.page_command("Page.createIsolatedWorld", json!({ "frameId": frame, "worldName": "scanline-strip" })).await?;
+
+        self.state.lock().unwrap().strip_pending = true;
+
+        let opened = self
+            .page_command(
+                "Runtime.evaluate",
+                json!({
+                    "expression": format!("window.open('about:blank', '_blank', 'popup,noopener,width={width},height={STRIP_HEIGHT},left={left},top={top}'); 0"),
+                    "contextId": world["executionContextId"],
+                    "userGesture": true,
+                }),
+            )
+            .await;
+
+        let mut strip = None;
+
+        if opened.is_ok() {
+            for _ in 0..80 {
+                strip = self.state.lock().unwrap().strip.clone();
+
+                if strip.is_some() {
+                    break;
+                }
+
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        }
+
+        self.state.lock().unwrap().strip_pending = false;
+
+        // No popup came (a browser that blocks them): an ordinary window will do.
+        let strip = match strip {
+            Some(strip) => strip,
+            None => {
+                let target = self
+                    .client
+                    .send(
+                        "Target.createTarget",
+                        json!({ "url": "about:blank", "newWindow": true, "left": left, "top": top, "width": width, "height": STRIP_HEIGHT + 90 }),
+                        None,
+                    )
+                    .await
+                    .context("opening the control strip")?;
+                let attached = self.client.send("Target.attachToTarget", json!({ "targetId": target["targetId"], "flatten": true }), None).await?;
+                let strip = attached["sessionId"].as_str().ok_or_else(|| anyhow!("The browser gave no session for the control strip."))?.to_string();
+
+                self.state.lock().unwrap().strip = Some(strip.clone());
+
+                strip
+            }
+        };
+
+        let outcome = async {
+            self.serve(&strip, STRIP_URL, STRIP).await?;
+            self.client.send("Runtime.enable", json!({}), Some(&strip)).await?;
+            self.client.send("Runtime.addBinding", json!({ "name": STRIP_BINDING }), Some(&strip)).await?;
+
+            Ok::<(), anyhow::Error>(())
+        }
+        .await;
+
+        if let Err(error) = outcome {
+            self.state.lock().unwrap().strip = None;
+
+            return Err(error.context("loading the control strip"));
+        }
+
+        // Opening a window takes the keyboard. The person is about to play: give it back.
+        let _ = self.page_command("Page.bringToFront", json!({})).await;
+
+        // Whoever keeps the strip up to date should look now, not when it next happens to.
+        self.debug.notify_one();
+
+        Ok(())
+    }
+
+    /// Runs an expression in the control strip. None if the strip is not open.
+    pub async fn strip_eval(&self, expression: &str) -> Option<Value> {
+        let strip = self.state.lock().unwrap().strip.clone()?;
+        let reply = self
+            .client
+            .send_with_timeout("Runtime.evaluate", json!({ "expression": expression, "returnByValue": true }), Some(&strip), Duration::from_secs(5))
+            .await
+            .ok()?;
+
+        Some(reply["result"]["value"].clone())
+    }
+
+    /// A picture of the control strip as the person sees it.
+    pub async fn strip_picture(&self) -> Result<Vec<u8>> {
+        let strip = self.state.lock().unwrap().strip.clone().ok_or_else(|| anyhow!("The control strip is not open."))?;
+        let reply = self.client.send_with_timeout("Page.captureScreenshot", json!({ "format": "png" }), Some(&strip), Duration::from_secs(10)).await?;
+
+        base64::engine::general_purpose::STANDARD.decode(reply["data"].as_str().unwrap_or("")).context("decoding the strip's picture")
+    }
+
     /// Calls a method of the replay page, opening the page first if this is the first call.
     pub async fn replay(&self, method: &str, args: &Value, timeout: Duration) -> Result<Value> {
         let mut page = self.replay.lock().await;
@@ -606,44 +778,8 @@ impl Session {
             let attached = self.client.send("Target.attachToTarget", json!({ "targetId": target, "flatten": true }), None).await?;
             let cdp_session = attached["sessionId"].as_str().ok_or_else(|| anyhow!("The browser gave no session for the replay page."))?.to_string();
 
-            // WebGPU exists only in a secure context, which about:blank is not. The page is
-            // sent to an address that is never fetched: the request is answered here.
-            let s = Some(cdp_session.as_str());
-            let paused = self.client.subscribe();
-            let loaded = self.client.subscribe();
-
-            self.client.send("Page.enable", json!({}), s).await?;
-            self.client.send("Fetch.enable", json!({ "patterns": [{ "urlPattern": format!("{REPLAY_URL}*") }] }), s).await?;
-            self.client.post("Page.navigate", json!({ "url": REPLAY_URL }), s)?;
-
-            let mine = cdp_session.clone();
-            let request = self
-                .client
-                .wait_for(paused, Duration::from_secs(10), |event| event.method == "Fetch.requestPaused" && event.session.as_deref() == Some(mine.as_str()))
-                .await
-                .context("opening the replay page")?;
-
-            self.client
-                .send(
-                    "Fetch.fulfillRequest",
-                    json!({
-                        "requestId": request.params["requestId"],
-                        "responseCode": 200,
-                        "responseHeaders": [{ "name": "Content-Type", "value": "text/html; charset=utf-8" }],
-                        "body": base64::engine::general_purpose::STANDARD.encode("<!doctype html><title>Scanline replay</title>"),
-                    }),
-                    s,
-                )
-                .await?;
-
-            let mine = cdp_session.clone();
-
-            self.client
-                .wait_for(loaded, Duration::from_secs(10), |event| event.method == "Page.loadEventFired" && event.session.as_deref() == Some(mine.as_str()))
-                .await
-                .context("loading the replay page")?;
-
-            self.client.send("Fetch.disable", json!({}), s).await?;
+            // WebGPU exists only in a secure context, which about:blank is not.
+            self.serve(&cdp_session, REPLAY_URL, "<!doctype html><title>Scanline replay</title>").await.context("opening the replay page")?;
             self.client.send("Runtime.evaluate", json!({ "expression": REPLAY }), Some(&cdp_session)).await.context("loading the replay script")?;
 
             *page = Some(ReplayPage { cdp_session, loaded: HashSet::new() });
@@ -825,7 +961,10 @@ fn handle(session: &Arc<Session>, event: Event) {
                 }
                 "" => {}
                 // The Debug key: the freeze and the capture are the host's to do.
-                "debug-key" => session.debug.notify_one(),
+                "debug-key" => {
+                    session.state.lock().unwrap().actions.push_back("debug:key".into());
+                    session.debug.notify_one();
+                }
                 kind => {
                     let mut data = payload.clone();
 
@@ -834,6 +973,22 @@ fn handle(session: &Arc<Session>, event: Event) {
                     }
 
                     session.queue(kind, data);
+                }
+            }
+        }
+
+        // A button on the control strip.
+        "Runtime.bindingCalled" if params["name"] == STRIP_BINDING => {
+            let mut state = session.state.lock().unwrap();
+
+            if state.strip.as_deref() == event.session.as_deref() {
+                if let Some(action) = serde_json::from_str::<Value>(params["payload"].as_str().unwrap_or(""))
+                    .ok()
+                    .and_then(|payload| payload["action"].as_str().map(str::to_string))
+                {
+                    state.actions.push_back(action);
+                    drop(state);
+                    session.debug.notify_one();
                 }
             }
         }
@@ -856,6 +1011,12 @@ fn handle(session: &Arc<Session>, event: Event) {
                 let mut state = session.state.lock().unwrap();
 
                 state.instances.retain(|instance| instance.cdp_session != gone);
+
+                // The person closed the strip's window.
+                if state.strip.as_deref() == Some(gone) {
+                    state.strip = None;
+                }
+
                 state.worker_urls.remove(gone);
                 state.waiting_workers.remove(gone);
             }
@@ -950,6 +1111,16 @@ fn attached(session: &Arc<Session>, params: &Value) {
     let post = |method: &str, params: Value| {
         let _ = session.client.post(method, params, Some(cdp_session));
     };
+
+    // The control strip's window, opened a moment ago: no probe goes into it.
+    if kind == "page" {
+        let mut state = session.state.lock().unwrap();
+
+        if state.strip_pending && state.strip.is_none() {
+            state.strip = Some(cdp_session.to_string());
+            state.strip_pending = false;
+        }
+    }
 
     // The browser's own targets (its UI, extension workers) are released untouched.
     if injectable(url) && (worker || kind == "iframe") {
