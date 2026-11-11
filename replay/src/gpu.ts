@@ -179,6 +179,9 @@ export class GpuRun
     uncaptured = 0;
     failed = 0;
 
+    // The frame of a recording the canvas texture was last handed out in.
+    canvasFrame = -1;
+
     // Encoders the frame has made and not finished, in the order it made them.
     encoders: Array<{ key: string; encoder: any }> = [];
     // Command buffers finished and not yet submitted.
@@ -278,7 +281,8 @@ export class GpuRun
 
     blob (index: number): Uint8Array
     {
-        const bytes = this.item.blobs[index];
+        // A flight recording's blob numbers start where its dropped frames' left off.
+        const bytes = this.item.blobs[index - (this.data.header.blobBase ?? 0)];
 
         if (!bytes)
         {
@@ -566,6 +570,21 @@ export class GpuRun
         return out;
     }
 
+    // Which frame of a recording a command belongs to, counted from 0. Always 0 for a capture of one frame.
+    frameOf (index: number): number
+    {
+        const marks: Json[] = this.data.header.frames ?? [];
+
+        let frame = 0;
+
+        while (frame < marks.length && marks[frame].command <= index)
+        {
+            frame++;
+        }
+
+        return frame;
+    }
+
     name (index: number): [string, string]
     {
         const qualified = this.methods[this.data.commands[index][0]] ?? '';
@@ -638,6 +657,22 @@ export class GpuRun
         {
             if (name === 'getCurrentTexture')
             {
+                // In a recording of several frames, each frame's canvas texture starts empty.
+                const frame = this.frameOf(index);
+
+                if (frame !== this.canvasFrame)
+                {
+                    if (this.canvasFrame !== -1)
+                    {
+                        const encoder = this.device.createCommandEncoder();
+
+                        encoder.beginRenderPass({ colorAttachments: [{ view: this.canvasTexture.createView(), clearValue: [0, 0, 0, 0], loadOp: 'clear', storeOp: 'store' }] }).end();
+                        this.queue.submit([encoder.finish()]);
+                    }
+
+                    this.canvasFrame = frame;
+                }
+
                 this.register(made, this.canvasTexture);
             }
 
@@ -1249,6 +1284,35 @@ export const gpuApi = {
             });
 
             return { effects, cost, notes: run.notes, ms: performance.now() - started };
+        }
+        finally
+        {
+            run.dispose();
+        }
+    },
+
+    // The canvas at the end of each frame of a recording.
+    async frames (item: Loaded, methods: string[], lastOf: Map<number, number>, keep: (frame: number, width: number, height: number, data: Uint8Array) => void): Promise<string[]>
+    {
+        const run = await GpuRun.create(item, methods);
+
+        try
+        {
+            await run.play(item.data.commands.length, async (index) =>
+            {
+                const frame = lastOf.get(index);
+
+                if (frame !== undefined)
+                {
+                    await run.flush();
+
+                    const raw = await run.read(null);
+
+                    keep(frame, raw.width, raw.height, toRgba8(raw));
+                }
+            });
+
+            return run.notes;
         }
         finally
         {

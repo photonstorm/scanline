@@ -94,6 +94,20 @@ describe('the planted bugs', () =>
 
                     assert.equal(await textures() - before, 30, 'one more texture alive for every frame');
                 }
+                else if (check.flicker)
+                {
+                    // Right on the frames either side, wrong on the one frame in `every`.
+                    const { pixel: at, reference, every } = check.flicker;
+
+                    await step(every - 21);
+                    assert.deepEqual(await pixel(at), reference, 'right the frame before');
+
+                    await step(1);
+                    assert.notDeepEqual(await pixel(at), reference, 'wrong on the frame that flickers');
+
+                    await step(1);
+                    assert.deepEqual(await pixel(at), reference, 'right again the frame after');
+                }
                 else if (check.counter)
                 {
                     assert.ok((await stats()).counters[check.counter].last >= 2, 'shaders are compiled in every frame');

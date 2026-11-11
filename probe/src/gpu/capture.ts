@@ -53,11 +53,18 @@ export interface GpuState
     deviceId: number;
     locals: Map<object, number>;
     nextLocal: number;
+    // In a flight recording, the first number given out since its present oldest frames
+    // began. An object with a lower number may not be there when the recording is replayed.
+    firstLocal: number;
     passes: Map<object, PassState>;
     passCount: number;
     // Ranges of buffers the page has mapped, and what they held when the buffer was unmapped.
     mapped: Map<object, Array<{ range: ArrayBuffer; offset: number }>>;
     unmapped: Map<object, Array<{ o: number; b: number }>>;
+    // Worked out once and used at every draw: what a pipeline's descriptor says of a draw
+    // made with it, and the textures a bind group holds.
+    pipelines: Map<number, Record<string, unknown>>;
+    groups: Map<number, Array<Record<string, unknown>>>;
 }
 
 const names: string[] = METHOD_NAMES.map((qualified) => qualified.slice(qualified.indexOf('.') + 1));
@@ -144,9 +151,13 @@ function encode (capture: Capture, value: any, depth = 0): unknown
 
     const gpu = capture.gpu!;
 
-    if (gpu.locals.has(value))
+    const made = gpu.locals.get(value);
+
+    // A view made in frames that may be dropped from a flight recording is described in
+    // full instead, like any view made before the capture began.
+    if (made !== undefined && (made >= gpu.firstLocal || !viewOf(value)))
     {
-        return { l: gpu.locals.get(value) };
+        return { l: made };
     }
 
     const entry = entryOf(value);
@@ -154,6 +165,7 @@ function encode (capture: Capture, value: any, depth = 0): unknown
     if (entry)
     {
         capture.used.add(entry);
+        capture.strong?.add(value);
 
         return { o: entry.kind, i: entry.id };
     }
@@ -374,67 +386,69 @@ function maskOf (mask: unknown): boolean[]
 }
 
 // The textures a draw can sample: every texture view in the bind groups it has set.
-function texturesOf (state: PassState): Array<Record<string, unknown>>
+function texturesOf (gpu: GpuState, state: PassState): Array<Record<string, unknown>>
 {
     const out: Array<Record<string, unknown>> = [];
 
-    state.groups.forEach((group, index) =>
+    for (let index = 0; index < state.groups.length; index++)
     {
-        const entry = group === null || group === undefined ? undefined : find('bind_group', group);
-        const entries: any[] = (entry?.p.descriptor as any)?.entries ?? [];
+        const group = state.groups[index];
 
-        for (const bound of entries)
+        if (group === null || group === undefined)
         {
-            const resource = bound?.resource;
-
-            if (resource && resource.ref === 'texture' && resource.id)
-            {
-                // Units are numbered group × 100 + binding, so one number names both.
-                out.push({ unit: index * 100 + (G.Number(bound.binding) || 0), group: index, binding: bound.binding, t2d: resource.id, sampler: null });
-            }
+            continue;
         }
-    });
+
+        // A bind group never changes, so what it holds is worked out once.
+        let held = gpu.groups.get(group);
+
+        if (held === undefined)
+        {
+            held = [];
+
+            for (const bound of (find('bind_group', group)?.p.descriptor as any)?.entries ?? [])
+            {
+                const resource = bound?.resource;
+
+                if (resource && resource.ref === 'texture' && resource.id)
+                {
+                    held.push({ binding: G.Number(bound.binding) || 0, t2d: resource.id });
+                }
+            }
+
+            gpu.groups.set(group, held);
+        }
+
+        for (const texture of held)
+        {
+            // Units are numbered group × 100 + binding, so one number names both.
+            out.push({ unit: index * 100 + (texture.binding as number), group: index, binding: texture.binding, t2d: texture.t2d, sampler: null });
+        }
+    }
 
     return out;
 }
 
-function drawRow (capture: Capture, state: PassState, name: string, args: any[], command: number): Record<string, unknown>
+// What a pipeline's descriptor says of every draw made with it.
+function pipelineFacts (gpu: GpuState, id: number | null): Record<string, unknown>
 {
-    const pipeline = state.pipeline === null ? undefined : find('pipeline', state.pipeline);
-    const made: any = pipeline?.p.descriptor ?? {};
+    let facts = id === null ? undefined : gpu.pipelines.get(id);
+
+    if (facts !== undefined)
+    {
+        return facts;
+    }
+
+    const made: any = (id === null ? undefined : find('pipeline', id))?.p.descriptor ?? {};
     const primitive = made.primitive ?? {};
     const depth = made.depthStencil ?? null;
     const target = made.fragment?.targets?.[0] ?? null;
     const blend = target?.blend ?? null;
-    const indexed = name.startsWith('drawIndexed');
-    const direct = !name.endsWith('Indirect');
     const tests = depth !== null && ((depth.depthCompare ?? 'always') !== 'always' || depth.depthWriteEnabled === true);
     const stencil = depth !== null && ((depth.stencilFront?.compare ?? 'always') !== 'always' || (depth.stencilBack?.compare ?? 'always') !== 'always');
-    const [width, height] = state.size;
-    const scissor = state.scissor;
-    const clipped = scissor !== null && (scissor[0] > 0 || scissor[1] > 0 || scissor[0] + scissor[2] < width || scissor[1] + scissor[3] < height);
 
-    return {
-        api: 'webgpu',
-        kind: 'draw',
-        method: name,
-        command,
-        pass: state.index,
-        target: G.Math.max(0, state.target),
-        targetLevel: state.targetLevel,
-        noTarget: state.target < 0,
+    facts = {
         mode: primitive.topology ?? 'triangle-list',
-        count: direct ? (args[0] ?? 0) : null,
-        instances: direct ? (args[1] ?? 1) : null,
-        first: direct ? (args[2] ?? 0) : null,
-        baseVertex: direct && indexed ? (args[3] ?? 0) : null,
-        firstInstance: direct ? (args[indexed ? 4 : 3] ?? 0) : null,
-        indirect: direct ? null : { buffer: id(args[0]), offset: args[1] ?? 0 },
-        indexType: indexed ? (state.indexBuffer?.format ?? null) : null,
-        pipeline: state.pipeline,
-        bindGroups: state.groups.slice(),
-        vertexBuffers: state.vertex.filter(Boolean).map((buffer) => ({ ...buffer })),
-        indexBuffer: indexed ? state.indexBuffer : null,
         blend: blend
             ? {
                 srcRgb: blend.color?.srcFactor ?? 'one',
@@ -446,15 +460,63 @@ function drawRow (capture: Capture, state: PassState, name: string, args: any[],
             }
             : null,
         depth: tests ? { func: depth.depthCompare ?? 'always', write: depth.depthWriteEnabled === true } : null,
-        stencil: stencil ? { front: depth.stencilFront ?? null, back: depth.stencilBack ?? null, reference: state.stencilReference } : null,
+        stencilFaces: stencil ? { front: depth.stencilFront ?? null, back: depth.stencilBack ?? null } : null,
         cull: primitive.cullMode && primitive.cullMode !== 'none' ? primitive.cullMode : null,
         frontFace: primitive.frontFace ?? 'ccw',
+        colorMask: maskOf(target?.writeMask)
+    };
+
+    if (id !== null)
+    {
+        gpu.pipelines.set(id, facts);
+    }
+
+    return facts;
+}
+
+function drawRow (capture: Capture, state: PassState, name: string, args: any[], command: number): Record<string, unknown>
+{
+    const gpu = capture.gpu!;
+    const facts = pipelineFacts(gpu, state.pipeline);
+    const indexed = name.startsWith('drawIndexed');
+    const direct = !name.endsWith('Indirect');
+    const [width, height] = state.size;
+    const scissor = state.scissor;
+    const clipped = scissor !== null && (scissor[0] > 0 || scissor[1] > 0 || scissor[0] + scissor[2] < width || scissor[1] + scissor[3] < height);
+    const faces: any = facts.stencilFaces;
+
+    return {
+        api: 'webgpu',
+        kind: 'draw',
+        method: name,
+        command,
+        pass: state.index,
+        target: state.target < 0 ? 0 : state.target,
+        targetLevel: state.targetLevel,
+        noTarget: state.target < 0,
+        mode: facts.mode,
+        count: direct ? (args[0] ?? 0) : null,
+        instances: direct ? (args[1] ?? 1) : null,
+        first: direct ? (args[2] ?? 0) : null,
+        baseVertex: direct && indexed ? (args[3] ?? 0) : null,
+        firstInstance: direct ? (args[indexed ? 4 : 3] ?? 0) : null,
+        indirect: direct ? null : { buffer: id(args[0]), offset: args[1] ?? 0 },
+        indexType: indexed ? (state.indexBuffer?.format ?? null) : null,
+        pipeline: state.pipeline,
+        bindGroups: state.groups.slice(),
+        vertexBuffers: state.vertex.filter(Boolean).map((buffer) => ({ ...buffer })),
+        indexBuffer: indexed ? state.indexBuffer : null,
+        blend: facts.blend,
+        depth: facts.depth,
+        stencil: faces ? { front: faces.front, back: faces.back, reference: state.stencilReference } : null,
+        cull: facts.cull,
+        frontFace: facts.frontFace,
         viewport: state.viewport ? state.viewport.slice(0, 4) : [0, 0, width, height],
         depthRange: state.viewport ? state.viewport.slice(4, 6) : [0, 1],
         scissor: clipped ? scissor : null,
-        colorMask: maskOf(target?.writeMask),
+        colorMask: facts.colorMask,
         blendConstant: state.blendConstant,
-        textures: texturesOf(state),
+        textures: texturesOf(gpu, state),
         uniforms: {},
         attributes: []
     };
@@ -520,7 +582,7 @@ function passCommand (capture: Capture, state: PassState, name: string, args: an
                 count: name === 'dispatchWorkgroups' ? [args[0] ?? 1, args[1] ?? 1, args[2] ?? 1] : null,
                 viewport: [0, 0, 0, 0],
                 colorMask: [true, true, true, true],
-                textures: texturesOf(state),
+                textures: texturesOf(capture.gpu!, state),
                 uniforms: {},
                 attributes: []
             });
@@ -730,16 +792,19 @@ export async function gpuBegin (capture: Capture, info: ContextInfo): Promise<vo
         deviceId: 0,
         locals: new G.Map(),
         nextLocal: 1,
+        firstLocal: 1,
         passes: new G.Map(),
         passCount: 0,
         mapped: new G.Map(),
-        unmapped: new G.Map()
+        unmapped: new G.Map(),
+        pipelines: new G.Map(),
+        groups: new G.Map()
     };
 
     // Render targets as the frame begins: a frame may sample what the last one drew.
     let budget = MAX_PRE_FRAME;
 
-    for (const entry of all('texture'))
+    for (const entry of capture.light ? [] : all('texture'))
     {
         if (entry.api !== 'webgpu' || !entry.p.renderTarget || !alive(entry) || deviceFor(entry.ref.deref()!) !== device || unreadable(entry.p) !== null)
         {

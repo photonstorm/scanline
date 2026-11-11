@@ -74,6 +74,14 @@ The capture's summary says whether replaying it matched the original frame. If i
 
 On WebGPU the commands are the same, with these differences. A pass that clears as it begins is an event, as are copies into a texture and compute dispatches. `gfx_draw` shows the pipeline and what each bind group holds (buffers, texture views, samplers); uniform values are bytes in those buffers and are not named. Which test rejected a draw is not worked out: read the pipeline's cull mode and depth compare in `gfx_draw`. A call the browser rejects takes its whole command buffer with it, so the summary quotes the browser's message and marks every event that was in that command buffer DID NOT RUN. That is the usual reason a WebGPU canvas is blank.
 
+## When you cannot reproduce it
+
+Ask the person. `gfx_request_human(instruction: "Play until the water flickers, then press Debug")` returns at once with `req_1`. They get the input, the page runs, and the last 120 frames are recorded. `gfx_wait(request: "req_1")` returns their Debug press, or `still_waiting` with the call to make next; the press is acted on when it happens, so nothing is lost if you are busy.
+
+The press freezes the page and gives you two things: `cap_N`, the frozen frame, and `rec_N`, the frames before it. Call `gfx_recording(recording: "rec_N")` first. It says which frames draw something different from the rest (an intermittent bug is usually one of those), which frames' pictures did not change, and returns a contact sheet. Then `gfx_capture(recording: "rec_N", frame: n)` makes a bad frame and a good neighbour into captures to compare.
+
+While the person has the input you can look but not step, resume or send input. `gfx_take_control()` takes it back.
+
 ## Slow, or growing
 
 - `gfx_stats()` says whether frames are actually slow.

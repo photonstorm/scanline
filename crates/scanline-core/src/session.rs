@@ -65,6 +65,14 @@ pub struct ContextRef {
     pub api: String,
 }
 
+/// A request to the person: an instruction, and where in the event queue it was made.
+#[derive(Debug, Clone)]
+pub struct Request {
+    pub id: String,
+    pub instruction: String,
+    pub cursor: u64,
+}
+
 #[derive(Debug, Clone)]
 pub struct ConsoleLine {
     pub seq: u64,
@@ -104,6 +112,13 @@ pub struct State {
     pub url: String,
     /// Why the session can no longer be used, once it cannot.
     pub dead: Option<String>,
+    /// Who drives the page's input: "human", "agent", or "" for nobody in particular.
+    pub owner: String,
+    /// What the agent has asked the person to do, until Debug is pressed.
+    pub request: Option<Request>,
+    pub next_request: u32,
+    /// The context the flight recorder is running on, while it runs.
+    pub recorder: Option<ContextRef>,
     worker_urls: HashMap<String, String>,
     /// Workers stopped at start, waiting for the instrumentation pause where the probe goes in.
     waiting_workers: HashSet<String>,
@@ -111,6 +126,8 @@ pub struct State {
 
 pub struct SessionOptions {
     pub url: String,
+    /// The key that means "freeze and capture now" (a KeyboardEvent code or key), or "none".
+    pub debug_key: Option<String>,
     pub profile: Profile,
     pub headless: bool,
     pub width: u32,
@@ -134,6 +151,8 @@ pub struct Session {
     pub state: Mutex<State>,
     /// Woken whenever an event is queued or an instance arrives.
     pub changed: Notify,
+    /// Woken when the person presses the Debug key in the page.
+    pub debug: Notify,
     browser: Browser,
     client: Client,
     page: String,
@@ -203,6 +222,7 @@ impl Session {
             "unmodified": options.unmodified,
             "startPaused": options.start_paused,
             "deterministic": options.deterministic.map(|(seed, fixed_dt)| json!({ "seed": seed, "fixedDt": fixed_dt })),
+            "debugKey": options.debug_key.clone().unwrap_or_else(|| "F9".to_string()),
             "probeVersion": env!("CARGO_PKG_VERSION"),
         });
 
@@ -232,6 +252,7 @@ impl Session {
             browser_version: version["product"].as_str().unwrap_or("unknown").to_string(),
             state: Mutex::new(State { url: options.url.clone(), ..State::default() }),
             changed: Notify::new(),
+            debug: Notify::new(),
             browser,
             client: client.clone(),
             page: page.clone(),
@@ -772,6 +793,8 @@ fn handle(session: &Arc<Session>, event: Event) {
                     session.changed.notify_waiters();
                 }
                 "" => {}
+                // The Debug key: the freeze and the capture are the host's to do.
+                "debug-key" => session.debug.notify_one(),
                 kind => {
                     let mut data = payload.clone();
 

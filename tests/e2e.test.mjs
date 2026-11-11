@@ -710,6 +710,154 @@ describe('frame capture', () =>
     });
 });
 
+describe('working with the person', () =>
+{
+    test('ask, play, Debug: the frames before the press are kept and the flicker is found', async () =>
+    {
+        const launched = await scanline('launch', server.url('fixtures/bugs/b13.html'), '--paused', '--headless', '--json');
+        const session = launched.json.data.session;
+
+        const asked = await scanline('request_human', 'Play until the glass flickers, then press Debug', '--flight-frames', '90', '--json');
+
+        assert.equal(asked.code, 0, asked.out);
+        assert.equal(asked.json.data.request, 'req_1');
+        assert.equal(asked.json.data.recording, true);
+        assert.match(asked.json.summary, /req_1: the person has been asked: «Play until the glass flickers, then press Debug»\. They have the input and the page is running\./);
+
+        // The person has the game. The agent may look, but not move time or send input.
+        const refused = await scanline('step', '1');
+
+        assert.equal(refused.code, 1);
+        assert.match(refused.out, /The person has the input \(req_1: «Play until the glass flickers, then press Debug»\), so step is not available/);
+        assert.match((await scanline('status')).out, /The person has the input, asked \(req_1\).*The flight recorder is on/);
+
+        // Nothing has been pressed yet.
+        const early = await scanline('wait', '--request', 'req_1', '--timeout-s', '0.3', '--json');
+
+        assert.equal(early.code, 2);
+        assert.equal(early.json.data.still_waiting, true);
+
+        // Play for long enough that the flicker (one frame in forty) has happened at least twice.
+        await scanline('eval', 'new Promise((done) => { const tick = () => (game.frame >= 150 ? done(game.frame) : requestAnimationFrame(tick)); tick(); })', '--await');
+
+        // The press. It carries where the person pointed.
+        const pressed = await scanline('debug', '--x', '250', '--y', '210', '--note', 'here', '--json');
+
+        assert.equal(pressed.code, 0, pressed.out);
+
+        const { frame, capture, recording, frames, first_frame: first } = pressed.json.data;
+
+        assert.equal(recording, 'rec_1');
+        assert.ok(frames >= 90 && frames <= 120, `kept ${frames} frames`);
+        assert.equal(first + frames - 1, frame, 'the frames kept run up to the frozen one');
+        assert.deepEqual(pressed.json.data.annotation, { x: 250, y: 210, note: 'here' });
+        assert.match(pressed.json.summary, /The page is frozen/);
+        assert.match(pressed.json.summary, /Replay check: replaying the capture gives an image identical to the frame's own/);
+
+        // The page is frozen at that frame and belongs to nobody, so the agent can carry on.
+        assert.match((await scanline('status')).out, new RegExp(`Paused at frame ${frame}\\b`));
+
+        // The press is in the queue whenever the agent comes for it, however late.
+        const event = await scanline('wait', '--request', 'req_1', '--json');
+
+        assert.equal(event.json.data.events.length, 1);
+        assert.equal(event.json.data.events[0].kind, 'debug_pressed');
+        assert.deepEqual(
+            [event.json.data.events[0].data.capture, event.json.data.events[0].data.recording, event.json.data.events[0].data.request],
+            [capture, 'rec_1', 'req_1']
+        );
+
+        // The recording says which frames are not like the others: the ones that flicker.
+        const record = await scanline('recording', 'rec_1', '--json');
+        const odd = record.json.data.frames.filter((entry) => entry.unusual).map((entry) => entry.frame);
+
+        assert.ok(odd.length >= 2, record.json.summary);
+        assert.ok(odd.every((number) => number % 40 === 0), `the flicker frames are the fortieth ones: ${odd}`);
+        assert.match(record.json.summary, new RegExp(`${odd.length} of the ${frames} frames differ from the rest in what they draw`));
+        assert.match(record.json.summary, /Every frame issued 25 events/);
+        assert.match(record.json.summary, /Contact sheet: 12 across/);
+        assert.deepEqual(readFileSync(record.json.images[0].view).subarray(0, 4), PNG);
+
+        // A flicker frame and its neighbour as captures: one has the glass before the crates.
+        const bad = await scanline('capture', '--recording', 'rec_1', '--frame', String(odd[0]), '--json');
+        const good = await scanline('capture', '--recording', 'rec_1', '--frame', String(odd[0] - 1), '--json');
+
+        assert.equal(bad.code, 0, bad.out);
+        assert.equal(bad.json.data.frame, odd[0]);
+        assert.equal(bad.json.data.replay, 'not compared');
+        assert.equal(bad.json.data.replay_matches, true);
+        assert.match(bad.json.summary, /Event 6 blends, but opaque depth-written events 8–9 are drawn after it on the same pixels/);
+        assert.match(bad.json.summary, /taken from recording rec_1, which kept no image of it/);
+        assert.deepEqual(good.json.data.findings, []);
+        assert.match(bad.json.data.url, /b13\.html$/);
+
+        // Its tables hold that frame's calls only, numbered as they are in the recording.
+        const calls = await scanline('query', bad.json.data.capture, 'select count(*), min(command) from commands', '--json');
+
+        assert.equal(calls.json.data.rows[0][0], 153);
+        assert.ok(calls.json.data.rows[0][1] > 153, 'earlier frames come before it in the stream');
+
+        // The frozen frame is the capture made at the press, not a second one.
+        const again = await scanline('capture', '--recording', 'rec_1', '--frame', String(frame), '--json');
+
+        assert.equal(again.json.data.capture, capture);
+    });
+
+    test('webgpu: the flight recorder keeps frames that replay', async () =>
+    {
+        await scanline('launch', server.url('fixtures/engines/three.html?renderer=webgpu'), '--paused', '--headless');
+        await scanline('step', '3');
+
+        const asked = await scanline('request_human', 'Watch the cubes, then press Debug', '--flight-frames', '45', '--json');
+
+        assert.equal(asked.json.data.recording, true, asked.out);
+
+        await scanline('eval', 'new Promise((done) => { let left = 80; const tick = () => (--left ? requestAnimationFrame(tick) : done(1)); tick(); })', '--await');
+
+        const pressed = await scanline('debug', '--json');
+
+        assert.equal(pressed.code, 0, pressed.out);
+        assert.ok(pressed.json.data.frames >= 45, `kept ${pressed.json.data.frames} frames`);
+        assert.match(pressed.json.summary, /Replay check: replaying the capture gives an image identical to the frame's own/);
+
+        const record = await scanline('recording', pressed.json.data.recording, '--json');
+
+        assert.match(record.json.summary, /Every frame draws the same things in the same order with the same state/);
+        assert.equal(record.json.data.frames.length, pressed.json.data.frames);
+        assert.ok(record.json.data.frames.every((entry) => /^[0-9a-f]{8}$/.test(entry.picture)), 'every frame was replayed to a picture');
+
+        // A frame from the middle, as a capture: its events were measured, so it replayed.
+        const middle = await scanline('capture', '--recording', pressed.json.data.recording, '--frame', String(pressed.json.data.first_frame + 20), '--json');
+
+        assert.equal(middle.code, 0, middle.out);
+        assert.equal(middle.json.data.api, 'webgpu');
+        assert.equal(middle.json.data.replay_matches, true);
+
+        const list = await scanline('draw_list', middle.json.data.capture, '--json');
+
+        assert.ok(list.json.data.events.length >= 2);
+        assert.ok(list.json.data.events.every((event) => typeof event.pixels_changed === 'number'), list.out);
+    });
+
+    test('the Debug key in the page freezes and captures, and the page never sees the key', async () =>
+    {
+        await scanline('launch', server.url('fixtures/matrix/webgl2.html'), '--headless');
+        await scanline('eval', 'window.seen = []; addEventListener("keydown", (event) => seen.push(event.code)); addEventListener("keyup", (event) => seen.push(event.code)); 0');
+
+        // An ordinary key reaches the page; F9 does not.
+        await scanline('input', '--events', '[{"key": "KeyA", "press": true}, {"key": "F9", "press": true}]');
+
+        const event = await scanline('wait', '--kinds', '["debug_pressed"]', '--cursor', '0', '--timeout-s', '20', '--json');
+
+        assert.equal(event.json.data.events.length, 1, event.out);
+        assert.equal(event.json.data.events[0].data.by, 'key');
+        assert.match(event.json.data.events[0].data.capture, /^cap_\d+$/);
+        assert.match((await scanline('status')).out, /Paused at frame \d+/);
+        assert.equal((await scanline('eval', 'JSON.stringify(seen)')).out.includes('F9'), false);
+        assert.match((await scanline('eval', 'JSON.stringify(seen)')).out, /KeyA/);
+    });
+});
+
 describe('the MCP server', () =>
 {
     test('initialize, list tools, and run a session with an inline image', async () =>

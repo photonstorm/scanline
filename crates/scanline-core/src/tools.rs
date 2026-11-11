@@ -51,6 +51,7 @@ pub const TOOLS: &[Tool] = &[
             r#""deterministic": { "description": "true, or {\"seed\": 1, \"fixed_dt\": 16.667}: seeded random numbers and a fixed time step, so runs repeat." }"#,
             r#""level": { "type": "string", "enum": ["off", "observe"], "description": "off: hooks pass straight through. Default observe." }"#,
             r#""unmodified": { "type": "boolean", "description": "Change nothing the page can observe. Some readbacks stop working." }"#,
+            r#""debug_key": { "type": "string", "description": "The key the person presses to freeze and capture. Default F9; \"none\" for no key." }"#,
         ),
         read_only: false,
     },
@@ -251,6 +252,8 @@ pub const TOOLS: &[Tool] = &[
             "[]",
             session!(),
             context!(),
+            r#""recording": { "type": "string", "description": "With frame: make that frame of a flight recording a capture, instead of capturing the page." }"#,
+            r#""frame": { "type": "integer" }"#,
             r#""max_edge": { "type": "integer", "description": "Longest edge of the thumbnail returned. Default 512." }"#
         ),
         read_only: false,
@@ -339,11 +342,50 @@ pub const TOOLS: &[Tool] = &[
         read_only: true,
     },
     Tool {
-        name: "wait",
-        description: "Wait up to 45 s for the next event of the given kinds. Returns the event, or still_waiting with the exact call to make next.",
+        name: "request_human",
+        description: "Ask the person at the keyboard to do something you cannot, such as play until a glitch shows. Returns at once with a request handle. The person gets the input, the page runs, and the last frames are recorded. When they press Debug (F9) the page is frozen and captured there and then; collect that with wait.",
+        schema: schema!(
+            r#"["instruction"]"#,
+            session!(),
+            context!(),
+            r#""instruction": { "type": "string", "description": "What the person should do, ending with when to press Debug." }"#,
+            r#""flight_frames": { "type": "integer", "description": "How many frames before the press to keep. Default 120, at most 600." }"#,
+        ),
+        read_only: false,
+    },
+    Tool {
+        name: "debug",
+        description: "Press Debug: freeze the page at the frame boundary, keep the flight recording, capture the frozen frame and queue a debug_pressed event. The same as the person pressing F9 in the page. An annotation (a point or box in canvas pixels, a note) is passed on in the event.",
         schema: schema!(
             "[]",
             session!(),
+            r#""x": { "type": "number" }"#,
+            r#""y": { "type": "number" }"#,
+            r#""w": { "type": "number" }"#,
+            r#""h": { "type": "number" }"#,
+            r#""note": { "type": "string" }"#,
+        ),
+        read_only: false,
+    },
+    Tool {
+        name: "recording",
+        description: "A flight recording: the frames kept before Debug was pressed. Says how many events each frame issued, which frames' pictures differ from the one before, and returns a contact sheet of every frame. With no handle, lists the recordings on disk. capture(recording, frame) makes one frame a capture.",
+        schema: schema!("[]", r#""recording": { "type": "string", "description": "A handle such as rec_1." }"#, session!()),
+        read_only: true,
+    },
+    Tool {
+        name: "take_control",
+        description: "Make the agent the owner of the page's input again after a request to the person. Pauses the page first.",
+        schema: schema!("[]", session!()),
+        read_only: false,
+    },
+    Tool {
+        name: "wait",
+        description: "Wait up to 45 s for the next event of the given kinds, or for the Debug press that answers a request. Returns the event, or still_waiting with the exact call to make next.",
+        schema: schema!(
+            "[]",
+            session!(),
+            r#""request": { "type": "string", "description": "A request handle such as req_1: wait for its Debug press, from the moment it was made." }"#,
             r#""kinds": { "type": "array", "items": { "type": "string" } }"#,
             r#""timeout_s": { "type": "number" }"#,
             r#""cursor": { "type": "integer" }"#
@@ -353,7 +395,7 @@ pub const TOOLS: &[Tool] = &[
     Tool {
         name: "help",
         description: "How to use Scanline: the workflow, input events, and what is not built yet. Matches this version exactly.",
-        schema: schema!("[]", r#""topic": { "type": "string", "enum": ["workflow", "input", "capture", "sql", "limits"] }"#),
+        schema: schema!("[]", r#""topic": { "type": "string", "enum": ["workflow", "input", "capture", "handoff", "sql", "limits"] }"#),
         read_only: true,
     },
 ];
@@ -398,6 +440,9 @@ Time
   pause / resume(time_scale) / step(frames) / run_until(until: {expr: \"…\"})
   A stepped frame is exactly 1/60 s of page time, whatever the real time taken.
   requestAnimationFrame, performance.now, Date and timers all read one clock.
+
+Cannot reproduce it yourself? request_human(instruction) asks the person to play and press
+Debug when it happens; the frames before the press are kept. See help(topic: \"handoff\").
 
 See help(topic: \"input\") for playing a game and help(topic: \"limits\") for what is not built yet.";
 
@@ -449,7 +494,10 @@ Not built yet (planned, in this order):
   - For WebGPU captures: which test rejected a draw; uniform values by name (needs WGSL
     reflection; the buffers and textures in each bind group are listed).
   - The browser's real GPU memory; GPU time per pass on WebGL.
-  - Hand-off to a person: the Debug button and hotkey, the flight recorder, input replay.
+  - Hand-off to a person, beyond what is built (request_human, the Debug key in the page,
+    the flight recorder): a control strip beside the game, a Debug hotkey that works when
+    another window has the keyboard, recording and replaying the person's input, and
+    keeping their input out while the agent has the game.
   - Analysis: pixel history, overdraw and other views, per-draw GPU time. A first set of
     lints is built: the capture's \"Worth a look\" list.
   - Live patching: shader replacement, uniform and state overrides.
@@ -476,6 +524,9 @@ Known limits
     storage texture (a simulation stepped by a compute pass) is captured with their contents
     as the frame left them, so its replay is one step ahead. Render targets are read before
     the frame and do not have this problem. The replay check shows when it matters.
+  - The flight recorder costs about 200 ns per graphics call on WebGL and 150 to 450 on
+    WebGPU while it runs (measured; the aim is 100). It does not keep the contents of a
+    texture or buffer the page deletes while it is recording.
   - Capturing WebGPU has been run on raw WebGPU, three.js and PixiJS, on one device, in a window.
     A device in a worker, and other engines, are untried.
   - WGSL reflection (bindings, struct layouts) is not built; WGSL source and messages are.";
@@ -574,8 +625,40 @@ Examples
   select command, method from commands where args like '%SCISSOR_TEST%'
   select draw, viewport, pixels_changed, changed_box from draws where pixels_changed = 0";
 
+const HANDOFF: &str = "\
+Working with the person at the keyboard
+
+Some bugs only a person can find: a flicker after two minutes of play, a glitch on one
+level. Ask them, and let Scanline hold the evidence.
+
+  request_human(instruction: \"Play until the water flickers, then press Debug\")
+      returns req_1 at once. The person has the input, the page runs, and the flight
+      recorder keeps the last 120 frames (flight_frames changes that).
+  wait(request: \"req_1\")
+      the Debug press, or still_waiting after 45 s with the call to make next. Do other
+      work in between if you like: the press is acted on when it happens and stays queued.
+  When the person presses Debug (F9 with the page focused; debug does the same)
+      the page freezes at that frame, the frame becomes a capture, and the frames before
+      it are kept as a recording. The event names both: cap_N and rec_N.
+  recording(recording: \"rec_1\")
+      which frames draw something different from the rest, which frames' pictures did not
+      change, and a contact sheet of every frame. Start here for anything intermittent.
+  capture(recording: \"rec_1\", frame: n)
+      makes any recorded frame a capture. Take a bad frame and a good neighbour and
+      compare their draw lists.
+  take_control()
+      takes the input back without a press. After a press the page is paused and yours.
+
+While the person has the input, step, resume, run_until, input and navigate are refused:
+looking (screenshot, pixels, resources, console) is always allowed.
+
+A recorded frame is replayed from the start of the recording, so the later the frame, the
+longer its questions take. Only the frozen frame has a picture from the page to check the
+replay against; the others say so and rest on that one check.";
+
 pub fn help(topic: Option<&str>) -> String {
     match topic {
+        Some("handoff") => HANDOFF.to_string(),
         Some("input") => INPUT.to_string(),
         Some("capture") => CAPTURE.to_string(),
         Some("sql") => SQL.to_string(),

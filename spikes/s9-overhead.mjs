@@ -1,13 +1,13 @@
 // Spike S9: what do the hooks cost? (06-BUILD-PLAN.md, section 3.)
 //
-// CPU time of the frame's JavaScript at: no probe, level `off`, level `observe`.
-// The budgets (01-PRD.md, section 9.1) are 1% for `off` and 5% for `observe` on a
-// 2,000-draw frame.
+// CPU time of the frame's JavaScript at: no probe, level `off`, level `observe`, and
+// `observe` with the flight recorder running. The budgets are per graphics call
+// (docs/DEPARTURES.md): 5 ns at `off`, 25 ns at `observe`, 100 ns while recording.
 
 import { open, sleep } from './lib/session.mjs';
 import { serve } from './lib/serve.mjs';
 
-setTimeout(() => { console.error('S9 timed out'); process.exit(3); }, 280000).unref();
+setTimeout(() => { console.error('S9 timed out'); process.exit(3); }, 580000).unref();
 
 const headless = !process.argv.includes('--headed');
 const rounds = Number(process.argv.find((arg) => arg.startsWith('--rounds='))?.slice(9) ?? 3);
@@ -39,11 +39,18 @@ async function measure (api, draws, mode)
         url: server.url(`fixtures/spikes/s9.html?api=${api}&draws=${draws}`),
         headless,
         inject: mode !== 'none',
-        level: mode === 'none' ? 'off' : mode
+        level: mode === 'none' ? 'off' : (mode === 'record' ? 'observe' : mode)
     });
 
     try
     {
+        if (mode === 'record')
+        {
+            // Wait for the page to have its context, then keep the last 120 frames.
+            await sleep(500);
+            await session.probe('record.start', { frames: 120 });
+        }
+
         // Let the JIT settle, then take the most recent 300 frames.
         await sleep(3500);
 
@@ -59,18 +66,20 @@ async function measure (api, draws, mode)
 
 const rows = [];
 
-for (const api of ['webgl2', 'webgpu'])
+const only = process.argv.find((arg) => arg.startsWith('--api='))?.slice(6);
+
+for (const api of ['webgl2', 'webgpu'].filter((name) => !only || name === only))
 {
     for (const draws of [2000, 10000])
     {
         // Interleave the modes across rounds so drift in the machine's load hits all three alike.
-        const times = { none: [], off: [], observe: [] };
+        const times = { none: [], off: [], observe: [], record: [] };
 
         let calls = 0;
 
         for (let round = 0; round < rounds; round++)
         {
-            for (const mode of ['none', 'off', 'observe'])
+            for (const mode of ['none', 'off', 'observe', 'record'])
             {
                 const result = await measure(api, draws, mode);
 
@@ -87,6 +96,7 @@ for (const api of ['webgl2', 'webgpu'])
         const base = median(times.none);
         const off = median(times.off);
         const observe = median(times.observe);
+        const record = median(times.record);
 
         rows.push({
             api,
@@ -99,7 +109,9 @@ for (const api of ['webgl2', 'webgpu'])
             'observe ms': observe.toFixed(3),
             'observe %': (((observe - base) / base) * 100).toFixed(1),
             'ns/call off': (((off - base) * 1e6) / calls).toFixed(0),
-            'ns/call observe': (((observe - base) * 1e6) / calls).toFixed(0)
+            'ns/call observe': (((observe - base) * 1e6) / calls).toFixed(0),
+            'record ms': record.toFixed(3),
+            'ns/call record': (((record - base) * 1e6) / calls).toFixed(0)
         });
     }
 }

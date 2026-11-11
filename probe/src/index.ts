@@ -3,6 +3,7 @@
 
 import { installAudio } from './audio';
 import { installCapture } from './capture';
+import { installHandoff } from './handoff';
 import { clock, installClock } from './clock/clock';
 import { frameAtWall, frameSamples, gateState, installGate, notePageEvent, onFrameEnd, pause, resume, runUntil, setFixedStep, step } from './clock/gate';
 import { installTimers } from './clock/timers';
@@ -117,6 +118,7 @@ function boot (): void
     installTiming();
     installImage();
     installCapture();
+    installHandoff();
     installInputRecorder();
     installErrors();
     installAudio();

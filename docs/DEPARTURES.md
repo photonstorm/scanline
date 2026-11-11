@@ -92,6 +92,42 @@ Also true of what is built:
 - Each replay makes a fresh context and recreates every object. Keeping one context per capture and running forwards from where it stands would make repeated questions cheaper.
 - WebGL 1 buffers now have a copy kept of every upload, as the specification asks, so they can be read and captured. This doubles the memory of WebGL 1 buffers while Scanline is attached.
 
+## Milestone 4 so far
+
+"The hand-off journey (J2 in the PRD) works end to end on both platforms with no manual step. A recorded two-minute session of a deterministic fixture replays to the same frame hashes."
+
+| Criterion | Standing |
+|---|---|
+| The hand-off journey works end to end | Works on macOS, in tests, on the planted flicker (`fixtures/bugs/b13.html`): the agent asks, the page runs, Debug freezes it and captures the frame, the recording names the three frames that flicker, and each can be taken apart. Confirmed with a person at a visible window on 11 November 2026: a real F9 press froze the page, 128 frames were kept, and the recording named the four that flicker. The tests run it headless, with the press sent as a command or as a key event. No Windows. |
+| A recorded session replays to the same frame hashes | **Not started.** This is input recording and replay, which is not built. |
+
+Built: `request_human`, `wait` on a request, `debug`, `recording`, `take_control`, the event queue, annotation passed with the press, the Debug key, the flight recorder for WebGL and WebGPU, and one owner of the input at a time as far as the agent's commands go.
+
+Not built from the milestone's list: the window and its control strip; the gamepad shim and the pointer-lock route; recording and replaying the person's input; in-page policy scripts; recorded network for deterministic sessions; divergence detection; capture triggers; audio and worker time control beyond what milestone 1 has.
+
+| The specification says | The code does | Why |
+|---|---|---|
+| Debug is a global hotkey registered with the operating system. | The probe takes the key (F9 by default) in the page, ahead of the page's own listeners, so the page never sees it. | No window process exists yet to own a hotkey. It works while the page has the keyboard, pointer lock and fullscreen included, and not when another window does. |
+| The person sees the instruction and a Debug button in a control strip. | The instruction is in `status` and the event queue; nothing is shown to the person. | Needs the window. Until then the agent has to tell the person what it asked, in its own reply. |
+| While the agent owns input, the person's is ignored. | The agent is refused `step`, `resume`, `run_until`, `input` and `navigate` while the person owns input. The person's input is never blocked. | The filter belongs in the probe and has not been written. |
+| The flight recorder keeps the last N frames. | It records in runs of 30 frames, each beginning with a snapshot of the state, and drops whole runs, so it holds between N and N + 30. | A recording has to be replayable from its first frame, which needs the state as that frame began. Snapshotting every frame would cost too much; every 30th is cheap. |
+| Resources destroyed inside the window are kept alive until they leave it. | Not done. An object the page drops is held, but one it deletes is gone, and is empty in the replay. | WebGL would need the contents read at the moment of deletion, WebGPU the destroy deferred. |
+| The recording has thumbnails taken as the frames went by. | None are taken live. `recording` replays the frames once and reads each one's picture then. | Reading the canvas every frame stalls the page. Only the frozen frame has a picture from the page, so only it checks the replay. |
+| `record` is an overhead level. | The recorder is started and stopped by `request_human` and Debug at whatever level the session has. | It is on only while a person is hunting something. |
+
+Measured cost of recording, with `node spikes/s9-overhead.mjs` (Apple M6, Chrome 157), against a budget of 100 ns per graphics call:
+
+| API | Calls per frame | Recording, per call | A 2,000-draw frame costs |
+|---|---|---|---|
+| WebGL 2 | 10,002 | about 220 ns | 2.2 ms more |
+| WebGL 2 | 50,002 | about 205 ns | |
+| WebGPU | 4,008 | about 430 ns | 1.7 ms more |
+| WebGPU | 20,008 | about 136 ns | |
+
+Over budget on both. Most of it is the row of state built at every draw (WebGL copies the program's uniform values each time). Building those rows when the recording is taken, from the calls, would bring it down; that is not done. The same run measured `observe` at 22 to 55 ns a call, noisier than the 17 measured before, on a machine that was doing other work.
+
+A frame taken from a recording is replayed from the recording's first frame. That is simple and exact, and it makes questions about late frames of a heavy scene slow: a keyframe every so often would fix it.
+
 ## WebGPU capture: what it does not do
 
 - Which test rejected a draw that changed nothing. The tests are part of the pipeline, so trying a draw without one means building the pipeline again without it.

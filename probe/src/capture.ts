@@ -15,7 +15,7 @@
 // and then overwrites it. Render targets are the common case of that (a frame that samples
 // last frame's result), so their contents are read before the frame as well.
 
-import { currentFrame, onFrameSettled } from './clock/gate';
+import { currentFrame, isPaused, onFrameSettled } from './clock/gate';
 import { allContexts, contextById, type ContextInfo } from './contexts';
 import { formatName } from './gl/formats';
 import { gpuBegin, gpuFinish, gpuRecorder, gpuWatchMaps, type GpuState } from './gpu/capture';
@@ -50,6 +50,20 @@ export interface Capture
 
     // Set for a WebGPU capture (gpu/capture.ts).
     gpu?: GpuState;
+
+    // Blob numbers in the stream start here. Zero, except in a flight recording, whose
+    // earliest frames (and their blobs) have been dropped.
+    blobBase: number;
+
+    // A flight recording spans several frames: where each one ends in the stream.
+    frames?: Array<{ frame: number; command: number; draw: number }>;
+
+    // Set while the flight recorder fills this capture: the page's objects themselves, so
+    // that one the page drops is still there to be read when the recording is taken.
+    strong?: Set<object>;
+
+    // Left out for the flight recorder: reading render targets back stalls the page.
+    light?: boolean;
 }
 
 const captures = new G.Map() as Map<number, Capture>;
@@ -111,7 +125,7 @@ export function blob (capture: Capture, bytes: Uint8Array): number
 {
     capture.blobs.push(bytes);
 
-    return capture.blobs.length - 1;
+    return capture.blobBase + capture.blobs.length - 1;
 }
 
 function reference (capture: Capture, object: object): unknown
@@ -121,6 +135,7 @@ function reference (capture: Capture, object: object): unknown
     if (entry)
     {
         capture.used.add(entry);
+        capture.strong?.add(object);
 
         return { o: entry.kind, i: entry.id };
     }
@@ -377,11 +392,17 @@ function drawState (capture: Capture, t: GlTracker, kind: EventKind, name: strin
     return row;
 }
 
-function record (c: Rec, method: number, _self: unknown, result: unknown, count: number, ...args: any[]): void
+function record (c: Rec, method: number, self: unknown, result: unknown, count: number, ...args: any[]): void
 {
-    const capture = recording;
+    if (recording !== null)
+    {
+        recordInto(recording, c, method, self, result, count, args);
+    }
+}
 
-    if (capture === null || skipped[method])
+function recordInto (capture: Capture, c: Rec, method: number, _self: unknown, result: unknown, count: number, args: any[]): void
+{
+    if (skipped[method])
     {
         return;
     }
@@ -776,11 +797,12 @@ function blank (info: ContextInfo): Capture
         renderTargets: new G.Map(),
         uniformsAtStart: new G.Map(),
         done: false,
-        waiters: []
+        waiters: [],
+        blobBase: 0
     };
 }
 
-function begin (info: ContextInfo): Capture
+function begin (info: ContextInfo, light = false): Capture
 {
     const t = trackerFor(info)!;
     const gl = info.ctx;
@@ -806,7 +828,9 @@ function begin (info: ContextInfo): Capture
         renderTargets: new G.Map(),
         uniformsAtStart: new G.Map(),
         done: false,
-        waiters: []
+        waiters: [],
+        blobBase: 0,
+        light
     };
 
     capture.initial = initialState(capture, t);
@@ -821,7 +845,7 @@ function begin (info: ContextInfo): Capture
     }
 
     // Render targets as the frame begins: a frame may sample what the last one drew.
-    for (const entry of all('texture'))
+    for (const entry of light ? [] : all('texture'))
     {
         if (entry.context === info.id && alive(entry) && entry.p.renderTarget && entry.p.width)
         {
@@ -922,8 +946,346 @@ function gpuContext (id: number | undefined): ContextInfo
     return info;
 }
 
+// ---- The flight recorder ----
+//
+// While it runs, every frame is recorded as it goes by, and the last `keep` of them are
+// held. Frames are recorded in runs of CHUNK: each run is a capture that begins with the
+// state as it then stood, so when the oldest run is dropped the next one can still be
+// replayed from its own beginning. Taking the recording joins the runs into one capture
+// that spans many frames and reads, once, the contents of what those frames used.
+
+const CHUNK = 30;
+const MAX_HELD = 256 * 1024 * 1024;
+
+interface Recorder
+{
+    info: ContextInfo;
+    keep: number;
+    chunks: Capture[];      // oldest first; the last is being filled
+    blobs: number;          // blobs ever recorded, which is the next chunk's base
+    started: boolean;
+    shortened: boolean;
+}
+
+let recorder: Recorder | null = null;
+
+function heldBytes (active: Recorder): number
+{
+    let total = 0;
+
+    for (const chunk of active.chunks)
+    {
+        for (const bytes of chunk.blobs)
+        {
+            total += bytes.length;
+        }
+    }
+
+    return total;
+}
+
+// Begins a new run of frames, with the state as it stands between two frames.
+async function nextChunk (active: Recorder): Promise<void>
+{
+    const info = active.info;
+    const last = active.chunks[active.chunks.length - 1];
+
+    let chunk: Capture;
+
+    if (info.api === 'webgpu')
+    {
+        chunk = blank(info);
+        chunk.light = true;
+
+        if (last)
+        {
+            // One set of numbers for the whole recording. A view made in an earlier run is
+            // described in full from here on, because that run may be dropped before this one.
+            chunk.header = last.header;
+            chunk.gpu = last.gpu;
+            chunk.gpu!.firstLocal = chunk.gpu!.nextLocal;
+        }
+        else
+        {
+            await gpuBegin(chunk, info);
+        }
+
+        firstLocals.set(chunk, chunk.gpu!.nextLocal);
+    }
+    else
+    {
+        chunk = begin(info, true);
+    }
+
+    chunk.blobBase = active.blobs;
+    chunk.strong = new G.Set();
+    chunk.frames = [];
+    active.chunks.push(chunk);
+
+    if (info.api === 'webgpu')
+    {
+        hub.gpu.rec = gpuRecorder(chunk);
+        gpuWatchMaps(chunk);
+    }
+    else
+    {
+        info.record.rec = (c, method, self, result, count, ...args) => recordInto(chunk, c, method, self, result, count, args);
+    }
+}
+
+function framesIn (chunks: Capture[]): number
+{
+    return chunks.reduce((sum, chunk) => sum + (chunk.frames?.length ?? 0), 0);
+}
+
+// A frame has ended. Marks where, and lets the oldest frames go.
+function recorderFrame (active: Recorder): void
+{
+    const chunk = active.chunks[active.chunks.length - 1];
+
+    if (!chunk)
+    {
+        return;
+    }
+
+    chunk.frames!.push({ frame: currentFrame(), command: chunk.commands.length, draw: chunk.draws.length });
+
+    if (chunk.frames!.length < CHUNK)
+    {
+        return;
+    }
+
+    active.blobs += chunk.blobs.length;
+
+    // Synchronous for WebGL. For WebGPU the first run did the only work that waits.
+    void nextChunk(active);
+
+    // Drop whole runs from the front while what is left still covers `keep` frames, or
+    // while the data the frames wrote is more than is reasonable to hold.
+    while (active.chunks.length > 2 && (framesIn(active.chunks.slice(1, -1)) >= active.keep || heldBytes(active) > MAX_HELD))
+    {
+        if (framesIn(active.chunks.slice(1, -1)) < active.keep)
+        {
+            active.shortened = true;
+        }
+
+        const dropped = active.chunks.shift()!;
+        const gpu = dropped.gpu;
+
+        if (gpu)
+        {
+            // Encoders, passes and views made in the dropped frames.
+            const first = active.chunks[0].gpu === gpu ? firstLocalOf(active.chunks[0]) : gpu.nextLocal;
+
+            for (const [object, id] of gpu.locals)
+            {
+                if (id < first)
+                {
+                    gpu.locals.delete(object);
+                }
+            }
+        }
+    }
+}
+
+const firstLocals = new G.WeakMap() as WeakMap<Capture, number>;
+
+function firstLocalOf (chunk: Capture): number
+{
+    return firstLocals.get(chunk) ?? 1;
+}
+
+function stopRecorder (): void
+{
+    const active = recorder;
+
+    if (!active)
+    {
+        return;
+    }
+
+    recorder = null;
+
+    if (active.info.api === 'webgpu')
+    {
+        hub.gpu.rec = null;
+        gpuWatchMaps(null);
+    }
+    else
+    {
+        active.info.record.rec = null;
+    }
+}
+
+// Joins the recorder's runs into one capture of many frames.
+function joined (active: Recorder): Capture
+{
+    const chunks = active.chunks;
+    const first = chunks[0];
+
+    const capture: Capture = {
+        ...first,
+        id: nextId++,
+        objects: [],
+        commands: [],
+        draws: [],
+        blobs: [],
+        notes: [],
+        used: new G.Set(),
+        frames: [],
+        done: false,
+        waiters: [],
+        strong: new G.Set()
+    };
+
+    for (const chunk of chunks)
+    {
+        const commandBase = capture.commands.length;
+        const drawBase = capture.draws.length;
+
+        for (const command of chunk.commands)
+        {
+            capture.commands.push(command);
+        }
+
+        for (const row of chunk.draws)
+        {
+            row.command = (row.command as number) + commandBase;
+            capture.draws.push(row);
+        }
+
+        for (const mark of chunk.frames ?? [])
+        {
+            capture.frames!.push({ frame: mark.frame, command: mark.command + commandBase, draw: mark.draw + drawBase });
+        }
+
+        for (const bytes of chunk.blobs)
+        {
+            capture.blobs.push(bytes);
+        }
+
+        for (const entry of chunk.used)
+        {
+            capture.used.add(entry);
+        }
+
+        for (const text of chunk.notes)
+        {
+            if (!capture.notes.includes(text))
+            {
+                capture.notes.push(text);
+            }
+        }
+    }
+
+    // Calls made after the last whole frame belong to a frame that has not finished.
+    const end = capture.frames!.length ? capture.frames![capture.frames!.length - 1] : { command: 0, draw: 0 };
+
+    capture.commands.length = end.command;
+    capture.draws.length = end.draw;
+
+    if (active.shortened)
+    {
+        capture.notes.push('The frames wrote more data than the flight recorder holds, so it kept fewer of them than asked.');
+    }
+
+    return capture;
+}
+
 export function installCapture (): void
 {
+    onFrameSettled(() =>
+    {
+        const active = recorder;
+
+        if (active === null)
+        {
+            return;
+        }
+
+        if (!active.started)
+        {
+            // Asked for while a frame was under way: this is the first moment between two.
+            active.started = true;
+            void nextChunk(active);
+
+            return;
+        }
+
+        recorderFrame(active);
+    });
+
+    // Starts the flight recorder on a context. Frames are kept from the next one on.
+    expose('record.start', async (args: { context?: number; frames?: number }) =>
+    {
+        if (recording !== null)
+        {
+            throw new Error('A capture is armed. Take it first.');
+        }
+
+        stopRecorder();
+
+        const info = gpuContext(args.context);
+
+        if (info.api === 'webgpu' && !info.gpu?.device)
+        {
+            throw new Error(`Context ${info.id} is a WebGPU context that has not been configured, so there is nothing to record yet.`);
+        }
+
+        const active: Recorder = { info, keep: G.Math.max(1, G.Math.min(args.frames ?? 120, 600)), chunks: [], blobs: 0, started: false, shortened: false };
+
+        recorder = active;
+
+        if (isPaused())
+        {
+            active.started = true;
+            await nextChunk(active);
+        }
+
+        return { context: info.id, frames: active.keep, from: currentFrame() + 1 };
+    });
+
+    expose('record.status', () =>
+    {
+        const active = recorder;
+
+        return active ? { recording: true, context: active.info.id, keep: active.keep, held: framesIn(active.chunks), bytes: heldBytes(active) } : { recording: false };
+    });
+
+    expose('record.stop', () =>
+    {
+        stopRecorder();
+    });
+
+    // Ends the recording and turns it into one capture of every frame held, to be fetched
+    // with capture.take. The page must be paused: contents are read as the last frame left them.
+    expose('record.freeze', () =>
+    {
+        const active = recorder;
+
+        if (!active)
+        {
+            throw new Error('The flight recorder is not running.');
+        }
+
+        stopRecorder();
+
+        const capture = joined(active);
+
+        if (capture.frames!.length === 0)
+        {
+            throw new Error('The flight recorder has no whole frame yet.');
+        }
+
+        captures.set(capture.id, capture);
+
+        void finish(capture);
+
+        const frames = capture.frames!;
+
+        return { capture: capture.id, context: active.info.id, frames: frames.length, first: frames[0].frame, last: frames[frames.length - 1].frame };
+    });
+
     // The frame has ended, and so have the timers that came due with it (a page may draw
     // from those): stop recording and read what the frame used.
     onFrameSettled(() =>
@@ -950,6 +1312,9 @@ export function installCapture (): void
         {
             throw new Error('A capture is already armed.');
         }
+
+        // One recorder at a time on a context: a single capture takes its place.
+        stopRecorder();
 
         const info = gpuContext(args.context);
 
@@ -1002,7 +1367,7 @@ export function installCapture (): void
         }
 
         const body = G.JSON.stringify({
-            header: { ...capture.header, context: capture.info.id, frame: capture.frame, notes: capture.notes },
+            header: { ...capture.header, context: capture.info.id, frame: capture.frame, notes: capture.notes, blobBase: capture.blobBase, frames: capture.frames },
             initial: capture.initial,
             objects: capture.objects,
             // The names its method numbers stand for. A capture carries its own table, so it

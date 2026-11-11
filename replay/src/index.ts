@@ -142,7 +142,8 @@ class Run
 
     blob (index: number): Uint8Array
     {
-        const bytes = this.capture.blobs[index];
+        // A flight recording's blob numbers start where its dropped frames' left off.
+        const bytes = this.capture.blobs[index - (this.capture.data.header.blobBase ?? 0)];
 
         if (!bytes)
         {
@@ -898,12 +899,67 @@ class Run
         const commands = this.capture.data.commands;
         const stop = Math.min(end, commands.length);
 
+        // A recording of several frames: where each ends.
+        const ends = new Set<number>((this.capture.data.header.frames ?? []).map((mark: Json) => mark.command));
+
         for (let i = 0; i < stop; i++)
         {
+            if (i > 0 && ends.has(i))
+            {
+                this.endOfFrame();
+            }
+
             before?.(i);
             this.execute(commands[i]);
             each?.(i);
         }
+    }
+
+    // Between two frames of a recording the browser presents the canvas and, unless the
+    // page asked to keep its drawing buffer, clears it. The replay keeps its own buffer so
+    // that it can be read, so it clears by hand, and puts back the state that takes.
+    endOfFrame (): void
+    {
+        if (this.capture.data.header.attributes?.preserveDrawingBuffer)
+        {
+            return;
+        }
+
+        const gl = this.gl;
+        const scissor = gl.isEnabled(0x0C11);
+        const colour = gl.getParameter(0x0C22);
+        const depth = gl.getParameter(0x0B73);
+        const stencil = gl.getParameter(0x0B91);
+        const mask = gl.getParameter(0x0C23);
+        const depthMask = gl.getParameter(0x0B72);
+        const stencilMask = gl.getParameter(0x0B98);
+        const stencilBackMask = gl.getParameter(0x8CA5);
+        const point = this.gl2 ? 0x8CA9 : 0x8D40;
+
+        gl.bindFramebuffer(point, null);
+        gl.disable(0x0C11);
+        gl.colorMask(true, true, true, true);
+        gl.depthMask(true);
+        gl.stencilMask(0xFFFFFFFF);
+        gl.clearColor(0, 0, 0, 0);
+        gl.clearDepth(1);
+        gl.clearStencil(0);
+        gl.clear(0x4000 | 0x100 | 0x400);
+
+        gl.clearColor(colour[0], colour[1], colour[2], colour[3]);
+        gl.clearDepth(depth);
+        gl.clearStencil(stencil);
+        gl.colorMask(mask[0], mask[1], mask[2], mask[3]);
+        gl.depthMask(depthMask);
+        gl.stencilMaskSeparate(0x0404, stencilMask);
+        gl.stencilMaskSeparate(0x0405, stencilBackMask);
+
+        if (scissor)
+        {
+            gl.enable(0x0C11);
+        }
+
+        gl.bindFramebuffer(point, this.drawFramebuffer);
     }
 
     // A target exactly as read, bottom row first, for comparing with another read of it.
@@ -1457,6 +1513,95 @@ const api = {
             : null;
 
         return { unchanged, tried, together, ms: performance.now() - started };
+    },
+
+    // A recording of several frames, played through once: the canvas at the end of each
+    // frame, as a hash of its pixels and a small picture for a contact sheet.
+    async frames (args: { key: string; edge?: number }): Promise<Json>
+    {
+        const item = capture(args.key);
+        const marks: Json[] = item.data.header.frames ?? [];
+        const started = performance.now();
+        const edge = args.edge ?? 96;
+        const out: Json[] = [];
+        const thumbs: Uint8Array[] = [];
+
+        let size = { width: 0, height: 0 };
+        let notes: string[] = [];
+
+        // Rows from the top, RGBA8.
+        const keep = (frame: number, width: number, height: number, data: Uint8Array): void =>
+        {
+            let hash = 0x811C9DC5;
+
+            for (let i = 0; i < data.length; i++)
+            {
+                hash = Math.imul(hash ^ data[i], 0x01000193);
+            }
+
+            const step = Math.max(1, Math.ceil(Math.max(width, height) / edge));
+            const w = Math.max(1, Math.floor(width / step));
+            const h = Math.max(1, Math.floor(height / step));
+            const thumb = new Uint8Array(w * h * 4);
+
+            for (let y = 0; y < h; y++)
+            {
+                for (let x = 0; x < w; x++)
+                {
+                    const from = ((y * step) * width + x * step) * 4;
+
+                    thumb.set(data.subarray(from, from + 4), (y * w + x) * 4);
+                }
+            }
+
+            size = { width: w, height: h };
+            thumbs.push(thumb);
+            out.push({ frame, hash: (hash >>> 0).toString(16).padStart(8, '0') });
+        };
+
+        const lastOf = new Map<number, number>(marks.map((mark) => [mark.command - 1, mark.frame]));
+
+        if (isGpu(item))
+        {
+            notes = await gpuApi.frames(item, methodsOf(item), lastOf, keep);
+        }
+        else
+        {
+            const run = new Run(item);
+
+            try
+            {
+                run.play(item.data.commands.length, (index) =>
+                {
+                    const frame = lastOf.get(index);
+
+                    if (frame !== undefined)
+                    {
+                        const image = run.image(null);
+
+                        keep(frame, image.width, image.height, image.data);
+                    }
+                });
+
+                notes = run.notes;
+            }
+            finally
+            {
+                run.dispose();
+            }
+        }
+
+        const all = new Uint8Array(thumbs.reduce((sum, thumb) => sum + thumb.length, 0));
+
+        let at = 0;
+
+        for (const thumb of thumbs)
+        {
+            all.set(thumb, at);
+            at += thumb.length;
+        }
+
+        return { frames: out, thumb: size, thumbs: toBase64(await gzip(all)), notes, ms: performance.now() - started };
     },
 
     // Every event that changed one pixel of a target, in order, with the value before and

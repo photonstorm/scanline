@@ -22,6 +22,9 @@ export interface Config
     // Deterministic session: time moves by fixedDt per frame, random numbers are seeded.
     deterministic: null | { seed: number; fixedDt: number };
 
+    // The key that means "freeze and capture now", as a KeyboardEvent code or key. 'none' for no key.
+    debugKey: string;
+
     probeVersion: string;
 }
 
@@ -36,6 +39,7 @@ export const config: Config = {
     unmodified: false,
     startPaused: false,
     deterministic: null,
+    debugKey: 'F9',
     probeVersion: '0.0.1',
     ...given
 };

@@ -375,7 +375,8 @@ export function run (variant)
 
         drawGround();
 
-        if (variant === 6)
+        // Variant 13 gets the order wrong on one frame in forty: a flicker.
+        if (variant === 6 || (variant === 13 && state.frame % 40 === 0))
         {
             drawGlass();
             drawCrates();

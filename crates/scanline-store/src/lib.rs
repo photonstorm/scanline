@@ -151,6 +151,106 @@ impl Store {
         bail!("Could not take a handle for a new capture in {}.", self.root.join("captures").display())
     }
 
+    // ---- Recordings ----
+    //
+    // A flight recording is a run of consecutive frames kept as one stream. It has no
+    // tables of its own: any one of its frames can be made into a capture.
+
+    pub fn recording_dir(&self, handle: &str) -> PathBuf {
+        self.root.join("recordings").join(handle)
+    }
+
+    fn check_recording(handle: &str) -> Result<()> {
+        if handle.strip_prefix("rec_").is_some_and(|number| !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit())) {
+            Ok(())
+        } else {
+            bail!("\"{handle}\" is not a recording handle. Recording handles look like rec_2; call recording with no handle to list them.")
+        }
+    }
+
+    /// Every recording on disk, oldest first.
+    pub fn recordings(&self) -> Vec<String> {
+        let mut numbers: Vec<u32> = std::fs::read_dir(self.root.join("recordings"))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|entry| entry.path().join("meta.json").exists())
+            .filter_map(|entry| entry.file_name().to_str()?.strip_prefix("rec_")?.parse().ok())
+            .collect();
+
+        numbers.sort_unstable();
+        numbers.into_iter().map(|number| format!("rec_{number}")).collect()
+    }
+
+    /// Takes a handle for a new recording. The handle is held by its directory existing.
+    pub fn reserve_recording(&self) -> Result<String> {
+        let root = self.root.join("recordings");
+
+        std::fs::create_dir_all(&root).with_context(|| format!("creating {}", root.display()))?;
+
+        for _ in 0..1000 {
+            let highest = std::fs::read_dir(&root)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .filter_map(|entry| entry.file_name().to_str()?.strip_prefix("rec_")?.parse::<u32>().ok())
+                .max()
+                .unwrap_or(0);
+            let handle = format!("rec_{}", highest + 1);
+
+            match std::fs::create_dir(self.recording_dir(&handle)) {
+                Ok(()) => return Ok(handle),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error).with_context(|| format!("creating {}", self.recording_dir(&handle).display())),
+            }
+        }
+
+        bail!("Could not take a handle for a new recording in {}.", root.display())
+    }
+
+    pub fn write_recording(&self, handle: &str, stream: &Value, meta: &Value) -> Result<()> {
+        Self::check_recording(handle)?;
+
+        let dir = self.recording_dir(handle);
+
+        std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+        std::fs::write(dir.join("stream.zst"), zstd::encode_all(serde_json::to_vec(stream)?.as_slice(), 3)?)
+            .with_context(|| format!("writing {}", dir.display()))?;
+        std::fs::write(dir.join("meta.json"), serde_json::to_vec_pretty(meta)?).with_context(|| format!("writing {}", dir.display()))?;
+
+        Ok(())
+    }
+
+    pub fn recording_meta(&self, handle: &str) -> Result<Value> {
+        Self::check_recording(handle)?;
+
+        let path = self.recording_dir(handle).join("meta.json");
+
+        if !path.exists() {
+            let known = self.recordings();
+
+            bail!(
+                "No recording \"{handle}\". {}",
+                match known.last() {
+                    Some(latest) => format!("The most recent of {} is {latest}.", known.len()),
+                    None => "None have been kept: a recording is made when Debug is pressed after request_human.".to_string(),
+                }
+            );
+        }
+
+        serde_json::from_slice(&std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?).context("reading the recording's facts")
+    }
+
+    /// The recording as the replay page takes it.
+    pub fn recording_stream(&self, handle: &str) -> Result<Value> {
+        Self::check_recording(handle)?;
+
+        let path = self.recording_dir(handle).join("stream.zst");
+        let packed = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
+
+        serde_json::from_slice(&zstd::decode_all(packed.as_slice()).context("unpacking the recording")?).context("reading the recording")
+    }
+
     /// Writes a capture: its stream for replay, its tables for queries, its facts.
     pub fn write_capture(&self, handle: &str, stream: &Value, meta: &Value, tables: Vec<Table>) -> Result<()> {
         Self::check_handle(handle)?;

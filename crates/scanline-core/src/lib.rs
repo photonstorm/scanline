@@ -10,6 +10,7 @@
 
 mod capture;
 mod commands;
+mod handoff;
 mod inventory;
 mod keys;
 mod session;
@@ -101,6 +102,23 @@ impl Host {
             Ok(session)
         };
 
+        // One owner of the input at a time. While the person has it, the agent may look but
+        // may not move time or send input: that would fight them for the game.
+        if matches!(method, "input" | "step" | "run_until" | "resume" | "navigate") {
+            if let Ok(session) = self.session(&params) {
+                let state = session.state.lock().unwrap();
+
+                if state.owner == "human" {
+                    let asked = state.request.as_ref().map(|request| format!(" ({}: «{}»)", request.id, request.instruction)).unwrap_or_default();
+
+                    return Err(anyhow!(
+                        "The person has the input{asked}, so {method} is not available. Wait for their Debug press with wait(session: \"{}\", request: …), press it yourself with debug, or call take_control to take the input back.",
+                        session.id
+                    ));
+                }
+            }
+        }
+
         match method {
             "launch" => commands::launch(self, &params).await,
             "status" => commands::status(&live()?).await,
@@ -118,7 +136,12 @@ impl Host {
             "pixels" => commands::pixels(&live()?, &params).await,
             "console" => commands::console(&self.session(&params)?, &params).await,
             "stats" => commands::stats(&live()?, &params).await,
+            "capture" if params["recording"].is_string() => handoff::frame_capture(self, &params).await,
             "capture" => capture::capture(self, &live()?, &params).await,
+            "request_human" => handoff::request_human(&live()?, &params).await,
+            "take_control" => handoff::take_control(&live()?).await,
+            "debug" => handoff::debug(self, &live()?, &params).await,
+            "recording" => handoff::recording(self, &params).await,
             "captures" => capture::captures(self, &params),
             "pass_tree" => capture::pass_tree(self, &params),
             "draw_list" => capture::draw_list(self, &params),

@@ -24,9 +24,9 @@ use crate::inventory::{factor, gl_name, list, size};
 use crate::session::{OBJECT_KINDS, Session};
 use crate::{Host, result};
 
-const LONG: Duration = Duration::from_secs(60);
+pub(crate) const LONG: Duration = Duration::from_secs(60);
 
-fn unpack(text: &str) -> Result<Vec<u8>> {
+pub(crate) fn unpack(text: &str) -> Result<Vec<u8>> {
     let packed = base64::engine::general_purpose::STANDARD.decode(text).context("decoding data from the page")?;
     let mut bytes = Vec::new();
 
@@ -156,7 +156,8 @@ fn is_webgpu(body: &Value) -> bool {
 
 /// One object of a WebGPU capture in a few words, and the bytes of its contents the capture holds.
 fn describe_gpu_object(object: &Value, body: &Value) -> (String, i64) {
-    let held = |index: &Value| index.as_u64().and_then(|index| body["blobs"][index as usize].as_i64()).unwrap_or(0);
+    let base = body["header"]["blobBase"].as_u64().unwrap_or(0);
+    let held = |index: &Value| index.as_u64().and_then(|index| body["blobs"][index.saturating_sub(base) as usize].as_i64()).unwrap_or(0);
     let made = if object["createdInFrame"] == true { ", made during the frame" } else { "" };
 
     match object["kind"].as_str().unwrap_or("") {
@@ -414,7 +415,17 @@ fn findings(body: &Value, tag: u64, errors: &HashMap<i64, String>, effects: &Has
     let draws = body["draws"].as_array().cloned().unwrap_or_default();
     let sizes = Sizes::of(body);
     let methods: Vec<&str> = body["methods"].as_array().into_iter().flatten().map(|name| name.as_str().unwrap_or("")).collect();
-    let commands = body["commands"].as_array().cloned().unwrap_or_default();
+
+    // The calls of earlier frames of a recording are blanked: they keep their places, so
+    // call numbers still line up, but they are not this frame's doing.
+    let first_command = body["header"]["firstCommand"].as_u64().unwrap_or(0) as usize;
+    let commands: Vec<Value> = body["commands"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .enumerate()
+        .map(|(index, command)| if index < first_command { Value::Null } else { command.clone() })
+        .collect();
     let method_of = |command: &Value| command[0].as_u64().and_then(|id| methods.get(id as usize)).copied().unwrap_or("");
     let rejected = |row: &Value| errors.contains_key(&row["command"].as_i64().unwrap_or(-1));
     let mut found = Vec::new();
@@ -895,11 +906,16 @@ fn tables(body: &Value, tag: u64, errors: &HashMap<i64, String>, effects: &HashM
         event_commands.get(at).map(|(_, event)| Sql::Integer(*event)).unwrap_or(Sql::Null)
     };
 
+    // A frame taken from a recording carries the frames before it, which replay needs and
+    // which are not this frame's calls.
+    let first_command = body["header"]["firstCommand"].as_u64().unwrap_or(0) as usize;
+
     let command_rows: Vec<Vec<Sql>> = body["commands"]
         .as_array()
         .into_iter()
         .flatten()
         .enumerate()
+        .skip(first_command)
         .map(|(index, command)| {
             let method = command[0].as_u64().and_then(|id| methods.get(id as usize)).cloned().unwrap_or_default();
             let mut args = readable(&method, &command[1], tag).to_string();
@@ -1142,24 +1158,7 @@ pub async fn capture(host: &Arc<Host>, session: &Arc<Session>, params: &Value) -
         }
     };
 
-    let mut body: Value = serde_json::from_slice(&unpack(taken["body"].as_str().unwrap_or(""))?).context("reading the capture the page sent")?;
-
-    // Blobs: stored by content, so a texture this capture shares with an earlier one costs nothing.
-    let count = taken["blobs"].as_u64().unwrap_or(0);
-    let mut hashes = Vec::with_capacity(count as usize);
-    let mut from = 0u64;
-
-    while from < count {
-        let part = session.probe(&context.instance, "capture.blobs", json!({ "capture": id, "from": from }), LONG).await?;
-
-        for blob in part["blobs"].as_array().into_iter().flatten() {
-            hashes.push(host.store.put_blob(&unpack(blob.as_str().unwrap_or(""))?)?);
-        }
-
-        from = part["next"].as_u64().unwrap_or(count);
-    }
-
-    let _ = session.probe(&context.instance, "capture.release", json!({ "capture": id }), SHORT).await;
+    let body = fetch(host, session, &context.instance, &id, &taken).await?;
 
     // The frame's own final image, as the page drew it.
     let original = decode_grab(&session.probe(&context.instance, "image.grab", json!({ "context": context.local }), Duration::from_secs(20)).await?)?;
@@ -1168,9 +1167,85 @@ pub async fn capture(host: &Arc<Host>, session: &Arc<Session>, params: &Value) -
         session.probe_all("resume", json!({}), SHORT).await;
     }
 
-    let handle = host.store.reserve_handle()?;
-    let tag = context.instance.tag as u64;
+    build(
+        host,
+        session,
+        body,
+        Source { context: context.handle.clone(), tag: context.instance.tag as u64, original: Some(original), recording: None, url: None },
+        params,
+    )
+    .await
+}
+
+/// Fetches from the page what it recorded: the description, and the blobs, which are stored
+/// by content, so a texture this capture shares with an earlier one costs nothing.
+pub(crate) async fn fetch(host: &Arc<Host>, session: &Arc<Session>, instance: &crate::session::Instance, id: &Value, taken: &Value) -> Result<Value> {
+    let mut body: Value = serde_json::from_slice(&unpack(taken["body"].as_str().unwrap_or(""))?).context("reading the capture the page sent")?;
+    let count = taken["blobs"].as_u64().unwrap_or(0);
+    let mut hashes = Vec::with_capacity(count as usize);
+    let mut from = 0u64;
+
+    while from < count {
+        let part = session.probe(instance, "capture.blobs", json!({ "capture": id, "from": from }), LONG).await?;
+
+        for blob in part["blobs"].as_array().into_iter().flatten() {
+            hashes.push(host.store.put_blob(&unpack(blob.as_str().unwrap_or(""))?)?);
+        }
+
+        from = part["next"].as_u64().unwrap_or(count);
+    }
+
+    let _ = session.probe(instance, "capture.release", json!({ "capture": id }), SHORT).await;
+
     body["blob_hashes"] = json!(hashes);
+    body["blob_bytes"] = taken["blobBytes"].clone();
+
+    Ok(body)
+}
+
+/// One frame of a flight recording as a capture's stream. The frames before it stay in the
+/// stream, because replay has to run them to arrive at this one, but its events are its own.
+pub(crate) fn frame_body(recording: &Value, index: usize) -> Result<Value> {
+    let marks = recording["header"]["frames"].as_array().cloned().unwrap_or_default();
+    let mark = marks.get(index).ok_or_else(|| anyhow!("The recording has {} frames; there is no frame at position {index}.", marks.len()))?;
+    let (first_command, first_draw) = match index.checked_sub(1).and_then(|before| marks.get(before)) {
+        Some(before) => (before["command"].as_u64().unwrap_or(0) as usize, before["draw"].as_u64().unwrap_or(0) as usize),
+        None => (0, 0),
+    };
+    let (end_command, end_draw) = (mark["command"].as_u64().unwrap_or(0) as usize, mark["draw"].as_u64().unwrap_or(0) as usize);
+    let mut body = recording.clone();
+
+    if let Some(commands) = body["commands"].as_array_mut() {
+        commands.truncate(end_command);
+    }
+
+    body["draws"] =
+        json!(recording["draws"].as_array().map(|draws| draws[first_draw.min(draws.len())..end_draw.min(draws.len())].to_vec()).unwrap_or_default());
+    body["header"]["frame"] = mark["frame"].clone();
+    body["header"]["firstCommand"] = json!(first_command);
+
+    Ok(body)
+}
+
+/// Where a capture's frame came from.
+pub(crate) struct Source {
+    pub context: String,
+    pub tag: u64,
+    /// The frame's own final image, as the page drew it. A frame taken from a flight
+    /// recording has none, unless it is the frame the page was frozen on.
+    pub original: Option<Image>,
+    /// The recording the frame was taken from, and whether that recording's last frame
+    /// replayed to the image the page showed.
+    pub recording: Option<(String, bool)>,
+    /// The page the frame is of, where that is not the page the session has open now.
+    pub url: Option<String>,
+}
+
+/// Makes a capture of a frame's stream: replays it, measures it, builds its tables and writes it.
+pub(crate) async fn build(host: &Arc<Host>, session: &Arc<Session>, body: Value, source: Source, params: &Value) -> Result<Value> {
+    let handle = host.store.reserve_handle()?;
+    let tag = source.tag;
+    let hashes: Vec<String> = body["blob_hashes"].as_array().into_iter().flatten().filter_map(|hash| hash.as_str().map(str::to_string)).collect();
 
     // Run it again and compare. If the replay does not match the frame, every answer that
     // comes from replay is suspect, and says so.
@@ -1180,9 +1255,19 @@ pub async fn capture(host: &Arc<Host>, session: &Arc<Session>, params: &Value) -
 
     // A capture that cannot be replayed is still kept: what it says can be read, and the
     // verdict says why nothing can be asked of what it did.
+    let mut replayed_image = None;
+
     let (replayed, difference) = match session.replay("image", &json!({ "key": handle }), LONG).await {
         Ok(replayed) => {
-            let difference = replay_image(&replayed).and_then(|image| original.difference(&image, 0));
+            let image = replay_image(&replayed);
+
+            let difference = match (&image, &source.original) {
+                (Ok(image), Some(original)) => original.difference(image, 0).map(Some),
+                (Ok(_), None) => Ok(None),
+                (Err(error), _) => Err(anyhow!("{error}")),
+            };
+
+            replayed_image = image.ok();
 
             (replayed, difference)
         }
@@ -1261,9 +1346,22 @@ pub async fn capture(host: &Arc<Host>, session: &Arc<Session>, params: &Value) -
     }
 
     let fidelity = match &difference {
-        Ok(difference) if difference.changed == 0 => "identical".to_string(),
-        Ok(difference) => format!("{} of {} pixels differ, by up to {}", difference.changed, difference.pixels, difference.max),
+        Ok(Some(difference)) if difference.changed == 0 => "identical".to_string(),
+        Ok(Some(difference)) => format!("{} of {} pixels differ, by up to {}", difference.changed, difference.pixels, difference.max),
+        // A frame from a recording, other than the one the page was frozen on.
+        Ok(None) => "not compared".to_string(),
         Err(error) => format!("could not be compared: {error}"),
+    };
+
+    // With no image of its own to compare with, the frame is as trustworthy as its recording.
+    let matches = match (&difference, &source.recording) {
+        (Ok(None), Some((_, recording_matches))) => *recording_matches,
+        _ => fidelity == "identical",
+    };
+
+    // The picture kept as the frame's final image: the page's own where there is one.
+    let Some(original) = source.original.or(replayed_image) else {
+        bail!("The frame could not be replayed, and there is no image of it from the page: {fidelity}.");
     };
 
     let header = &body["header"];
@@ -1271,8 +1369,8 @@ pub async fn capture(host: &Arc<Host>, session: &Arc<Session>, params: &Value) -
     let meta = json!({
         "capture": handle,
         "session": session.id,
-        "url": session.url(),
-        "context": context.handle,
+        "url": source.url.clone().unwrap_or_else(|| session.url()),
+        "context": source.context,
         "instance_tag": tag,
         "api": header["api"],
         "width": header["width"],
@@ -1281,11 +1379,12 @@ pub async fn capture(host: &Arc<Host>, session: &Arc<Session>, params: &Value) -
         "profile": session.profile.name(),
         "browser": session.browser_version,
         "replay": fidelity,
-        "replay_matches": fidelity == "identical",
+        "replay_matches": matches,
+        "recording": source.recording.as_ref().map(|recording| recording.0.clone()),
         "notes": notes,
         "findings": found,
         "counts": counts,
-        "blob_bytes": taken["blobBytes"],
+        "blob_bytes": body["blob_bytes"],
     });
 
     host.store.write_capture(&handle, &body, &meta, capture_tables)?;
@@ -1317,7 +1416,7 @@ fn rejection(host: &Host, handle: &str, draw: i64, tag: u64) -> Option<String> {
     Some(format!(" — a feedback loop: {texture} is the target being drawn to and is also bound on texture unit {unit}"))
 }
 
-fn describe_capture(host: &Host, handle: &str, meta: &Value) -> Result<Value> {
+pub(crate) fn describe_capture(host: &Host, handle: &str, meta: &Value) -> Result<Value> {
     let counts = &meta["counts"];
     let passes = host.store.query(handle, "SELECT pass, target, draws, clears FROM passes ORDER BY pass", &[], 12)?;
 
@@ -1415,7 +1514,13 @@ fn describe_capture(host: &Host, handle: &str, meta: &Value) -> Result<Value> {
         lines.extend(found.iter().map(|finding| format!("  • {finding}")));
     }
 
-    lines.push(if meta["replay_matches"] == true {
+    lines.push(if meta["replay"] == "not compared" {
+        format!(
+            "Replay check: this frame was taken from recording {}, which kept no image of it to compare with. The recording's last frame, the one the page was frozen on, {}.",
+            meta["recording"].as_str().unwrap_or("?"),
+            if meta["replay_matches"] == true { "replayed to an identical image, so answers from replay can be trusted" } else { "did NOT replay to the same image, so answers from replay may be wrong" }
+        )
+    } else if meta["replay_matches"] == true {
         "Replay check: replaying the capture gives an image identical to the frame's own, so answers from replay can be trusted.".to_string()
     } else {
         format!(
@@ -2221,12 +2326,16 @@ fn history(host: &Host, handle: &str, state: &Value) -> Option<(HashMap<String, 
     let mut units = HashMap::new();
     let mut active = stream["initial"]["unit"].as_i64().unwrap_or(0);
 
+    // In a frame taken from a recording, what earlier frames set counts as carried over.
+    let own = stream["header"]["firstCommand"].as_u64().unwrap_or(0) as usize;
+
     for (index, command) in stream["commands"].as_array()?.iter().enumerate().take(end) {
         let method = command[0].as_u64().and_then(|id| methods.get(id as usize)).copied().unwrap_or("");
         let first = &command[1][0];
 
         match method {
             "gl.activeTexture" => active = first.as_i64().unwrap_or(0x84C0) - 0x84C0,
+            _ if index < own => {}
             "gl.bindTexture" => {
                 units.insert(active, (index as i64, leads_to(index)));
             }

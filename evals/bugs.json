@@ -108,6 +108,15 @@
       "fix": "Bind a different texture (or none) to the unit before rendering into the minimap texture.",
       "expect": [["feedback", "bound", "sampl", "same texture"], ["invalid.?operation", "reject", "error", "render(ed|ing|s)? (to|into)", "draw(n|ing|s)? (to|into)", "target"]],
       "check": { "pixel": [419, 49], "is": "not", "reference": [255, 204, 51, 255] }
+    },
+    {
+      "id": "b13",
+      "class": "intermittent",
+      "symptom": "The glass panel flickers: now and then, for a single frame, the crates behind it look as if they are in front of it.",
+      "diagnosis": "On one frame in forty the glass panel is drawn before the crates instead of after them. It is blended and does not write depth, so on that frame the crates, drawn afterwards, cover it.",
+      "fix": "Draw the glass after the crates on every frame: the order must not depend on the frame number.",
+      "expect": [["order", "before", "after", "first", "earlier", "later", "swap"], ["glass", "blend", "transparent", "translucent"], ["frame", "intermittent", "sometimes", "every", "one in", "occasion", "40", "forty"]],
+      "check": { "flicker": { "pixel": [250, 210], "reference": [131, 118, 146, 255], "every": 40 } }
     }
   ]
 }

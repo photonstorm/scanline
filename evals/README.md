@@ -4,7 +4,7 @@ Scanline's interface is tuned by giving agents pages with planted rendering bugs
 
 ## The bugs
 
-`fixtures/bugs/` is one small game scene in raw WebGL 2 (`scene.js`) and thirteen pages that run it. `b00.html` is correct. Each of `b01.html` to `b12.html` has exactly one thing wrong.
+`fixtures/bugs/` is one small game scene in raw WebGL 2 (`scene.js`) and fourteen pages that run it. `b00.html` is correct. Each of `b01.html` to `b13.html` has exactly one thing wrong.
 
 `bugs.json` says, for each bug:
 
@@ -30,10 +30,13 @@ Scanline's interface is tuned by giving agents pages with planted rendering bugs
 | b10 | memory | Memory keeps growing. |
 | b11 | performance | The page stutters. |
 | b12 | targets | The minimap is empty. |
+| b13 | intermittent | The glass panel flickers for one frame now and then. |
 
 b12 was not planted. It was a real mistake in the first version of the scene, found by using Scanline on the "correct" page, and kept.
 
-Not covered yet: intermittent bugs (a glitch every 200th frame), back-end differences (right on WebGPU, wrong on WebGL), and anything on WebGPU. WebGPU frames can be captured now, so a WebGPU version of the scene is the next set of bugs to plant.
+b13 is the one a single capture is unlikely to catch: it needs the flight recorder, which keeps the frames before Debug is pressed.
+
+Not covered yet: back-end differences (right on WebGPU, wrong on WebGL), and anything on WebGPU. WebGPU frames can be captured now, so a WebGPU version of the scene is the next set of bugs to plant.
 
 ## Running an evaluation
 

@@ -87,11 +87,15 @@ pub async fn launch(host: &Arc<Host>, params: &Value) -> Result<Value> {
         unmodified: params["unmodified"].as_bool().unwrap_or(false),
         deterministic,
         browser: params["browser"].as_str().map(Into::into),
+        debug_key: params["debug_key"].as_str().map(str::to_string),
     };
 
     let session = Session::launch(id.clone(), host.artefacts().join("sessions").join(&id), options).await?;
 
     host.add(session.clone());
+
+    // The person's Debug key is acted on whether or not an agent is waiting for it.
+    tokio::spawn(crate::handoff::watch(host.clone(), session.clone()));
 
     // Give the page a moment to create its contexts before describing it.
     for _ in 0..12 {
@@ -191,6 +195,24 @@ pub async fn status(session: &Arc<Session>) -> Result<Value> {
 
         if other > 0 {
             lines.push(format!("  (and {other} 2D or bitmap contexts, which Scanline does not inspect)"));
+        }
+    }
+
+    // Who is driving. Said only when it is not simply the agent's session to use.
+    {
+        let state = session.state.lock().unwrap();
+
+        match (state.owner.as_str(), &state.request) {
+            ("human", Some(request)) => lines.push(format!(
+                "The person has the input, asked ({}): «{}». The flight recorder is {}. wait(request: \"{}\") collects their Debug press.",
+                request.id,
+                page_text(&request.instruction, 200),
+                if state.recorder.is_some() { "on" } else { "off" },
+                request.id
+            )),
+            ("human", None) => lines.push("The person has the input. take_control takes it back.".into()),
+            ("agent", _) => lines.push("The agent has the input.".into()),
+            _ => {}
         }
     }
 
@@ -594,7 +616,7 @@ async fn key_event(session: &Arc<Session>, name: &str, down: bool) -> Result<()>
 }
 
 /// Sets exactly which keys are held: releases the ones no longer listed, presses the new ones.
-async fn hold(session: &Arc<Session>, wanted: &Value) -> Result<()> {
+pub(crate) async fn hold(session: &Arc<Session>, wanted: &Value) -> Result<()> {
     let keys: Vec<String> = wanted["keys_down"]
         .as_array()
         .ok_or_else(|| anyhow!("hold needs keys_down: a list of key names (empty to release everything)."))?
@@ -1589,9 +1611,30 @@ pub async fn events(session: &Arc<Session>, params: &Value) -> Result<Value> {
 }
 
 pub async fn wait(session: &Arc<Session>, params: &Value) -> Result<Value> {
-    let kinds = kinds_of(params);
+    let mut kinds = kinds_of(params);
     let timeout = Duration::from_secs_f64(params["timeout_s"].as_f64().unwrap_or(45.0).clamp(0.1, 45.0));
-    let since = params["cursor"].as_u64().unwrap_or_else(|| session.state.lock().unwrap().event_seq);
+    let mut since = params["cursor"].as_u64().unwrap_or_else(|| session.state.lock().unwrap().event_seq);
+
+    // Waiting on a request is waiting for its Debug press, from the moment it was made:
+    // a press that came before this call is still found.
+    if let Some(request) = params["request"].as_str() {
+        kinds = vec!["debug_pressed".to_string()];
+
+        if params["cursor"].is_null() {
+            let state = session.state.lock().unwrap();
+
+            since = match &state.request {
+                Some(open) if open.id == request => open.cursor,
+                // Already answered: the press is in the queue, however long ago.
+                _ => state
+                    .events
+                    .iter()
+                    .find(|event| event.kind == "debug_pressed" && event.data["request"] == request)
+                    .map(|event| event.cursor - 1)
+                    .unwrap_or(since),
+            };
+        }
+    }
     let started = std::time::Instant::now();
 
     loop {

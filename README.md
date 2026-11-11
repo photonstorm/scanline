@@ -8,7 +8,7 @@ Scanline runs any page in a Chromium it launches and supervises, with instrument
 
 ## Status
 
-Early. The first three milestones of the build plan ("eyes and hands", "inventory" and "capture") work on macOS.
+Early. The first three milestones of the build plan ("eyes and hands", "inventory" and "capture") work on macOS, and the core of the fourth ("together"): the hand-off to a person and the flight recorder.
 
 **Works**
 
@@ -27,6 +27,7 @@ Early. The first three milestones of the build plan ("eyes and hands", "inventor
 - What a capture volunteers: draws that changed nothing, calls the browser rejected, a viewport that is not its target's size, a clear clipped by a scissor box left on, translucent draws in the wrong order or with blending off, a bound texture that cannot be sampled, and what the frame created and deleted. For a draw that changed nothing, which test rejected it, found by replaying it with each test off in turn. For each uniform at a draw, the call that set it.
 - Leaks and churn: many live objects from one line of code, or objects made and destroyed every frame, are flagged by `resources` and `memory`.
 - Planted bugs: one scene with twelve known bugs (`fixtures/bugs/`), tests that pin down what Scanline says about each, and an evaluation in which agents diagnose them with nothing but Scanline (`evals/`).
+- Working with a person: the agent asks them to play and press Debug (F9 in the page) when the bug shows. The press freezes the page and captures the frame there and then, and the flight recorder has kept the frames before it (120 by default). A recording says which of its frames draw something different from the rest, gives a contact sheet of every frame, and any frame can be made a capture.
 - Console, uncaught errors and browser GPU warnings, each with its frame.
 - The host survives the GPU process or the whole browser being killed, and says what happened.
 
@@ -36,7 +37,7 @@ Early. The first three milestones of the build plan ("eyes and hands", "inventor
 - A runner that starts the evaluation's agents by itself (the bugs, prompts and scorer exist: see `evals/`).
 - Full pixel history (rejected fragments, pixel by pixel), overdraw and other views, per-draw GPU time.
 - Live patching of shaders, uniforms and state.
-- The window: control strip, Debug button and hotkey, capture viewer. Hand-off to a person, the flight recorder, input replay.
+- The window: control strip, a Debug hotkey that works when another window has the keyboard, capture viewer. Recording and replaying the person's input. Keeping their input out while the agent has the game.
 - The browser's real GPU memory. WGSL reflection. Readback of compressed, depth and multisampled textures.
 - The fast binary channel for bulk data. Windows. Installers. A pinned browser download.
 
@@ -109,6 +110,18 @@ scanline query cap_1 "select program, count(*) from draws group by program"
 
 ```bash
 scanline run_until --until '{"expr": "game.scene === \"level2\""}'
+```
+
+```bash
+scanline request_human "Play until the water flickers, then press Debug"
+```
+
+```bash
+scanline wait --request req_1
+```
+
+```bash
+scanline recording rec_1
 ```
 
 ```bash
