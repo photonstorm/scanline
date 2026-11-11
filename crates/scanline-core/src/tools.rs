@@ -940,7 +940,7 @@ Not built:
   - For the draws inside a WebGPU render bundle: geometry, and which test turned one away
     (in draw and in pixel_history). The bundle is one event; draw lists what it draws, and
     the views, profile and live patches reach inside it.
-  - The wireframe and depth views on a running WebGPU page (view on a capture has both).
+  - The wireframe view on a running WebGPU page (view on a capture has it).
   - An adapter for PlayCanvas. Windows and Linux. Signed installers and updates: a release
     is an archive holding
     the one binary.
@@ -1217,7 +1217,7 @@ patch_state can switch culling, the depth test, depth writes and blending off, s
 colour mask, and set a scissor box. patch_uniform takes the pipeline and the uniform's name
 as its shaders have it (\"camera.fog\", or \"fog\" where only one has that name): the value
 is written into the buffer that pipeline's draws read it from, so every draw that reads the
-same bytes sees it. live_view has overdraw and draw_id. While a patch is in force, what a
+same bytes sees it. live_view has overdraw, draw_id and depth. While a patch is in force, what a
 render bundle recorded is issued on the pass draw by draw, so that the patch reaches it.
 
 The way to use it

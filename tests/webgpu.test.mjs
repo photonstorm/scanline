@@ -671,8 +671,29 @@ describe('live patches on a WebGPU page', () =>
 
         assert.match((await scanline('live_view', 'off')).out, /Switched off: 1 of Scanline's own/);
         assert.deepEqual(await look(), plain);
-        assert.match((await scanline('live_view', 'wireframe')).out, /The live wireframe view is for WebGL\. On a WebGPU page: overdraw and draw_id live/);
+        assert.match((await scanline('live_view', 'wireframe')).out, /The live wireframe view is for WebGL\. On a WebGPU page: overdraw, draw_id and depth live/);
         assert.doesNotMatch((await scanline('console', '--level', 'error')).out, /not compatible|is invalid|Invalid/);
+    });
+
+    test('the running page is drawn as its depth', async () =>
+    {
+        // fixtures/history/views-webgpu.html: A at depth 0.25 (x 0–80), B at 0.75 (x 40–120).
+        await scanline('launch', server.url('fixtures/history/views-webgpu.html'), '--headless', '--paused');
+        await scanline('step', 2);
+
+        const column = async (x) => (await scanline('pixels', x, 60, '--json')).json.data.rgba8;
+        const plain = [await column(20), await column(100), await column(140)];
+        const depth = await scanline('live_view', 'depth');
+
+        assert.match(depth.out, /^pat_\d+: depth: each draw is drawn in grey by the depth of each fragment/);
+        await scanline('step', 2);
+        assert.deepEqual([await column(20), await column(60), await column(100), await column(140)], [[64, 64, 64, 255], [64, 64, 64, 255], [191, 191, 191, 255], plain[2]]);
+
+        await scanline('live_view', 'off');
+        await scanline('step', 2);
+        assert.deepEqual([await column(20), await column(100), await column(140)], plain);
+        assert.match((await scanline('console')).out, /No console lines/);
+        await scanline('stop');
     });
 
     test('draws are named by event number or by a texture, and drawn in one flat colour', async () =>

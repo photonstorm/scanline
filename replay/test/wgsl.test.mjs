@@ -151,6 +151,31 @@ test('writes a fragment entry point that runs the page\'s and replaces a colour'
     assert.equal(fragmentWriting(module, entryPoint(module, 'fragment'), 1, [1, 1, 1, 1]), null, 'no output at that location');
 });
 
+test('writes a fragment entry point that shows the fragment\'s depth', () =>
+{
+    // The position is a member of a struct the page's entry point takes.
+    const scene = scan(SCENE);
+
+    assert.match(fragmentWriting(scene, entryPoint(scene, 'fragment'), null, 'depth'), /scanline_out = vec4<f32>\(f32\(in\.position\.z\), f32\(in\.position\.z\), f32\(in\.position\.z\), 1\.0\);/);
+
+    // It is a parameter of its own.
+    const direct = scan('@fragment fn main (@builtin(position) at: vec4f, @location(0) uv: vec2f) -> @location(0) vec4f { return vec4f(uv, 0.0, 1.0); }');
+
+    assert.match(fragmentWriting(direct, entryPoint(direct, 'fragment'), null, 'depth'), /scanline_out = vec4f\(f32\(at\.z\), f32\(at\.z\), f32\(at\.z\), 1\.0\);/);
+
+    // The page's entry point does not take it: the wrapper takes it as one more input.
+    const without = scan('@fragment fn main (@location(0) uv: vec2f) -> @location(0) vec4f { return vec4f(uv, 0.0, 1.0); }');
+    const written = fragmentWriting(without, entryPoint(without, 'fragment'), null, 'depth');
+
+    assert.match(written, /@fragment fn scanline_fragment \(@location\(0\) uv: vec2f, @builtin\(position\) scanline_at: vec4f\) -> @location\(0\) vec4f/);
+    assert.match(written, /var scanline_out = main\(uv\);/);
+
+    // Nor any input at all.
+    const bare = scan('@fragment fn main () -> @location(0) vec4f { return vec4f(1.0); }');
+
+    assert.match(fragmentWriting(bare, entryPoint(bare, 'fragment'), null, 'depth'), /@fragment fn scanline_fragment \(@builtin\(position\) scanline_at: vec4f\) -> @location\(0\) vec4f/);
+});
+
 test('replaces one member of a fragment output struct', () =>
 {
     const module = scan(`

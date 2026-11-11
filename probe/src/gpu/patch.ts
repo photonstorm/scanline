@@ -52,7 +52,7 @@ export interface GpuPatch
 
     // solid: the colour, or 'draw' for one of each draw's own. Views add to what is there
     // (overdraw) and switch the depth test off.
-    colour?: number[] | 'draw';
+    colour?: number[] | 'draw' | 'depth';
     additive?: boolean;
 
     // uniform: where the name lives, the bytes held there, and each place they have been written.
@@ -400,7 +400,7 @@ function shadowDescriptor (entry: Entry, hits: GpuPatch[], device: any): any
         const stage = entry.p.descriptor?.fragment;
         const module = stage?.module ? moduleOf(stage.module.id) : null;
         const fn = module ? wgsl.entryPoint(module, 'fragment', stage.entryPoint ?? null) : null;
-        const source = module && fn ? wgsl.fragmentWriting(module, fn, null, solid.colour === 'draw' ? [1, 1, 1, 1] : solid.colour as number[]) : null;
+        const source = module && fn ? wgsl.fragmentWriting(module, fn, null, solid.colour === 'draw' ? [1, 1, 1, 1] : solid.colour as number[] | 'depth') : null;
 
         if (!source)
         {
@@ -1641,11 +1641,16 @@ export async function gpuPatchAdd (args: any, id: number): Promise<Record<string
                 patch.colour = 'draw';
                 patch.description = 'each draw is drawn in a flat colour of its own, by its event number, with blending off';
             }
+            else if (patch.view === 'depth')
+            {
+                patch.colour = 'depth';
+                patch.description = 'depth: each draw is drawn in grey by the depth of each fragment (black is nearest, white farthest), with blending off';
+            }
             else
             {
-                throw new G.Error(patch.view === 'wireframe' || patch.view === 'depth'
-                    ? `The live ${patch.view} view is for WebGL. On a WebGPU page: overdraw and draw_id live, and view(capture, view: "${patch.view}") from a capture.`
-                    : `There is no live "${patch.view}" view. On a WebGPU page: overdraw and draw_id, and the views the page registered. view(capture, view) has the rest.`);
+                throw new G.Error(patch.view === 'wireframe'
+                    ? 'The live wireframe view is for WebGL. On a WebGPU page: overdraw, draw_id and depth live, and view(capture, view: "wireframe") from a capture.'
+                    : `There is no live "${patch.view}" view. On a WebGPU page: overdraw, draw_id and depth, and the views the page registered. view(capture, view) has the rest.`);
             }
 
             break;

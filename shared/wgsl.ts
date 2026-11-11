@@ -985,12 +985,15 @@ function memberWith (module: Module, type: string | null, attribute: string, arg
 }
 
 // A constructor for a float type of up to four components, from four numbers.
-function construct (module: Module, type: string, value: number[]): string | null
+function construct (module: Module, type: string, value: Array<number | string>): string | null
 {
     const resolved = module.aliases.get(type) ?? type;
     const [name, args] = parts(resolved);
     const vector = /^vec([234])([fh]?)$/.exec(name);
-    const float = (n: number): string => (Number.isInteger(n) ? `${n}.0` : String(n));
+
+    // A number as a literal, or an expression as it is, converted to the type's scalar.
+    const scalar = name === 'f16' || vector?.[2] === 'h' || args[0] === 'f16' ? 'f16' : 'f32';
+    const float = (n: number | string): string => (typeof n === 'string' ? `${scalar}(${n})` : (Number.isInteger(n) ? `${n}.0` : String(n)));
 
     if ((name === 'f32' || name === 'f16') && args.length === 0)
     {
@@ -1013,11 +1016,52 @@ export const POSITIONS_ENTRY = 'scanline_positions';
 // same fragments are discarded and the same resources are used) and then writes `value`
 // to one colour output in place of what the page's wrote, or to every colour output of a
 // float type when `location` is null. Null when the page's entry point has no such output.
-export function fragmentWriting (module: Module, fn: Fn, location: number | null, value: number[]): string | null
+// With 'depth' for the value, what is written is the fragment's own depth, as a grey.
+export function fragmentWriting (module: Module, fn: Fn, location: number | null, wanted: number[] | 'depth'): string | null
 {
     if (!fn.returnType)
     {
         return null;
+    }
+
+    // Where the fragment is, from the page's own input if it takes one, or one more input.
+    let params = fn.paramsText;
+    let value: Array<number | string>;
+
+    if (wanted === 'depth')
+    {
+        const builtin = (attributes: Attribute[]): boolean => attributes.some((attribute) => attribute.name === 'builtin' && attribute.args[0] === 'position');
+
+        let position: string | null = null;
+
+        for (const param of fn.params)
+        {
+            if (builtin(param.attributes))
+            {
+                position = param.name;
+                break;
+            }
+
+            const member = module.structs.get(module.aliases.get(param.type) ?? param.type)?.members.find((each) => builtin(each.attributes));
+
+            if (member)
+            {
+                position = `${param.name}.${member.name}`;
+                break;
+            }
+        }
+
+        if (position === null)
+        {
+            position = 'scanline_at';
+            params = `${params.trim().replace(/,\s*$/, '')}${fn.params.length ? ', ' : ''}@builtin(position) scanline_at: vec4f`;
+        }
+
+        value = [`${position}.z`, `${position}.z`, `${position}.z`, 1];
+    }
+    else
+    {
+        value = wanted;
     }
 
     const at = (attributes: Attribute[]): number | null =>
@@ -1060,7 +1104,7 @@ export function fragmentWriting (module: Module, fn: Fn, location: number | null
 
     return `${demoted(module, fn)}
 
-@fragment fn ${FRAGMENT_ENTRY} (${fn.paramsText}) ${fn.returnText}
+@fragment fn ${FRAGMENT_ENTRY} (${params}) ${fn.returnText}
 {
     var scanline_out = ${fn.name}(${fn.params.map((param) => param.name).join(', ')});
 
