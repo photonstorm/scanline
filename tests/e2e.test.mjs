@@ -1582,6 +1582,50 @@ describe('runs: play it again', () =>
         assert.equal(again.json.data.events, saved.json.data.events);
     });
 
+    test('what the page fetched while it ran is kept, and given again on the same frames', async () =>
+    {
+        // The page asks the server for a number on frames 20 and 50. The server gives a
+        // different one every time, 40 ms later, and the page draws by what it was given.
+        await scanline('launch', server.url('fixtures/matrix/loader.html'), '--headless', '--deterministic');
+
+        const ran = await scanline('run_until', '--until', '{"frame": 90}');
+
+        assert.match(ran.out, /Stopped at frame 90: reached frame 90/, 'holding the page for a response does not end a run_until');
+
+        const game = async () => JSON.parse((await scanline('eval', 'JSON.stringify(game)', '--json')).json.data.value);
+        const original = await game();
+
+        assert.equal(original.loaded.length, 2);
+        assert.equal(original.loaded[1], original.loaded[0] + 1);
+
+        const saved = await scanline('save_run');
+        const run = /^(run_\d+):/.exec(saved.out)?.[1];
+
+        assert.match(saved.out, /[34] network responses kept with the frame each arrived on/);
+
+        // Twice over: the server has moved on, the replay has not.
+        for (let round = 0; round < 2; round++)
+        {
+            const replayed = await scanline('replay_run', run, '--json');
+
+            assert.equal(replayed.json.data.diverged, null, replayed.json.summary);
+            assert.equal(replayed.json.data.matched, 3);
+            assert.equal(replayed.json.data.network.missed, 0);
+            assert.ok(replayed.json.data.network.used >= 3, replayed.json.summary);
+            assert.deepEqual(await game(), original, 'the same numbers, arriving on the same frames, and the same picture since');
+        }
+
+        // Played on, the page fetches nothing more and stays in step with itself.
+        await scanline('step', '10');
+        assert.equal((await game()).loaded.length, 2);
+
+        // A session that is not deterministic keeps nothing, and its network is its own.
+        await scanline('close');
+        await scanline('launch', server.url('fixtures/matrix/loader.html'), '--headless', '--paused');
+        await scanline('step', '60');
+        assert.doesNotMatch((await scanline('save_run')).out, /network response/);
+    });
+
     test('a replay that parts from the original says where', async () =>
     {
         await scanline('launch', server.url('fixtures/matrix/game.html'), '--paused', '--headless', '--deterministic', 'true');

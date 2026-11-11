@@ -12,7 +12,7 @@ import './adapters/three';
 import './adapters/pixi';
 import './adapters/phaser';
 import { clock, startClockAtZero, installClock } from './clock/clock';
-import { frameAtWall, frameSamples, gateState, installGate, notePageEvent, onFrameEnd, pause, resume, runUntil, setFixedStep, step } from './clock/gate';
+import { frameAtWall, frameSamples, gateState, hold, installGate, letGo, notePageEvent, onFrameEnd, pause, resume, runUntil, setFixedStep, step } from './clock/gate';
 import { installTimers } from './clock/timers';
 import { config, type Level } from './config';
 import { allContexts, contextHandlers, describe, installContextDiscovery, knownAdapters } from './contexts';
@@ -254,6 +254,11 @@ function boot (): void
             }
         };
     });
+
+    // Frames stopped between two of them for a moment, for the host to hand the page a
+    // network response at a known frame. Not a pause: nothing waiting on the page is told.
+    expose('net.hold', () => hold());
+    expose('net.release', () => letGo());
 
     expose('pause', () => pause());
     expose('resume', (args) => resume(args));

@@ -828,9 +828,12 @@ Known limits
     storage texture (a simulation stepped by a compute pass) is captured with their contents
     as the frame left them, so its replay is one step ahead. Render targets are read before
     the frame and do not have this problem. The replay check shows when it matters.
-  - A run replays exactly only in a deterministic session, and only if the page takes
-    nothing else from outside: network responses are not recorded. A
-    deterministic session reads the canvas back every 30th frame to fingerprint it.
+  - A run replays exactly only in a deterministic session. Such a session keeps every
+    response the page is given from the network, with the frame it arrived on, and a
+    replay gives them again on those frames; the page is held between two frames for a
+    moment as each goes in. A response over 24 MB is not kept. What a worker fetches, and
+    anything that arrives by WebSocket, is not kept. A deterministic session reads the
+    canvas back every 30th frame to fingerprint it.
   - fast stepping and replay do not present the canvas after every frame. A page that
     relies on the browser clearing its drawing buffer between frames, instead of clearing it
     itself, draws over its last frame.

@@ -20,6 +20,8 @@ const TYPES = {
 
 export function serve ({ root = repoRoot, headers = {}, port = 0 } = {})
 {
+    let counter = 0;
+
     const server = createServer(async (request, response) =>
     {
         const path = decodeURIComponent(new URL(request.url, 'http://x').pathname);
@@ -28,6 +30,21 @@ export function serve ({ root = repoRoot, headers = {}, port = 0 } = {})
         {
             // Browsers ask for one unprompted. A 404 would show up as an error in every session.
             response.writeHead(204).end();
+
+            return;
+        }
+
+        // An answer that differs every time it is asked for, and takes a moment: what a
+        // run has to keep if it is to be played again exactly.
+        if (path === '/__counter')
+        {
+            const value = ++counter;
+
+            setTimeout(() =>
+            {
+                response.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+                response.end(JSON.stringify({ value, at: Date.now() }));
+            }, 40);
 
             return;
         }

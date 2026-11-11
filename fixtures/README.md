@@ -28,6 +28,8 @@ Each page sets `window.fixture` (or posts it from a worker) to
 | `webgpu.html` | WebGPU | 1 `draw`, 5 instances, 1 pass | Instance buffer written each frame. |
 | `webgpu-invalid.html` | WebGPU | 1 `draw` the browser rejects | The draw reads past its vertex buffer, so the command buffer is dropped and nothing is drawn. For checking that rejected calls are reported. |
 | `game.html` | WebGL 2 | 1 `drawArrays` for the player, 1 per spark | A game that takes input: a square steered with the arrow keys, sparks thrown in random directions from each click. For recording a run and replaying it. |
+| `loader.html` | WebGL 2 | 2 clears | Fetches `/__counter` on frames 20 and 50, a path the test server answers with a different number each time, 40 ms later. A bar grows each frame by the last number given. For checking that a run keeps the network. |
+| `mouselook.html` | WebGL 2 | 2 clears | Asks for pointer lock on a click and then turns by how far the mouse moves. A white bar marks the yaw. For the pointer-lock shim. |
 | `worker.html` | WebGL 2 in a worker | as `webgl2.html` | `transferControlToOffscreen`, frame loop in the worker. |
 | `timers.html` | WebGL 1 | 5 `drawArrays` | Frame loop on `setInterval`, no `requestAnimationFrame`. |
 

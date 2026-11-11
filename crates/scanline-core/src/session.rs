@@ -135,6 +135,18 @@ pub struct State {
     /// page gave it, and the frame it was saved at.
     /// Whether the person can mark the frozen frame just now: after their Debug press,
     /// until the page moves on.
+    /// Recorded network (network.rs): off, recording or replaying; the responses kept or
+    /// being served; which have been used; requests waiting for their frame; and how many
+    /// requests of a replay had no kept response.
+    pub net_mode: u8,
+    pub net_log: Vec<Value>,
+    pub net_served: Vec<bool>,
+    pub net_pending: Vec<(String, usize)>,
+    pub net_missed: u64,
+    /// A page load is under way and the new document's probe has not said hello yet.
+    pub net_loading: bool,
+    /// Kept responses a replay was due to give that the page never asked for.
+    pub net_unasked: u64,
     pub annotating: bool,
     /// The frame that is frozen for marking.
     pub annotating_frame: u64,
@@ -177,8 +189,12 @@ pub struct Session {
     /// Woken when the person presses the Debug key in the page.
     pub debug: Notify,
     browser: Browser,
-    client: Client,
-    page: String,
+    pub(crate) client: Client,
+    pub(crate) page: String,
+    /// One response is handed to the page at a time (network.rs).
+    pub(crate) net_gate: tokio::sync::Mutex<()>,
+    /// Whether this session fixes the clock and random numbers, and so keeps the network.
+    pub(crate) deterministic: bool,
     key: String,
     binding: String,
     source: String,
@@ -287,6 +303,8 @@ impl Session {
             browser,
             client: client.clone(),
             page: page.clone(),
+            net_gate: tokio::sync::Mutex::new(()),
+            deterministic: options.deterministic.is_some(),
             key,
             binding,
             source,
@@ -330,6 +348,12 @@ impl Session {
                 .await?;
         }
 
+        // A deterministic session keeps what the page is given from the network, so that a
+        // run of it can be given the same again.
+        if session.deterministic {
+            crate::network::record(&session).await;
+        }
+
         session.navigate(&options.url).await?;
 
         Ok(session)
@@ -364,6 +388,8 @@ impl Session {
 
     /// Loads a URL and waits for its load event (or 30 seconds, whichever is first).
     pub async fn navigate(&self, url: &str) -> Result<()> {
+        crate::network::reset(self);
+
         let events = self.client.subscribe();
         let page = self.page.clone();
         let reply = self.client.send("Page.navigate", json!({ "url": url }), Some(&self.page)).await?;
@@ -1016,6 +1042,7 @@ fn handle(session: &Arc<Session>, event: Event) {
                     if instance.top {
                         // A new document in the top frame replaces the old one.
                         state.instances.retain(|other| !other.top);
+                        state.net_loading = false;
                     }
 
                     state.instances.push(instance);
@@ -1059,6 +1086,9 @@ fn handle(session: &Arc<Session>, event: Event) {
                 }
             }
         }
+
+        // A request or response of the page's, held for a deterministic session (network.rs).
+        "Fetch.requestPaused" if event.session.as_deref() == Some(session.page.as_str()) => crate::network::paused(session, params),
 
         "Target.attachedToTarget" => attached(session, params),
 

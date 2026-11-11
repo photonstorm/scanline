@@ -14,6 +14,7 @@ mod commands;
 mod handoff;
 mod inventory;
 mod keys;
+mod network;
 mod page;
 mod patch;
 mod runs;

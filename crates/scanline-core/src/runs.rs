@@ -131,6 +131,9 @@ pub async fn save_run(host: &Arc<Host>, session: &Arc<Session>) -> Result<Value>
     }
 
     let events: Vec<Value> = rows.iter().filter(|row| event_of(row).is_some()).cloned().collect();
+
+    // What the page was given from the network, and on which frame (deterministic sessions).
+    let network: Vec<Value> = session.state.lock().unwrap().net_log.clone();
     let (every, taken) = prints(session, 0).await;
     let frame = status["frame"].as_u64().unwrap_or(0);
 
@@ -148,6 +151,7 @@ pub async fn save_run(host: &Arc<Host>, session: &Arc<Session>) -> Result<Value>
         "prints": taken,
         "dropped": dropped,
         "profile": session.profile.name(),
+        "network": network,
     });
 
     let path = dir(host).join(format!("{handle}.json"));
@@ -198,6 +202,17 @@ pub async fn save_run(host: &Arc<Host>, session: &Arc<Session>) -> Result<Value>
         ));
     }
 
+    if !network.is_empty() {
+        let unkept = network.iter().filter(|entry| !entry["skipped"].is_null()).count();
+
+        lines.push(format!(
+            "{} network response{} kept with the frame each arrived on, to be given again in a replay{}.",
+            network.len(),
+            if network.len() == 1 { "" } else { "s" },
+            if unkept > 0 { format!(" ({unkept} could not be kept and will come from the network)") } else { String::new() }
+        ));
+    }
+
     if dropped > 0 {
         lines.push(format!(
             "Warning: the page had received more input than is kept, and the oldest {dropped} events are missing. The replay will part from the original early."
@@ -237,7 +252,21 @@ pub async fn replay_run(host: &Arc<Host>, session: &Arc<Session>, params: &Value
         ));
     }
 
-    session.reload_paused().await?;
+    // The page's requests are answered from what the run kept, on the frames it kept.
+    let kept: Vec<Value> = run["network"].as_array().cloned().unwrap_or_default();
+    let networked = !kept.is_empty();
+
+    if networked {
+        crate::network::replay(session, kept).await;
+    }
+
+    let reloaded = session.reload_paused().await;
+
+    if reloaded.is_err() && networked {
+        crate::network::finish(session, session.deterministic).await;
+    }
+
+    reloaded?;
 
     let top = session.top()?;
     let status = session.probe(&top, "status", json!({}), SHORT).await?;
@@ -265,8 +294,13 @@ pub async fn replay_run(host: &Arc<Host>, session: &Arc<Session>, params: &Value
     let mut skipped_keys = 0usize;
 
     while frame < target && diverged.is_none() {
-        // Up to the next fingerprint, so that a difference is found within one chunk of where it began.
+        // What the network gave the page by this frame is handed over before the page moves on.
+        crate::network::release(session, frame).await;
+
+        // Up to the next fingerprint, so that a difference is found within one chunk of where it began;
+        // or to the next frame a kept response is due on, if that is sooner.
         let stop = if every > 0 { ((frame / every + 1) * every).min(target) } else { (frame + 120).min(target) };
+        let stop = crate::network::next_frame(session, frame).map_or(stop, |due| stop.min(due).max(frame + 1));
         let mut chunk = Vec::new();
 
         while next_event < events.len() && events[next_event].0 < stop {
@@ -287,6 +321,10 @@ pub async fn replay_run(host: &Arc<Host>, session: &Arc<Session>, params: &Value
                 skipped_keys += 1;
                 notes.push(format!("Some input could not be sent again ({error})."));
             } else {
+                if networked {
+                    crate::network::finish(session, session.deterministic).await;
+                }
+
                 return Err(error.context(format!("replaying {handle} at frame {frame}")));
             }
         }
@@ -326,6 +364,15 @@ pub async fn replay_run(host: &Arc<Host>, session: &Arc<Session>, params: &Value
         frame = now;
     }
 
+    // The network goes back to being the network.
+    let network = if networked {
+        crate::network::release(session, frame).await;
+
+        Some(crate::network::finish(session, session.deterministic).await)
+    } else {
+        None
+    };
+
     let mut lines = Vec::new();
 
     match &diverged {
@@ -348,12 +395,27 @@ pub async fn replay_run(host: &Arc<Host>, session: &Arc<Session>, params: &Value
         }
     }
 
+    if let Some((used, kept, missed)) = network {
+        lines.push(format!(
+            "Network: {used} of the run's {kept} kept response{} {} given to the page again, each on the frame it first arrived on{}.{}",
+            if kept == 1 { "" } else { "s" },
+            if used == 1 { "was" } else { "were" },
+            if used < kept { " (the rest it did not ask for this time, or had not reached)" } else { "" },
+            if missed > 0 {
+                format!(" {missed} request{} had no kept response and went to the network: the page asked for something it did not ask for when the run was recorded.", if missed == 1 { "" } else { "s" })
+            } else {
+                String::new()
+            }
+        ));
+    }
+
     lines.extend(notes.iter().map(|note| format!("Note: {note}")));
 
     Ok(result(
         lines.join("\n"),
         json!({
             "run": handle,
+            "network": network.map(|(used, kept, missed)| json!({ "used": used, "kept": kept, "missed": missed })),
             "frame": frame,
             "frames": total,
             "matched": matched,

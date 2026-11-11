@@ -467,11 +467,114 @@ function endFrame (): void
     }
 }
 
+// ---- A hold ----
+//
+// The host sometimes has to hand the page something from outside at a known frame: a
+// network response, in a session whose runs must replay exactly. For that it asks for a
+// hold. Frames stop between two of them, the host does what it has to, and lets go.
+//
+// A hold is not a pause. Nothing that is waiting on the page is told, and whatever the
+// page was doing (running, running until something, stepping through frames) carries on
+// from where it was when the hold is let go.
+
+let holdWanted: Array<(value: { frame: number }) => void> = [];
+let holding = false;
+let holdResume: 'run' | 'step' | null = null;
+let holdUntil: Until | null = null;
+let holdStays = false;
+
+function takeHold (): boolean
+{
+    if (holdWanted.length === 0 || holding || inFrame || draining)
+    {
+        return false;
+    }
+
+    holding = true;
+
+    if (!paused)
+    {
+        // Running: stopped as a pause stops it, but quietly, and what it was running
+        // until is kept to be put back.
+        holdUntil = until;
+        doPause('pause');
+        holdResume = 'run';
+    }
+    else
+    {
+        holdResume = budget > 0 ? 'step' : null;
+    }
+
+    const waiters = holdWanted;
+
+    holdWanted = [];
+
+    for (const resolve of waiters)
+    {
+        resolve({ frame });
+    }
+
+    return true;
+}
+
+export function hold (): Promise<{ frame: number }>
+{
+    if (holding || (paused && budget === 0 && !inFrame && !draining))
+    {
+        return G.Promise.resolve({ frame });
+    }
+
+    return new G.Promise((resolve: (value: { frame: number }) => void) =>
+    {
+        holdWanted.push(resolve);
+
+        // A frame should end within a few milliseconds. If none is coming (a hidden
+        // window, or nothing scheduled) the hold is taken where things stand.
+        nSetTimeout(takeHold, 300);
+    });
+}
+
+export function letGo (): { frame: number }
+{
+    if (!holding)
+    {
+        return { frame };
+    }
+
+    const how = holdResume;
+    const wanted = holdUntil;
+
+    holding = false;
+    holdResume = null;
+    holdUntil = null;
+
+    if (how === 'run' && paused && !holdStays)
+    {
+        resume();
+        until = wanted;
+    }
+    else if (how === 'step' && paused && budget > 0 && !inFrame && !draining)
+    {
+        nextSteppedFrame();
+    }
+
+    holdStays = false;
+
+    return { frame };
+}
+
 function afterFrame (): void
 {
     for (const hook of settledHooks)
     {
         guarded(hook);
+    }
+
+    // A hold is taken here, between two frames. A page that was running or part-way
+    // through a step stays where it is until the hold is let go.
+    if (holdWanted.length > 0 && takeHold() && holdResume !== null)
+    {
+        return;
     }
 
     if (!paused)
@@ -681,6 +784,12 @@ export function pause (): Promise<StopInfo>
 {
     if (paused)
     {
+        // A pause asked for during a hold outlasts it.
+        if (holding && holdResume === 'run')
+        {
+            holdStays = true;
+        }
+
         return G.Promise.resolve({ frame, reason: stopInfo.reason, detail: stopInfo.detail, remaining: budget });
     }
 

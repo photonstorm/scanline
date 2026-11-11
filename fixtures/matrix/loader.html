@@ -1,0 +1,45 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Loader</title>
+<style>body { margin: 0; background: #111; } canvas { display: block; }</style>
+<canvas id="scene" width="320" height="240"></canvas>
+<script type="module">
+// A page that fetches while it runs. On frames 20 and 50 it asks the server for a number
+// that is different every time, and draws a bar as wide as the numbers it has been given.
+// What it shows depends on what the network said and on which frame it said it.
+const gl = document.getElementById('scene').getContext('webgl2', { antialias: false, alpha: false });
+const game = window.game = { frame: 0, loaded: [], arrived: [], width: 0 };
+
+function load ()
+{
+    fetch('/__counter').then((response) => response.json()).then((data) =>
+    {
+        game.loaded.push(data.value);
+        game.arrived.push(game.frame);
+    });
+}
+
+function frame ()
+{
+    game.frame++;
+
+    if (game.frame === 20 || game.frame === 50)
+    {
+        load();
+    }
+
+    // The bar grows by the last number given, every frame.
+    game.width = (game.width + (game.loaded.at(-1) ?? 0)) % 320;
+
+    gl.disable(gl.SCISSOR_TEST);
+    gl.clearColor(0.125, 0.25, 0.375, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.enable(gl.SCISSOR_TEST);
+    gl.scissor(0, 100, game.width, 40);
+    gl.clearColor(1, 1, 1, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    requestAnimationFrame(frame);
+}
+
+requestAnimationFrame(frame);
+</script>
