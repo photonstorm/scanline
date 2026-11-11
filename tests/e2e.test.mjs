@@ -2282,8 +2282,8 @@ describe('an engine Scanline has no adapter for', () =>
     test('Babylon.js is launched, captured and replayed to the same picture, on WebGL 2 and WebGPU', async () =>
     {
         for (const [query, api, note] of [
-            // Its shadow map's depth is a texture, which is not read back: the replay gives it storage and the frame fills it.
-            ['', 'webgl2', /DEPTH_COMPONENT32F texture's contents could not be captured/],
+            // Its shadow map's depth is a texture: it is read by drawing it and given back to the replay, so nothing is noted.
+            ['', 'webgl2', /Replay check: replaying the capture gives an image identical/],
             // It makes each frame's command encoder at the end of the frame before.
             ['?engine=webgpu', 'webgpu', /used a command encoder that was made before it began/]
         ])
@@ -2307,7 +2307,7 @@ describe('an engine Scanline has no adapter for', () =>
             assert.equal(taken.json.data.replay, 'identical', `${api}: ${taken.json.summary}`);
             assert.equal(taken.json.data.counts.draws, 8, `${api}: three shadow casters, then the ground, three boxes and the ball`);
             assert.match(taken.json.summary, note, api);
-            assert.doesNotMatch(taken.json.summary, /raised a (GL|validation) error/, api);
+            assert.doesNotMatch(taken.json.summary, /raised a (GL|validation) error|could not be captured/, api);
 
             // The shadow pass and the scene are both there to be read.
             const passes = await scanline('pass_tree', taken.json.data.capture, '--session', session);
