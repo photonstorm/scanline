@@ -337,7 +337,7 @@ pub async fn strip(session: &Arc<Session>, params: &Value) -> Result<Value> {
 fn hold_debug_key(session: &Arc<Session>) -> Option<String> {
     let wanted = std::env::var("SCANLINE_HOTKEY").unwrap_or_default();
 
-    if session.headless || !cfg!(target_os = "macos") || wanted.eq_ignore_ascii_case("off") {
+    if session.headless || !cfg!(any(target_os = "macos", windows)) || wanted.eq_ignore_ascii_case("off") {
         return None;
     }
 

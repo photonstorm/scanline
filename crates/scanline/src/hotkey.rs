@@ -8,10 +8,15 @@
 //! button does. It is a process of its own so that nothing it does can hurt the host, and
 //! it holds the key only while a request is open: the host stops it at the press.
 //!
-//! macOS only: the key is registered with Carbon's hot key API, which needs no permission
-//! from the person (unlike watching the keyboard, which does).
+//! On macOS the key is registered with Carbon's hot key API, and on Windows with
+//! RegisterHotKey. Neither needs permission from the person (unlike watching the keyboard,
+//! which does), and both give the key to one application at a time: if another holds it,
+//! this says so and F9 in the game's window still works. There is no Linux form.
 
 use anyhow::{Result, bail};
+
+#[cfg(any(target_os = "macos", windows))]
+const USAGE: &str = "scanline hotkey <session> [key]: holds a key system-wide (F9 by default) and makes each press a Debug press for that session. The host runs it while a person has been asked to press Debug.";
 
 /// A key by name, as the virtual key code macOS knows it by.
 #[cfg(target_os = "macos")]
@@ -128,9 +133,7 @@ pub fn run(args: &[String]) -> Result<()> {
     let self_test = args.iter().any(|arg| arg == "--self-test");
     let mut plain = args.iter().filter(|arg| !arg.starts_with("--"));
     let Some(session) = plain.next() else {
-        bail!(
-            "scanline hotkey <session> [key]: holds a key system-wide (F9 by default) and makes each press a Debug press for that session. The host runs it while a person has been asked to press Debug."
-        );
+        bail!("{USAGE}");
     };
     let name = plain.next().map(String::as_str).unwrap_or("F9");
     let Some(key) = key_code(name) else {
@@ -180,7 +183,111 @@ pub fn run(args: &[String]) -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(target_os = "macos"))]
+/// A key by name, as the virtual key code Windows knows it by: F1 is 0x70, and they run on.
+#[cfg(windows)]
+fn key_code(name: &str) -> Option<u32> {
+    let number: u32 = name.to_ascii_uppercase().strip_prefix('F')?.parse().ok()?;
+
+    (1..=24).contains(&number).then(|| 0x70 + number - 1)
+}
+
+/// What a press does: the same `debug` call the strip's button makes, for one session.
+/// The host's pipe opens as a file.
+#[cfg(windows)]
+fn press(session: &str) -> Result<String> {
+    use std::io::{BufRead, Write};
+
+    const PIPE_BUSY: i32 = 231;
+
+    let name = crate::control::pipe_name();
+    let mut tries = 0;
+
+    let mut pipe = loop {
+        match std::fs::OpenOptions::new().read(true).write(true).open(&name) {
+            Ok(pipe) => break pipe,
+            // The host is between one client and the next.
+            Err(error) if error.raw_os_error() == Some(PIPE_BUSY) && tries < 40 => {
+                tries += 1;
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            Err(error) => return Err(error.into()),
+        }
+    };
+
+    writeln!(pipe, "{}", serde_json::json!({ "id": 1, "method": "debug", "params": { "session": session, "by": "hotkey", "_by": "person" } }))?;
+
+    let mut line = String::new();
+
+    std::io::BufReader::new(pipe).read_line(&mut line)?;
+
+    Ok(line)
+}
+
+/// Registers the key and waits for it. With `self_test`, posts the message a press would
+/// cause, to prove the path from the operating system's message to the host without a hand
+/// on the keyboard.
+#[cfg(windows)]
+pub fn run(args: &[String]) -> Result<()> {
+    use windows_sys::Win32::System::Threading::GetCurrentThreadId;
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{MOD_NOREPEAT, RegisterHotKey, UnregisterHotKey};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetMessageW, MSG, PM_NOREMOVE, PeekMessageW, PostThreadMessageW, WM_HOTKEY, WM_USER};
+
+    const ID: i32 = 1;
+
+    let self_test = args.iter().any(|arg| arg == "--self-test");
+    let mut plain = args.iter().filter(|arg| !arg.starts_with("--"));
+    let Some(session) = plain.next() else {
+        bail!("{USAGE}");
+    };
+    let name = plain.next().map(String::as_str).unwrap_or("F9");
+    let Some(key) = key_code(name) else {
+        bail!("\"{name}\" is not a key this can hold. It takes F1 to F24.");
+    };
+
+    unsafe {
+        let mut message: MSG = std::mem::zeroed();
+
+        // Looking for a message gives this thread the queue that the key's presses arrive on.
+        PeekMessageW(&mut message, std::ptr::null_mut(), WM_USER, WM_USER, PM_NOREMOVE);
+
+        // Registered to the thread, with no window. Held down, the key is one press.
+        if RegisterHotKey(std::ptr::null_mut(), ID, MOD_NOREPEAT, key) == 0 {
+            bail!(
+                "The operating system would not give Scanline the {name} key ({}): another application may hold it. F9 still works in the game's window and the strip.",
+                std::io::Error::last_os_error()
+            );
+        }
+
+        println!("holding {name} for {session}");
+
+        if self_test && PostThreadMessageW(GetCurrentThreadId(), WM_HOTKEY, ID as usize, 0) == 0 {
+            UnregisterHotKey(std::ptr::null_mut(), ID);
+
+            bail!("The test message could not be posted ({}).", std::io::Error::last_os_error());
+        }
+
+        while GetMessageW(&mut message, std::ptr::null_mut(), 0, 0) > 0 {
+            if message.message != WM_HOTKEY || message.wParam != ID as usize {
+                continue;
+            }
+
+            match press(session) {
+                Ok(reply) if self_test => println!("pressed: {}", reply.trim().chars().take(200).collect::<String>()),
+                Err(error) => eprintln!("scanline hotkey: the press could not be passed on: {error}"),
+                _ => {}
+            }
+
+            // One press is one Debug. The host starts another helper with the next request.
+            break;
+        }
+
+        UnregisterHotKey(std::ptr::null_mut(), ID);
+    }
+
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
 pub fn run(_args: &[String]) -> Result<()> {
-    bail!("A system-wide Debug key is built for macOS only. F9 works in the game's window and the strip.")
+    bail!("A system-wide Debug key is built for macOS and Windows only. F9 works in the game's window and the strip.")
 }

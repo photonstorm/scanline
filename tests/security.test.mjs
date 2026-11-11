@@ -13,7 +13,7 @@ import { request as httpRequest } from 'node:http';
 import { after, before, describe, test } from 'node:test';
 import { repoRoot, serve } from '../spikes/lib/serve.mjs';
 
-const binary = join(repoRoot, 'target', 'debug', 'scanline');
+import { binary, hostRunning, windows, windowsRule } from './host.mjs';
 const scratch = mkdtempSync(join(tmpdir(), 'scanline-files-'));
 
 let server;
@@ -48,7 +48,7 @@ function host (extra = {})
 
     async function end ()
     {
-        if (existsSync(join(home, 'control.sock')))
+        if (hostRunning(home))
         {
             await scanline('stop');
         }
@@ -391,7 +391,7 @@ describe('tiers: widened, and misspelt', () =>
 
         assert.notEqual(launched.code, 0);
         assert.match(launched.out, /SCANLINE_DENY holds "pach", which is not a tier\. It takes control, patch and files/);
-        assert.equal(existsSync(join(wrong.home, 'control.sock')), false, 'no host was started');
+        assert.equal(hostRunning(wrong.home), false, 'no host was started');
     });
 });
 
@@ -476,9 +476,32 @@ describe('MCP over loopback HTTP', () =>
 
     test('the token is a file only its owner can read, and the port is on this machine alone', () =>
     {
-        assert.equal(statSync(join(home, 'http-token')).mode & 0o777, 0o600);
+        if (windows)
+        {
+            // A file has no mode here. Its rule is the home directory's, which the host
+            // makes the person's alone: they, the system and its administrators.
+            const rule = windowsRule(join(home, 'http-token'));
+
+            assert.ok(rule.aces.some((ace) => ace.who === rule.me), rule.sddl);
+            assert.ok(rule.aces.every((ace) => ace.type === 'A' && [rule.me, 'SY', 'BA'].includes(ace.who)), rule.sddl);
+        }
+        else
+        {
+            assert.equal(statSync(join(home, 'http-token')).mode & 0o777, 0o600);
+        }
+
         assert.match(token, /^[0-9a-f]{64}$/);
         assert.equal(JSON.parse(readFileSync(join(home, 'runtime.json'), 'utf8')).http.url, `http://127.0.0.1:${port}/mcp`);
+    });
+
+    test('the control pipe can be opened by its owner and nobody else', { skip: !windows }, () =>
+    {
+        // On macOS and Linux this is the socket's mode and its directory's, which the host
+        // will not start without. A pipe is not a file: it is asked who it lets in.
+        const rule = windowsRule(JSON.parse(readFileSync(join(home, 'runtime.json'), 'utf8')).pipe, { pipe: true });
+
+        assert.deepEqual(rule.aces, [{ type: 'A', who: rule.me }], rule.sddl);
+        assert.match(rule.sddl, /^D:P\(/, 'and nothing above it adds anyone');
     });
 
     test('a client with the token speaks MCP: initialize, tools, a call', async () =>

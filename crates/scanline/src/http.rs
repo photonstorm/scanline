@@ -31,7 +31,19 @@ const BODY_LIMIT: usize = 8 * 1024 * 1024;
 fn new_token() -> Result<String> {
     let mut bytes = [0u8; 32];
 
+    #[cfg(unix)]
     std::io::Read::read_exact(&mut std::fs::File::open("/dev/urandom").context("opening /dev/urandom for a token")?, &mut bytes)?;
+
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Security::Cryptography::{BCRYPT_USE_SYSTEM_PREFERRED_RNG, BCryptGenRandom};
+
+        let status = unsafe { BCryptGenRandom(std::ptr::null_mut(), bytes.as_mut_ptr(), bytes.len() as u32, BCRYPT_USE_SYSTEM_PREFERRED_RNG) };
+
+        if status != 0 {
+            bail!("The operating system gave no random bytes for a token (status {status:#x}).");
+        }
+    }
 
     Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
@@ -46,18 +58,24 @@ fn same(a: &str, b: &str) -> bool {
 }
 
 /// Binds the port and writes the token. Returns the listener, the port it got and the token.
-#[cfg(unix)]
 pub async fn bind(home: &Path, port: u16) -> Result<(TcpListener, u16, String)> {
-    use std::os::unix::fs::OpenOptionsExt;
-
     let listener = TcpListener::bind(("127.0.0.1", port)).await.with_context(|| format!("binding 127.0.0.1:{port} for MCP over HTTP"))?;
     let port = listener.local_addr()?.port();
     let token = new_token()?;
     let path = token_path(home);
 
-    // Made private from the instant it exists.
+    // Made private from the instant it exists. On Unix that is its mode. On Windows a new
+    // file takes the rule of the directory it is made in, and the host has already made
+    // the home directory the person's alone (control.rs).
     let _ = std::fs::remove_file(&path);
-    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&path).with_context(|| format!("writing {}", path.display()))?;
+    let mut options = std::fs::OpenOptions::new();
+
+    options.write(true).create_new(true);
+
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+
+    let mut file = options.open(&path).with_context(|| format!("writing {}", path.display()))?;
 
     std::io::Write::write_all(&mut file, token.as_bytes())?;
 

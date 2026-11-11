@@ -1240,8 +1240,9 @@ pub async fn memory(session: &Arc<Session>, params: &Value) -> Result<Value> {
     // What the operating system says the GPU process holds: real, but not this page's alone.
     if let Some(bytes) = session.gpu_process_memory().await {
         lines.push(format!(
-            "The browser's GPU process holds {} in all (os-measured: its physical footprint, as the operating system counts it). That covers every page, the compositor and the process itself, so it is more than this page's; a diff of two snapshots shows how much it moved.",
-            size(bytes as f64)
+            "The browser's GPU process holds {} in all (os-measured: {}). That covers every page, the compositor and the process itself, so it is more than this page's; a diff of two snapshots shows how much it moved.",
+            size(bytes as f64),
+            scanline_browser::process_memory_measure()
         ));
 
         data["gpu_process_bytes"] = json!(bytes);

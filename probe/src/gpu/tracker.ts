@@ -23,7 +23,7 @@ const BUFFER_MAP_READ = 0x0001;
 const BUFFER_COPY_SRC = 0x0004;
 
 // A view leads back to its texture; a device has a number, so its objects can be found.
-const viewTag: Tag<{ texture: Entry | undefined; descriptor: unknown; size?: [number, number] }> = gpuViewTag;
+const viewTag: Tag<{ texture: Entry | undefined; descriptor: unknown; size?: [number, number]; of?: object }> = gpuViewTag;
 const deviceTag: Tag<number> = gpuDeviceTag;
 
 let devices = 0;
@@ -508,7 +508,12 @@ const post: Record<string, Post> = {
             viewTag.set(view, {
                 texture: entryOf(texture),
                 descriptor: snapshot(descriptor ?? null),
-                size: [G.Math.max(1, texture.width >> level), G.Math.max(1, texture.height >> level)]
+                size: [G.Math.max(1, texture.width >> level), G.Math.max(1, texture.height >> level)],
+                // A view keeps its texture alive on the GPU, whether or not the page keeps
+                // the texture's own handle: many keep only the view. Held here for as long
+                // as the view is, so that the texture is not taken for gone when the
+                // collector takes a handle the page had no more use for.
+                of: config.unmodified ? undefined : texture
             });
         }
     },

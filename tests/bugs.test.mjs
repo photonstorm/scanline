@@ -13,6 +13,7 @@ import { open } from '../spikes/lib/session.mjs';
 import { serve } from '../spikes/lib/serve.mjs';
 import { run } from '../evals/run.mjs';
 import { score } from '../evals/score.mjs';
+import { assertPixel } from './host.mjs';
 
 const manifest = JSON.parse(readFileSync(new URL('../evals/bugs.json', import.meta.url), 'utf8'));
 
@@ -67,7 +68,8 @@ describe('the planted bugs', () =>
         await look('b00', async ({ pixel, stats, textures, step }) =>
         {
             assert.deepEqual(await pixel([100, 220]), [187, 131, 75, 255], 'a crate');
-            assert.deepEqual(await pixel([30, 320]), [64, 128, 51, 255], 'the ground');
+            // The ground's green is a tint of 0.5: 127.5, which Metal rounds up and Direct3D down.
+            assertPixel(await pixel([30, 320]), [64, [127, 128], 51, 255], 'the ground');
             assert.deepEqual(await pixel([250, 210]), [131, 118, 146, 255], 'a crate through the glass');
             assert.deepEqual(await pixel([419, 49]), [255, 204, 51, 255], 'a dot on the minimap');
             assert.deepEqual(await pixel([60, 18]), [255, 84, 40, 255], 'the health bar');
@@ -85,8 +87,10 @@ describe('the planted bugs', () =>
     {
         await look('w00', async ({ pixel, stats, textures, step }) =>
         {
-            assert.deepEqual(await pixel([100, 220]), [188, 132, 75, 255], 'a crate');
-            assert.deepEqual(await pixel([30, 320]), [64, 128, 51, 255], 'the ground');
+            // The crate is a texture under a tint, and the ground a tint of 0.5: each lands
+            // between two values, and Metal and Direct3D round them apart.
+            assertPixel(await pixel([100, 220]), [188, [131, 132], 75, 255], 'a crate');
+            assertPixel(await pixel([30, 320]), [64, [127, 128], 51, 255], 'the ground');
             assert.deepEqual(await pixel([250, 210]), [133, 120, 147, 255], 'a crate through the glass');
             assert.deepEqual(await pixel([419, 49]), [255, 204, 51, 255], 'a dot on the minimap');
             assert.deepEqual(await pixel([60, 18]), [255, 84, 40, 255], 'the health bar');
@@ -110,7 +114,9 @@ describe('the planted bugs', () =>
 
                 if (check.pixel && check.is === 'exactly')
                 {
-                    assert.deepEqual(await pixel(check.pixel), check.value);
+                    // A channel the manifest gives two values for is one that Metal and
+                    // Direct3D round apart.
+                    assertPixel(await pixel(check.pixel), check.value, bug.id);
                 }
                 else if (check.pixel)
                 {

@@ -16,7 +16,7 @@ import { clock, startClockAtZero, installClock } from './clock/clock';
 import { frameAtWall, frameSamples, gateState, hold, installGate, letGo, notePageEvent, onFrameEnd, pause, resume, runUntil, setFixedStep, step } from './clock/gate';
 import { installTimers } from './clock/timers';
 import { config, type Level } from './config';
-import { allContexts, contextHandlers, describe, installContextDiscovery, knownAdapters } from './contexts';
+import { allContexts, contextHandlers, describe, installContextDiscovery, knownAdapters, webgpuStarting } from './contexts';
 import { installErrors } from './errors';
 import { glHandlers, installGlTracking } from './gl/tracker';
 import { gpuPatchHandlers, gpuPatchIntercepts } from './gpu/patch';
@@ -34,7 +34,7 @@ import { installMasquerade } from './masquerade';
 import { currentWarnings, declare, modifications } from './mods';
 import { G, isWindow } from './natives';
 import { installSeededRandom } from './random';
-import { gpuSamples, installTiming, timingHandlers, timingNotes } from './timing';
+import { gpuSamples, gpuWorkDone, installTiming, timingHandlers, timingNotes } from './timing';
 import { installReadback } from './readback';
 import { bindingLeftBehind, emit, expose, installTransport } from './transport';
 
@@ -247,6 +247,7 @@ function boot (): void
             clockEngaged: clock.engaged,
             contexts,
             adapters: knownAdapters(),
+            webgpuStarting: webgpuStarting(),
             modifications: modifications(),
             warnings,
             hooks: {
@@ -265,8 +266,20 @@ function boot (): void
 
     expose('pause', () => pause());
     expose('resume', (args) => resume(args));
-    expose('step', (args) => step(args));
-    expose('runUntil', (args) => runUntil(args));
+    // Frames are not done until what they raised has been heard (see gpuWorkDone). A step
+    // that asked not to wait for the display does not wait for this either: such steps
+    // are taken one frame at a time, thousands of times over, when a run is replayed.
+    const heard = async <T>(stopping: Promise<T>): Promise<T> =>
+    {
+        const stop = await stopping;
+
+        await gpuWorkDone();
+
+        return stop;
+    };
+
+    expose('step', (args) => (args?.fast === true ? step(args) : heard(step(args))));
+    expose('runUntil', (args) => heard(runUntil(args)));
     expose('setFixedStep', (args) => setFixedStep(args));
 
     expose('setLevel', (args: { level: Level }) =>

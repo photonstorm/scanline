@@ -147,6 +147,17 @@ pub fn find_browser(explicit: Option<&Path>) -> Result<PathBuf> {
         bail!("SCANLINE_BROWSER is set to {}, which does not exist.", path.display());
     }
 
+    // Chrome installed for one user only, which needs no administrator, lives in their profile.
+    if cfg!(target_os = "windows") {
+        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+            let path = PathBuf::from(local).join("Google").join("Chrome").join("Application").join("chrome.exe");
+
+            if path.exists() {
+                return Ok(path);
+            }
+        }
+    }
+
     let candidates: &[&str] = if cfg!(target_os = "macos") {
         &[
             "/Applications/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
@@ -312,7 +323,10 @@ fn pipe() -> Result<(i32, i32)> {
 
 /// The memory a process holds, as the operating system counts it: on macOS its physical
 /// footprint, which is the figure Activity Monitor shows and which includes the GPU
-/// allocations made on its behalf; on Linux its resident set. None where it cannot be read.
+/// allocations made on its behalf; on Linux its resident set; on Windows its private bytes
+/// (the system memory it has committed for itself alone, in memory or paged out), which is
+/// the figure Task Manager shows as "Commit size" and which does not count memory on a
+/// graphics card. None where it cannot be read.
 pub fn process_memory(pid: i64) -> Option<u64> {
     #[cfg(target_os = "macos")]
     {
@@ -331,11 +345,43 @@ pub fn process_memory(pid: i64) -> Option<u64> {
         line.split_whitespace().nth(1)?.parse::<u64>().ok().map(|kilobytes| kilobytes * 1024)
     }
 
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::ProcessStatus::{K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS, PROCESS_MEMORY_COUNTERS_EX};
+        use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+
+        let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid as u32) };
+
+        if process.is_null() {
+            return None;
+        }
+
+        let mut counters: PROCESS_MEMORY_COUNTERS_EX = unsafe { std::mem::zeroed() };
+        let size = std::mem::size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32;
+        let found = unsafe { K32GetProcessMemoryInfo(process, (&raw mut counters).cast::<PROCESS_MEMORY_COUNTERS>(), size) };
+
+        unsafe { CloseHandle(process) };
+
+        if found != 0 { Some(counters.PrivateUsage as u64) } else { None }
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
     {
         let _ = pid;
 
         None
+    }
+}
+
+/// What `process_memory` counts on this platform, for the sentence that quotes the figure.
+pub fn process_memory_measure() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "its physical footprint, as the operating system counts it"
+    } else if cfg!(windows) {
+        "its private bytes, as the operating system counts them: the system memory it has committed for itself, which leaves out what it holds in a graphics card's own memory"
+    } else {
+        "its resident set, as the operating system counts it"
     }
 }
 
@@ -359,9 +405,71 @@ fn set_cloexec(fd: i32) -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(unix))]
+/// Windows has no numbered descriptors to hand a child. The browser is given its two ends
+/// of the pipes as handles it inherits, and told their values on its command line.
+#[cfg(windows)]
+fn spawn_with_pipe(executable: &Path, args: &[String], environment: &[(&str, &str)]) -> Result<(Child, Client)> {
+    use std::os::windows::io::FromRawHandle;
+
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, HANDLE_FLAG_INHERIT, SetHandleInformation};
+    use windows_sys::Win32::System::Pipes::CreatePipe;
+
+    fn pipe() -> Result<(HANDLE, HANDLE)> {
+        let mut read: HANDLE = std::ptr::null_mut();
+        let mut write: HANDLE = std::ptr::null_mut();
+
+        // No security attributes: neither end can be inherited until one is marked so.
+        if unsafe { CreatePipe(&mut read, &mut write, std::ptr::null(), 1 << 16) } == 0 {
+            return Err(std::io::Error::last_os_error()).context("creating a pipe to the browser");
+        }
+
+        Ok((read, write))
+    }
+
+    // A child inherits every handle that is marked inheritable at the moment it starts.
+    // Two launches at once would each hand their browser the other's pipe, and a pipe
+    // with a second holder does not close when its browser exits. So: one at a time.
+    static LAUNCHING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    let _one_at_a_time = LAUNCHING.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    let (commands_read, commands_write) = pipe()?;
+    let (replies_read, replies_write) = pipe()?;
+
+    // From here on the host's two ends are owned, and close themselves on any way out.
+    let to_browser = unsafe { std::fs::File::from_raw_handle(commands_write) };
+    let from_browser = unsafe { std::fs::File::from_raw_handle(replies_read) };
+
+    let inheritable = unsafe {
+        SetHandleInformation(commands_read, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) != 0
+            && SetHandleInformation(replies_write, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) != 0
+    };
+
+    let spawned = if inheritable {
+        let mut command = tokio::process::Command::new(executable);
+
+        command.args(args).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).kill_on_drop(true);
+        command.envs(environment.iter().copied());
+
+        // The browser reads commands from the first handle and writes replies to the second.
+        command.arg(format!("--remote-debugging-io-pipes={},{}", commands_read as usize, replies_write as usize));
+        command.spawn().with_context(|| format!("starting {}", executable.display()))
+    } else {
+        Err(std::io::Error::last_os_error()).context("marking the browser's ends of the pipe inheritable")
+    };
+
+    // The browser has its own copies now. Ours must go, or its exit would never be seen.
+    unsafe {
+        CloseHandle(commands_read);
+        CloseHandle(replies_write);
+    }
+
+    let child = spawned?;
+
+    Ok((child, Client::new(tokio::fs::File::from_std(from_browser), tokio::fs::File::from_std(to_browser))))
+}
+
+#[cfg(not(any(unix, windows)))]
 fn spawn_with_pipe(_executable: &Path, _args: &[String], _environment: &[(&str, &str)]) -> Result<(Child, Client)> {
-    // Windows passes the pipe as inherited handles named in --remote-debugging-io-pipes.
-    // Not written yet: nothing in this repository has been run on Windows.
-    bail!("Launching the browser over the debugging pipe is not implemented on this platform yet.")
+    bail!("Launching the browser over the debugging pipe is not implemented on this platform.")
 }

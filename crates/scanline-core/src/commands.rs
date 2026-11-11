@@ -41,6 +41,34 @@ pub(crate) fn number(value: &Value, digits: usize) -> String {
     value.as_f64().map(|n| format!("{n:.digits$}")).unwrap_or_else(|| "?".into())
 }
 
+/// The address of a local file, from its full path as the operating system gives it.
+///
+/// A Unix path goes in as it is. A Windows one does not: the system's full form of
+/// `C:\game\index.html` is `\\?\C:\game\index.html`, its address is
+/// `file:///C:/game/index.html`, and a file on a share (`\\?\UNC\server\share\x.html`) is
+/// `file://server/share/x.html`. The characters an address gives a meaning to are escaped.
+pub(crate) fn file_url(path: &str) -> String {
+    if cfg!(windows) { windows_file_url(path) } else { format!("file://{path}") }
+}
+
+/// The address of a file from its Windows path. Apart from `file_url` so that it can be
+/// tested on any machine.
+fn windows_file_url(path: &str) -> String {
+    let escaped = path.replace('%', "%25").replace('#', "%23").replace('?', "%3F").replace(' ', "%20").replace('\\', "/");
+
+    // "//%3F/" is what the escaping made of the "\\?\" at the front.
+    match escaped.strip_prefix("//%3F/") {
+        Some(rest) => match rest.strip_prefix("UNC/") {
+            Some(share) => format!("file://{share}"),
+            None => format!("file:///{rest}"),
+        },
+        None => match escaped.strip_prefix("//") {
+            Some(share) => format!("file://{share}"),
+            None => format!("file:///{escaped}"),
+        },
+    }
+}
+
 // ---- Session ----
 
 pub async fn launch(host: &Arc<Host>, params: &Value) -> Result<Value> {
@@ -52,7 +80,7 @@ pub async fn launch(host: &Arc<Host>, params: &Value) -> Result<Value> {
     } else {
         let path = std::fs::canonicalize(url).with_context(|| format!("\"{url}\" is not a URL and no file by that name exists."))?;
 
-        format!("file://{}", path.display())
+        file_url(&path.display().to_string())
     };
 
     let start = params["start"].as_str().unwrap_or("running");
@@ -117,11 +145,43 @@ pub async fn launch(host: &Arc<Host>, params: &Value) -> Result<Value> {
         crate::handoff::refresh(&session).await;
     }
 
-    // Give the page a moment to create its contexts before describing it.
-    for _ in 0..12 {
-        let reports = session.probe_all("status", json!({}), SHORT).await;
+    // Give the page a moment to create its contexts before describing it. A page that has
+    // asked for a WebGPU adapter is on its way to one, and is given longer: from the
+    // request to a configured canvas is asynchronous, and through Direct3D takes the better
+    // part of a second for a bare page and more for an engine.
+    //
+    // What is waited for is a context Scanline can inspect. A 2D canvas is not one, and an
+    // engine on its way to WebGPU makes 2D and WebGL contexts first, only to see what the
+    // browser can do: so a page that has asked for an adapter is waited for until its
+    // WebGPU context is there.
+    //
+    // An engine configures its canvas in its first frame, and a page started paused never
+    // reaches one. There the wait ends when the page has a device and has nothing more in
+    // flight, three times running: it is ready, and the first step will draw. Stepping
+    // before that would count frames the page was not yet able to draw.
+    let mut equipped_for = 0;
 
-        if reports.iter().any(|(_, status)| status["contexts"].as_array().is_some_and(|list| !list.is_empty())) {
+    for tries in 0..40 {
+        let reports = session.probe_all("status", json!({}), SHORT).await;
+        let has = |apis: &[&str]| {
+            reports
+                .iter()
+                .any(|(_, status)| status["contexts"].as_array().into_iter().flatten().any(|context| apis.contains(&context["api"].as_str().unwrap_or(""))))
+        };
+        let count = |what: &str| reports.iter().map(|(_, status)| status["webgpuStarting"][what].as_u64().unwrap_or(0)).sum::<u64>();
+        let asked = reports.iter().any(|(_, status)| status["webgpuStarting"]["asked"] == true);
+
+        if has(&["webgpu"]) || (!asked && has(&["webgl", "webgl2"])) {
+            break;
+        }
+
+        if tries >= 11 && !asked {
+            break;
+        }
+
+        equipped_for = if start == "paused" && count("devices") > 0 && count("pending") == 0 { equipped_for + 1 } else { 0 };
+
+        if equipped_for >= 3 {
             break;
         }
 
@@ -137,11 +197,17 @@ pub async fn launch(host: &Arc<Host>, params: &Value) -> Result<Value> {
     if session.profile.name() == "native-capture" {
         let pid = session.gpu_pid().await;
         let said = format!(
-            "{}\nNative capture: this browser's GPU process{} runs with no sandbox and no watchdog, and labels reach the native API as the page wrote them. On macOS: in Xcode choose Debug > Attach to Process by PID or Name, give that number, then use the Metal capture button in the debug bar to capture a frame; what it shows is ANGLE's or Dawn's Metal calls, not the page's. On Windows RenderDoc and PIX attach the same way. Use this profile for that and nothing else: close the session when the capture is taken.",
+            "{}\nNative capture: this browser's GPU process{} runs with no sandbox and no watchdog, and labels reach the native API as the page wrote them. {} Use this profile for that and nothing else: close the session when the capture is taken.",
             value["summary"].as_str().unwrap_or(""),
             match pid {
                 Some(pid) => format!(" (process {pid})"),
                 None => String::new(),
+            },
+            // Each platform has its own debugger, and shows its own API's calls.
+            if cfg!(windows) {
+                "On Windows: that is the process for PIX or RenderDoc to attach to (neither has been tried against it from Scanline); what they show is ANGLE's Direct3D 11 calls or Dawn's Direct3D 12 calls, not the page's."
+            } else {
+                "On macOS: in Xcode choose Debug > Attach to Process by PID or Name, give that number, then use the Metal capture button in the debug bar to capture a frame; what it shows is ANGLE's or Dawn's Metal calls, not the page's. On Windows RenderDoc and PIX attach the same way."
             }
         );
 
@@ -2011,5 +2077,24 @@ pub async fn wait(session: &Arc<Session>, params: &Value) -> Result<Value> {
                 json!({ "still_waiting": true, "cursor": since }),
             ));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_local_file_has_an_address_on_each_platform() {
+        if !cfg!(windows) {
+            assert_eq!(file_url("/Users/me/game/index.html"), "file:///Users/me/game/index.html");
+        }
+
+        // As Windows gives a full path, as a person types one, and on a share.
+        assert_eq!(windows_file_url(r"\\?\C:\game\index.html"), "file:///C:/game/index.html");
+        assert_eq!(windows_file_url(r"C:\My Games\50% #1\index.html"), "file:///C:/My%20Games/50%25%20%231/index.html");
+        assert_eq!(windows_file_url(r"C:/game/index.html"), "file:///C:/game/index.html");
+        assert_eq!(windows_file_url(r"\\?\UNC\server\share\index.html"), "file://server/share/index.html");
+        assert_eq!(windows_file_url(r"\\server\share\index.html"), "file://server/share/index.html");
     }
 }

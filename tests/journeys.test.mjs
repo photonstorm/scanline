@@ -11,7 +11,7 @@ import { join } from 'node:path';
 import { after, afterEach, before, describe, test } from 'node:test';
 import { repoRoot, serve } from '../spikes/lib/serve.mjs';
 
-const binary = join(repoRoot, 'target', 'debug', 'scanline');
+import { binary, hostRunning } from './host.mjs';
 const home = mkdtempSync(join(tmpdir(), 'scanline-journeys-'));
 const env = { ...process.env, SCANLINE_HOME: home };
 
@@ -50,7 +50,7 @@ after(async () =>
 
 afterEach(async () =>
 {
-    if (existsSync(join(home, 'control.sock')))
+    if (hostRunning(home))
     {
         await scanline('stop');
     }
@@ -86,9 +86,57 @@ async function gpuTime ()
     return (await timed()).json.data.gpu.ms.p50;
 }
 
+const middle = (values) => [...values].sort((a, b) => a - b)[values.length >> 1];
+
+// GPU time with a patch and without it, measured turn about: after the first reading of
+// each, the patch is reverted and applied twice more, with a reading each time. It ends
+// with the patch in force.
+//
+// A desktop graphics card slows its clock when it has little to do, so the same frame can
+// take several times as long a few seconds later: through Direct3D on an NVIDIA card this
+// scene was seen to go from 0.27 ms to 2 ms with nothing changed. One reading of each would
+// compare two states of the machine and not two shaders. The middle reading of each kind is
+// what is compared.
+//
+// Turn about is not always enough. On such a card a lighter frame can slow the clock
+// further, and the readings of one unchanged frame have been seen a factor of four apart
+// inside ten seconds. When the readings of the same frame are not within half as much
+// again of each other, a difference between the two kinds says nothing about the shader:
+// the comparison is then reported and not asserted. On a GPU whose clock holds (the Mac's)
+// the readings agree and it is asserted.
+const steady = (values) => Math.max(...values) <= Math.min(...values) * 1.5;
+
+function timingHolds (context, holds, sets, said)
+{
+    if (sets.every(steady))
+    {
+        assert.ok(holds, said);
+    }
+    else
+    {
+        context.diagnostic(`GPU time was not steady on this machine, so it was not compared: ${said}`);
+    }
+}
+
+async function turnAbout (beforeMs, afterMs, apply)
+{
+    const patched = [afterMs];
+    const reverted = [];
+
+    for (let round = 0; round < 2; round++)
+    {
+        await scanline('patches', '--revert', 'all');
+        reverted.push(await gpuTime());
+        await apply();
+        patched.push(await gpuTime());
+    }
+
+    return { plain: [beforeMs, ...reverted], patched, reverted };
+}
+
 // J3. Slow frame: profile, find the pass and the shader, test that the cost is fill, read
 // the shader, patch it live, compare the picture and the timing, and get the source change.
-async function slowFrame (page, programs)
+async function slowFrame (context, page, programs)
 {
     const launched = await scanline('launch', server.url(page), '--headless', '--paused');
 
@@ -129,7 +177,8 @@ async function slowFrame (page, programs)
     // 4. Patch it live to 24 samples.
     const beforeMs = await gpuTime();
     const before = await scanline('screenshot', '--json');
-    const patched = await scanline('patch_shader', worst.shader, '--edits', JSON.stringify([{ find: programs.find, replace: programs.replace }]));
+    const apply = () => scanline('patch_shader', worst.shader, '--edits', JSON.stringify([{ find: programs.find, replace: programs.replace }]));
+    const patched = await apply();
 
     assert.match(patched.out, /pat_\d+: .*compiled/s, patched.out);
 
@@ -142,9 +191,9 @@ async function slowFrame (page, programs)
     assert.equal(difference.code, 0, difference.out);
     assert.ok(difference.json.data.mean < 6, `the picture barely moved: ${difference.json.summary}`);
 
-    const afterMs = await gpuTime();
+    const times = await turnAbout(beforeMs, await gpuTime(), apply);
 
-    assert.ok(afterMs < beforeMs * 0.75, `${afterMs} ms a frame after the patch, ${beforeMs} ms before`);
+    timingHolds(context, middle(times.patched) < middle(times.plain) * 0.75, [times.patched, times.plain], `${times.patched} ms a frame with the patch, ${times.plain} ms without`);
 
     // 6. The change to make in the source.
     const listed = await scanline('patches');
@@ -153,15 +202,14 @@ async function slowFrame (page, programs)
 
     // Reverting puts the cost back.
     await scanline('patches', '--revert', 'all');
+    times.reverted.push(await gpuTime());
 
-    const reverted = await gpuTime();
-
-    assert.ok(reverted > afterMs * 1.25, `${reverted} ms a frame once reverted, ${afterMs} ms patched`);
+    timingHolds(context, middle(times.reverted) > middle(times.patched) * 1.25, [times.reverted, times.patched], `${times.reverted} ms a frame once reverted, ${times.patched} ms patched`);
 }
 
 // The same journey on WebGPU. The pass comes from the live per-pass GPU timings, and the
 // pipeline from a capture of the frame; the rest is the same commands.
-async function slowFrameGpu (page)
+async function slowFrameGpu (context, page)
 {
     const launched = await scanline('launch', server.url(page), '--headless', '--paused');
 
@@ -202,7 +250,8 @@ async function slowFrameGpu (page)
     // 4. Patch it live to 24 samples.
     const beforeMs = await gpuTime();
     const before = await scanline('screenshot', '--json');
-    const patched = await scanline('patch_shader', pipeline, '--edits', JSON.stringify([{ find: 'SAMPLES: i32 = 64', replace: 'SAMPLES: i32 = 24' }]));
+    const apply = () => scanline('patch_shader', pipeline, '--edits', JSON.stringify([{ find: 'SAMPLES: i32 = 64', replace: 'SAMPLES: i32 = 24' }]));
+    const patched = await apply();
 
     assert.match(patched.out, /pat_\d+: .*It compiled, and the pipelines rebuilt with it are valid/s, patched.out);
 
@@ -214,9 +263,9 @@ async function slowFrameGpu (page)
 
     assert.ok(difference.json.data.mean < 6, `the picture barely moved: ${difference.json.summary}`);
 
-    const afterMs = await gpuTime();
+    const times = await turnAbout(beforeMs, await gpuTime(), apply);
 
-    assert.ok(afterMs < beforeMs * 0.75, `${afterMs} ms a frame after the patch, ${beforeMs} ms before`);
+    timingHolds(context, middle(times.patched) < middle(times.plain) * 0.75, [times.patched, times.plain], `${times.patched} ms a frame with the patch, ${times.plain} ms without`);
 
     // 6. The change to make in the source.
     const listed = await scanline('patches');
@@ -224,21 +273,20 @@ async function slowFrameGpu (page)
     assert.match(listed.out, /SAMPLES: i32 = 64» → «SAMPLES: i32 = 24»/, listed.out);
 
     await scanline('patches', '--revert', 'all');
+    times.reverted.push(await gpuTime());
 
-    const reverted = await gpuTime();
-
-    assert.ok(reverted > afterMs * 1.25, `${reverted} ms a frame once reverted, ${afterMs} ms patched`);
+    timingHolds(context, middle(times.reverted) > middle(times.patched) * 1.25, [times.reverted, times.patched], `${times.reverted} ms a frame once reverted, ${times.patched} ms patched`);
 }
 
 describe('J3, the slow frame', () =>
 {
-    test('on WebGL 2', async () =>
+    test('on WebGL 2', async (context) =>
     {
-        await slowFrame('fixtures/slow/webgl2.html', { shafts: 'prg_3', find: 'SAMPLES = 64', replace: 'SAMPLES = 24' });
+        await slowFrame(context, 'fixtures/slow/webgl2.html', { shafts: 'prg_3', find: 'SAMPLES = 64', replace: 'SAMPLES = 24' });
     });
 
-    test('on WebGPU', async () =>
+    test('on WebGPU', async (context) =>
     {
-        await slowFrameGpu('fixtures/slow/webgpu.html');
+        await slowFrameGpu(context, 'fixtures/slow/webgpu.html');
     });
 });

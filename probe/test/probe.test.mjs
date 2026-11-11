@@ -74,6 +74,8 @@ describe('the frame gate', () =>
         {
             await withPage(`fixtures/matrix/${page}.html`, {}, async (session) =>
             {
+                // WebGPU's set-up takes the better part of a second through Direct3D.
+                await ready(session);
                 await sleep(300);
 
                 const paused = await session.probe('pause');
@@ -367,6 +369,7 @@ describe('observing', () =>
     {
         await withPage('fixtures/matrix/webgpu.html', {}, async (session) =>
         {
+            await ready(session);
             await sleep(300);
 
             const status = await session.probe('status');
@@ -629,13 +632,17 @@ describe('GPU time', () =>
     {
         await withPage('fixtures/matrix/inventory-webgpu.html', {}, async (session) =>
         {
+            await ready(session);
             await sleep(1200);
 
             const stats = await session.probe('stats', { frames: 120 });
 
             assert.ok(stats.gpu.frames > 3, `some frames were measured (${stats.gpu.frames})`);
             assert.equal(stats.gpu.passes.length, 2, 'the offscreen pass and the canvas pass');
-            assert.ok(stats.gpu.passes.every((pass) => pass.mean > 0 && pass.mean < 50));
+
+            // A quick GPU finishes a pass inside the step the browser rounds timestamps to
+            // (65.5 µs outside the deep profile), and such a pass reads as zero.
+            assert.ok(stats.gpu.passes.every((pass) => pass.frames > 3 && pass.mean >= 0 && pass.mean < 50));
             assert.equal(stats.counters.passes.last, 2);
         });
     });
@@ -644,6 +651,7 @@ describe('GPU time', () =>
     {
         await withPage('fixtures/matrix/webgpu.html', { unmodified: true }, async (session) =>
         {
+            await ready(session);
             await sleep(700);
 
             const stats = await session.probe('stats', { frames: 60 });

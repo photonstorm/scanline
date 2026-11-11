@@ -898,7 +898,7 @@ What the boundaries are
     cookies, logins or saved passwords of the person's are in it.
   - The host listens on no network port unless it is started with `scanline serve --http`.
     Clients reach it through a socket in the person's own directory that only they can
-    open. With --http it also serves MCP on 127.0.0.1, to requests that carry the token of
+    open (on Windows, a named pipe that only they can open). With --http it also serves MCP on 127.0.0.1, to requests that carry the token of
     that run (a file only the person can read), name this machine in Host, and have no
     Origin: a web page, the game included, is refused.
   - Files Scanline writes go in its artefact directory, except an export, which goes where
@@ -938,16 +938,15 @@ each kind of job: help(topic: \"skills\").
 
 Not built:
   - Hand-off to a person, beyond what is built (request_human, the control strip, the Debug
-    key held system-wide on macOS while a request is open, the flight recorder, runs, one
+    key held system-wide on macOS and Windows while a request is open, the flight recorder, runs, one
     owner of the input): the browser's own pointer lock (a shim stands in:
     launch(pointer_lock: \"shim\")).
   - For the draws inside a WebGPU render bundle: geometry, and which test turned one away
     (in draw and in pixel_history). The bundle is one event; draw lists what it draws, and
     the views, profile and live patches reach inside it.
   - The wireframe view on a running WebGPU page (view on a capture has it).
-  - An adapter for PlayCanvas. Windows and Linux. Signed installers and updates: a release
-    is an archive holding
-    the one binary.
+  - An adapter for PlayCanvas. Linux. Signed installers and updates: a release is an
+    archive holding the one binary.
 
 Known limits
   - Page protocol: frame.begin and frame.end are counted, not used as frame boundaries; the
@@ -968,7 +967,11 @@ Known limits
     while the browser's window is in front, which Scanline does not make it. When the
     lock is refused a warning event says so. To play by mouse-look, launch with
     pointer_lock: \"shim\".
-  - Windows is not supported yet. macOS only.
+  - Platforms: macOS (Apple silicon, through Metal) and Windows 11 (x64, through Direct3D),
+    each built and tested on one machine. Linux is not built. On Windows a host started by
+    a command lives on after it, unless the terminal or agent client that ran the command
+    kills everything it started when it ends; `scanline serve` in a window of its own
+    is then the way to keep one.
   - Draw and triangle counts are per frame as issued. Triangle counts leave out indirect draws.
   - Texture readback: a compressed texture is read as the texels its blocks decode to, and
     a depth texture as its depth (WebGL to 24 bits), each by drawing it with a shader of
@@ -1022,6 +1025,11 @@ Known limits
     away still shows its outline.
   - profile on WebGPU: the stock profile's browser rounds GPU timestamps to 65.5 µs, so a
     draw is timed to about 4 µs; launch(profile: \"deep\") for finer.
+  - GPU time on a desktop graphics card is not steady. Such a card slows its clock when it
+    has little to do, so the same frame can read several times higher a few seconds later,
+    and a frame made cheaper can read no lower. Read stats more than once, and trust a
+    difference that holds across readings: experiment measures with and without a change
+    one straight after the other, which is the fairest single comparison there is.
   - profile repeats each draw, and a tile-based GPU (Apple's) shades only the last of several
     opaque draws to a pixel. So a draw with no blend is repeated with one that replaces what
     is there, which costs the same and is shaded every time. A draw to a target that cannot
@@ -1295,8 +1303,8 @@ level. Ask them, and let Scanline hold the evidence.
   wait(request: \"req_1\")
       the Debug press, or still_waiting after 45 s with the call to make next. Do other
       work in between if you like: the press is acted on when it happens and stays queued.
-  When the person presses Debug (F9; debug does the same). On macOS the key is held
-  system-wide while the request is open, so it works whichever window has the keyboard
+  When the person presses Debug (F9; debug does the same). On macOS and Windows the key
+  is held system-wide while the request is open, so it works whichever window has the keyboard
   (SCANLINE_HOTKEY=F8 picks another key, =off leaves it to the page and the strip)
       the page freezes at that frame, the frame becomes a capture, and the frames before
       it are kept as a recording. The event names both: cap_N and rec_N.

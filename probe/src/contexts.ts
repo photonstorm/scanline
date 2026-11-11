@@ -240,6 +240,41 @@ function noteAdapter (adapter: any): void
 
 const adapterFacts = new WeakMap<object, Record<string, unknown>>();
 
+// How far the page has got towards WebGPU. From asking for an adapter to having a device
+// is asynchronous and can take a second or more, and an engine configures its canvas only
+// in its first frame. So a host that finds no context yet can tell a page that will never
+// have one (nothing asked) from one on its way (requests in flight) and from one that is
+// ready to draw and is being held at its first frame (a device, and nothing in flight).
+const starting = { asked: false, pending: 0, devices: 0 };
+
+export function webgpuStarting (): { asked: boolean; pending: number; devices: number }
+{
+    return { asked: starting.asked, pending: starting.pending, devices: starting.devices };
+}
+
+// Follows a request without touching the promise the page is given.
+function follow (request: any, done?: (result: any) => void): void
+{
+    starting.asked = true;
+    starting.pending++;
+
+    try
+    {
+        request.then((result: any) =>
+        {
+            starting.pending--;
+            done?.(result);
+        }, () =>
+        {
+            starting.pending--;
+        });
+    }
+    catch
+    {
+        starting.pending--;
+    }
+}
+
 const TEXTURE_COPY_SRC = 0x01;
 const TEXTURE_RENDER_ATTACHMENT = 0x10;
 
@@ -256,7 +291,11 @@ export const contextHandlers: Handlers = {
 
     'GPU.requestAdapter': (self: any, native: Fn, args: IArguments) =>
     {
-        return native.apply(self, args as any).then((adapter: any) =>
+        const request = native.apply(self, args as any);
+
+        follow(request);
+
+        return request.then((adapter: any) =>
         {
             noteAdapter(adapter);
 
@@ -269,7 +308,11 @@ export const contextHandlers: Handlers = {
         // With the timestamp feature added where the adapter has it, for GPU time per pass.
         const amended = withTimestampFeature(self, args);
 
-        return native.apply(self, (amended ?? args) as any).then((device: any) =>
+        const request = native.apply(self, (amended ?? args) as any);
+
+        follow(request, (device) => { starting.devices += device ? 1 : 0; });
+
+        return request.then((device: any) =>
         {
             const facts = adapterFacts.get(self);
 

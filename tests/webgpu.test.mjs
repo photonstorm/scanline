@@ -22,7 +22,12 @@ import { after, afterEach, before, describe, test } from 'node:test';
 import { crc32, deflateSync, inflateSync } from 'node:zlib';
 import { repoRoot, serve } from '../spikes/lib/serve.mjs';
 
-const binary = join(repoRoot, 'target', 'debug', 'scanline');
+import { assertPixel, binary, hostRunning } from './host.mjs';
+
+// The background of several fixtures is a grey of 0.1, which is 25.5, and one draws a grey
+// of 0.5, which is 127.5. Metal rounds each up and Direct3D rounds each down.
+const DARK = [25, 26];
+const MID = [127, 128];
 const home = mkdtempSync(join(tmpdir(), 'scanline-webgpu-'));
 const env = { ...process.env, SCANLINE_HOME: home };
 
@@ -128,7 +133,7 @@ after(async () =>
 
 afterEach(async () =>
 {
-    if (!existsSync(join(home, 'control.sock')))
+    if (!hostRunning(home))
     {
         return;
     }
@@ -203,8 +208,8 @@ describe('views of a WebGPU capture', () =>
 
         // Inside A, away from its edges and its diagonal, the clear colour shows through;
         // on the diagonal (from the top-left of A to its bottom-right) A's own colour is drawn.
-        assert.deepEqual(picture.at(20, 90), [26, 26, 26]);
-        assert.deepEqual(picture.at(70, 20), [26, 26, 26]);
+        assertPixel(picture.at(20, 90), [DARK, DARK, DARK]);
+        assertPixel(picture.at(70, 20), [DARK, DARK, DARK]);
 
         const red = [0, 1, 2, 3].some((dx) => picture.at(38 + dx, 60).join() === '204,51,51');
 
@@ -216,7 +221,7 @@ describe('views of a WebGPU capture', () =>
         {
             for (let x = 0; x < 160; x++)
             {
-                drawn += picture.at(x, y).join() === '26,26,26' ? 0 : 1;
+                drawn += ['25,25,25', '26,26,26'].includes(picture.at(x, y).join()) ? 0 : 1;
             }
         }
 
@@ -280,7 +285,7 @@ describe('the history of a pixel of a WebGPU capture', () =>
             assert.match(corner.summary, /event {4}7 {2}REJECTED: its triangle is culled \(cull back, front face ccw\)/);
             assert.match(corner.summary, /event {4}8 {2}REJECTED: its fragment shader discarded it/);
             assert.equal(corner.data.discarded, 1);
-            assert.match(corner.summary, /Its final value \(26, 26, 26, 255\) was produced by event 4/);
+            assert.match(corner.summary, /Its final value \((25, 25, 25|26, 26, 26), 255\) was produced by event 4/);
 
             // Where E would draw, were it not for the scissor box.
             const top = await history(20, 10);
@@ -509,7 +514,12 @@ describe('render bundles', () =>
         // Event 1 is the bundles, as a capture numbers them: all three of their quads go.
         await scanline('patch_draws', '--filter', '{"draws": 1}');
         await scanline('step', 2);
-        assert.deepEqual([await pixel(20, 60), await pixel(60, 60), await pixel(100, 60), await pixel(140, 60)], [[26, 26, 26, 255], [26, 26, 26, 255], [26, 26, 26, 255], plain[3]]);
+        for (const x of [20, 60, 100])
+        {
+            assertPixel(await pixel(x, 60), [DARK, DARK, DARK, 255], `the quad at ${x} is gone`);
+        }
+
+        assert.deepEqual(await pixel(140, 60), plain[3]);
         await scanline('patches', '--revert', 'all');
         await scanline('step', 2);
         assert.deepEqual([await pixel(20, 60), await pixel(60, 60), await pixel(100, 60), await pixel(140, 60)], plain);
@@ -552,7 +562,8 @@ describe('textures a copy cannot read', () =>
         const pixel = async (x, y) => (await scanline('pixels', x, y, '--capture', capture, '--json')).json.data.rgba8;
 
         // The replay's own picture, from the textures as the capture kept them.
-        assert.deepEqual([await pixel(50, 60), await pixel(70, 60), await pixel(90, 60), await pixel(110, 60)], [[64, 64, 64, 255], [255, 255, 255, 255], [128, 128, 128, 255], [255, 255, 255, 255]]);
+        assert.deepEqual([await pixel(50, 60), await pixel(70, 60), await pixel(110, 60)], [[64, 64, 64, 255], [255, 255, 255, 255], [255, 255, 255, 255]]);
+        assertPixel(await pixel(90, 60), [MID, MID, MID, 255]);
 
         if (state.compressed)
         {

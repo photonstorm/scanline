@@ -326,6 +326,7 @@ dependencies = [
  "scanline-mcp",
  "serde_json",
  "tokio",
+ "windows-sys",
 ]
 
 [[package]]
@@ -337,6 +338,7 @@ dependencies = [
  "scanline-cdp",
  "serde_json",
  "tokio",
+ "windows-sys",
 ]
 
 [[package]]

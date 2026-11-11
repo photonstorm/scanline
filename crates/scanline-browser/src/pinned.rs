@@ -120,9 +120,15 @@ pub fn install(home: &Path, from: Option<&Path>, dry_run: bool) -> Result<String
 
     std::fs::create_dir_all(&partial).with_context(|| format!("creating {}", partial.display()))?;
 
-    // ditto keeps what a macOS application bundle needs (links, permissions); unzip elsewhere.
+    // ditto keeps what a macOS application bundle needs (links, permissions). Windows has
+    // no unzip, but the tar it ships with reads zip archives; it is named by its full path
+    // because a tar from elsewhere on the PATH (Git's, say) may not. unzip elsewhere.
     let unpacked = if cfg!(target_os = "macos") {
         Command::new("ditto").args(["-x", "-k"]).arg(&archive).arg(&partial).status()
+    } else if cfg!(windows) {
+        let system = PathBuf::from(std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into())).join("System32");
+
+        Command::new(system.join("tar.exe")).arg("-xf").arg(&archive).arg("-C").arg(&partial).status()
     } else {
         Command::new("unzip").arg("-q").arg(&archive).arg("-d").arg(&partial).status()
     };

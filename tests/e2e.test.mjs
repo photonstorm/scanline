@@ -15,7 +15,7 @@ import { after, afterEach, before, describe, test } from 'node:test';
 import { crc32, deflateSync } from 'node:zlib';
 import { repoRoot, serve } from '../spikes/lib/serve.mjs';
 
-const binary = join(repoRoot, 'target', 'debug', 'scanline');
+import { assertPixel, binary, hostRunning, windows } from './host.mjs';
 const home = mkdtempSync(join(tmpdir(), 'scanline-e2e-'));
 const env = { ...process.env, SCANLINE_HOME: home };
 
@@ -58,7 +58,7 @@ after(async () =>
 // A test that fails part-way must not leave its session open for the next one to trip over.
 afterEach(async () =>
 {
-    if (!existsSync(join(home, 'control.sock')))
+    if (!hostRunning(home))
     {
         return;
     }
@@ -85,7 +85,7 @@ describe('the command line', () =>
         const help = await scanline('help', 'input');
 
         assert.match(help.out, /"key": "ArrowRight"/);
-        assert.equal(existsSync(join(home, 'control.sock')), false, 'no host was started');
+        assert.equal(hostRunning(home), false, 'no host was started');
     });
 
     test('a session: launch paused, step, look, measure, run until, close', async () =>
@@ -798,7 +798,12 @@ describe('what was set up long before the frame', () =>
 
         const pixel = async (x) => (await scanline('pixels', x, 60, '--capture', capture, '--json')).json.data.rgba8;
 
-        assert.deepEqual([await pixel(28), await pixel(36), await pixel(44)], [[26, 26, 26, 255], [255, 204, 0, 255], [26, 26, 26, 255]]);
+        // The background is a grey of 0.1, which is 25.5: Metal rounds it up and Direct3D down.
+        const grey = [[25, 26], [25, 26], [25, 26], 255];
+
+        assertPixel(await pixel(28), grey, 'left of the bar');
+        assert.deepEqual(await pixel(36), [255, 204, 0, 255]);
+        assertPixel(await pixel(44), grey, 'right of the bar');
 
         // The step itself draws nothing, on purpose: it is not reported as a draw that failed.
         assert.doesNotMatch(taken.json.summary, /changed no pixels/);
@@ -1022,7 +1027,7 @@ describe('a loop that is not on frames or timers', () =>
     }
 });
 
-describe('a Debug key held system-wide', { skip: process.platform !== 'darwin' }, () =>
+describe('a Debug key held system-wide', { skip: process.platform !== 'darwin' && !windows }, () =>
 {
     test('the helper is given the key by the operating system, and a press is a Debug press', async () =>
     {
@@ -1372,10 +1377,11 @@ describe('live patches', () =>
         await scanline('patches', '--revert', 'all');
 
         // A uniform held, with the texture it multiplies made white.
-        const ground = [64, 128, 51, 255];
+        // Its green is a tint of 0.5, which is 127.5: Metal rounds it up and Direct3D down.
+        const ground = [64, [127, 128], 51, 255];
 
         await scanline('step', '2');
-        assert.deepEqual(await pixel(30, 320), ground);
+        assertPixel(await pixel(30, 320), ground);
 
         await scanline('patch_texture', 'tex_2', '--with', 'white');
 
@@ -1391,7 +1397,7 @@ describe('live patches', () =>
         assert.match(undone.out, /2 patches undone/);
 
         await scanline('step', '2');
-        assert.deepEqual(await pixel(30, 320), ground, 'the page draws as its own code says again');
+        assertPixel(await pixel(30, 320), ground, 'the page draws as its own code says again');
         assert.match((await scanline('patches')).out, /No patches are in force/);
 
         // The frame is right after all that: the state the patches changed was put back each time.
@@ -1590,7 +1596,7 @@ describe('live patches', () =>
 
         // Every plain colour texture stood in for by a tiny one, on each API; what a pass
         // draws to, and depth, are left alone. The page is itself again afterwards.
-        for (const [page, stood, left, crate] of [['fixtures/bugs/b00.html', 2, 1, [187, 131, 75, 255]], ['fixtures/bugs/w00.html', 3, 2, [188, 132, 75, 255]]])
+        for (const [page, stood, left, crate] of [['fixtures/bugs/b00.html', 2, 1, [187, 131, 75, 255]], ['fixtures/bugs/w00.html', 3, 2, [188, [131, 132], 75, 255]]])
         {
             await scanline('close');
             await scanline('launch', server.url(page), '--paused', '--headless');
@@ -1602,7 +1608,7 @@ describe('live patches', () =>
             assert.match(tiny.json.summary, new RegExp(`Tried for 12 frames: every plain 2D colour texture stood in for by a 2×2 one \\(${stood} textures stood in for; ${left} left as they are`), tiny.json.summary);
             assert.match(tiny.json.summary, /What went is the cost of fetching texels from large textures/);
             assert.match((await scanline('patches')).out, /No patches are in force/);
-            assert.deepEqual((await scanline('pixels', 100, 220, '--json')).json.data.rgba8, crate, `${page}: the crate has its own picture again`);
+            assertPixel((await scanline('pixels', 100, 220, '--json')).json.data.rgba8, crate, `${page}: the crate has its own picture again`);
         }
     });
 
@@ -1719,8 +1725,14 @@ describe('assertions for a test run', () =>
         assert.equal(saved.code, 0, saved.out);
         assert.deepEqual(readFileSync(baseline).subarray(0, 4), PNG);
 
-        // The same frame holds, with everything else asked at once.
-        const held = await scanline('assert', '--baseline', baseline, '--no_errors', '--max_draws', '30', '--max_calls', '400', '--pixel', '{"x": 30, "y": 320, "rgba": [64, 128, 51]}', '--json');
+        // The same frame holds, with everything else asked at once. The ground's green is
+        // 127.5, which is 128 through Metal and 127 through Direct3D: the pixel is held to
+        // whichever this machine draws.
+        const green = (await scanline('pixels', '30', '320', '--json')).json.data.rgba8;
+
+        assertPixel(green, [64, [127, 128], 51, 255], 'the ground');
+
+        const held = await scanline('assert', '--baseline', baseline, '--no_errors', '--max_draws', '30', '--max_calls', '400', '--pixel', JSON.stringify({ x: 30, y: 320, rgba: green.slice(0, 3) }), '--json');
 
         assert.equal(held.code, 0, held.out);
         assert.equal(held.json.data.passed, true);
@@ -1737,7 +1749,7 @@ describe('assertions for a test run', () =>
         assert.match(failed.json.summary, /^FAIL: 3 of 3 checks did not hold\./);
         assert.match(failed.json.summary, /FAIL baseline: \d+ of 172800 pixels differ .* within x \d+ y \d+ \d+×\d+\. The canvas now: .*b00-actual\.png\. Where it differs: .*b00-difference\.png/);
         assert.match(failed.json.summary, /FAIL max_draws: 23 draws a frame, and the budget is 10/);
-        assert.match(failed.json.summary, /FAIL pixel: the pixel at \(30, 320\) is \(64, 128, 51, 255\) and should be \(0, 0, 0\)/);
+        assert.ok(failed.json.summary.includes(`FAIL pixel: the pixel at (30, 320) is (${green.join(', ')}) and should be (0, 0, 0)`), failed.json.summary);
         assert.deepEqual(readFileSync(failed.json.data.checks[0].detail.difference).subarray(0, 4), PNG);
 
         // A little room lets it through: every pixel may differ by anything.
@@ -2369,16 +2381,17 @@ describe('the flight recorder and what the page throws away', () =>
 
             const orange = [255, 128, 0, 255];
             const blue = [0, 128, 255, 255];
-            const empty = [26, 26, 26, 255];
+            // A grey of 0.1, which is 25.5: Metal rounds it up and Direct3D down.
+            const empty = [[25, 26], [25, 26], [25, 26], 255];
 
             // Before the swap: the square the page has since deleted, where it was.
             assert.deepEqual(await at(10, 40, 60), orange);
-            assert.deepEqual(await at(10, 120, 60), empty);
+            assertPixel(await at(10, 120, 60), empty);
             assert.deepEqual(await at(19, 40, 60), orange);
 
             // From the swap on: the one made during the recording, from the calls recorded.
             assert.deepEqual(await at(20, 120, 60), blue);
-            assert.deepEqual(await at(30, 40, 60), empty);
+            assertPixel(await at(30, 40, 60), empty);
             assert.deepEqual(await at(30, 120, 60), blue);
 
             // Reading the old ones before they went raised nothing the page could see.
@@ -2429,9 +2442,27 @@ describe('the flight recorder and what the page throws away', () =>
             assert.ok(Math.abs(decoded.duration - frames.length / 60) < 0.02, `${decoded.duration} s for ${frames.length} frames`);
             assert.ok(close(decoded.early, orange), `frame 10 shows the orange square: ${decoded.early}`);
             assert.ok(close(decoded.late, blue), `frame 30 shows the blue one: ${decoded.late}`);
-            assert.ok(close(decoded.gone, empty), `and not the orange: ${decoded.gone}`);
+            assert.ok(close(decoded.gone, [26, 26, 26, 255]), `and not the orange: ${decoded.gone}`);
 
             await scanline('close', '--session', session);
         });
     }
+});
+
+// Last in the file, so that the sessions the tests above count on keep their numbers.
+describe('a page that is a file', () =>
+{
+    test('a path on disk is launched as a local file', async () =>
+    {
+        // A page with no modules, so that it needs no server. On Windows the path has
+        // backslashes and a drive, and has to be turned into an address.
+        const launched = await scanline('launch', join(repoRoot, 'fixtures', 'history', 'views.html'), '--paused', '--headless', '--json');
+
+        assert.equal(launched.code, 0, launched.out);
+        assert.match(launched.json.summary, /Paused at frame 0\. file:\/\/\/\S*\/fixtures\/history\/views\.html /);
+        assert.match(launched.json.summary, /ctx_1 webgl2? 320×240/);
+        assert.equal(launched.json.data.errors_logged, 0);
+
+        await scanline('close');
+    });
 });

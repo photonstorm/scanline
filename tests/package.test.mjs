@@ -11,7 +11,8 @@ import { join } from 'node:path';
 import { after, describe, test } from 'node:test';
 import { repoRoot } from '../spikes/lib/serve.mjs';
 
-const binary = join(repoRoot, 'target', 'debug', 'scanline');
+import { binary, hostRunning, windows } from './host.mjs';
+
 const scratch = mkdtempSync(join(tmpdir(), 'scanline-pack-'));
 const home = join(scratch, 'home');
 const env = { ...process.env, SCANLINE_HOME: home };
@@ -51,7 +52,7 @@ describe('skills', () =>
         }
 
         assert.equal(names.length, 7);
-        assert.equal(existsSync(join(home, 'control.sock')), false, 'no host was started');
+        assert.equal(hostRunning(home), false, 'no host was started');
     });
 
     test('a short name finds a skill, a wrong one lists them, and --to writes the folders', async () =>
@@ -91,17 +92,23 @@ describe('the pinned browser', () =>
         assert.match(status.out, /Pinned version: Chrome for Testing [\d.]+, not installed/);
     });
 
-    test('an archive is unpacked into place, and one that is not the browser is refused', { skip: process.platform !== 'darwin' }, async () =>
+    // A zip of what is in a folder, made with what the platform has: ditto on macOS, and on
+    // Windows the tar it ships with (named in full: a tar from elsewhere may not write zips).
+    const zip = (folder, archive) => (windows
+        ? execFileSync(join(process.env.SystemRoot ?? 'C:/Windows', 'System32', 'tar.exe'), ['-a', '-cf', archive, '-C', folder, '.'])
+        : execFileSync('ditto', ['-c', '-k', folder, archive]));
+
+    test('an archive is unpacked into place, and one that is not the browser is refused', { skip: process.platform !== 'darwin' && !windows }, async () =>
     {
         const version = /Chrome for Testing ([\d.]+)/.exec((await scanline('browser')).out)[1];
-        const platform = process.arch === 'arm64' ? 'mac-arm64' : 'mac-x64';
+        const platform = windows ? 'win64' : (process.arch === 'arm64' ? 'mac-arm64' : 'mac-x64');
 
         // Not the browser: an archive of something else.
         const other = join(scratch, 'other');
 
         mkdirSync(join(other, 'something'), { recursive: true });
         writeFileSync(join(other, 'something', 'file.txt'), 'hello\n');
-        execFileSync('ditto', ['-c', '-k', join(other), join(scratch, 'other.zip')]);
+        zip(other, join(scratch, 'other.zip'));
 
         const refused = await scanline('browser', 'install', '--from', join(scratch, 'other.zip'));
 
@@ -111,12 +118,13 @@ describe('the pinned browser', () =>
         assert.deepEqual(readdirSync(join(home, 'browser')), [], 'nothing half-unpacked is left');
 
         // A stand-in with the archive's layout. Nothing is downloaded and nothing is run.
-        const app = join(scratch, 'fake', `chrome-${platform}`, 'Google Chrome for Testing.app', 'Contents', 'MacOS');
+        const app = windows ? join(scratch, 'fake', `chrome-${platform}`) : join(scratch, 'fake', `chrome-${platform}`, 'Google Chrome for Testing.app', 'Contents', 'MacOS');
+        const program = windows ? 'chrome.exe' : 'Google Chrome for Testing';
 
         mkdirSync(app, { recursive: true });
-        writeFileSync(join(app, 'Google Chrome for Testing'), '#!/bin/sh\nexit 0\n');
-        chmodSync(join(app, 'Google Chrome for Testing'), 0o755);
-        execFileSync('ditto', ['-c', '-k', join(scratch, 'fake'), join(scratch, 'fake.zip')]);
+        writeFileSync(join(app, program), '#!/bin/sh\nexit 0\n');
+        chmodSync(join(app, program), 0o755);
+        zip(join(scratch, 'fake'), join(scratch, 'fake.zip'));
 
         const installed = await scanline('browser', 'install', '--from', join(scratch, 'fake.zip'));
 
@@ -125,7 +133,7 @@ describe('the pinned browser', () =>
 
         const status = await scanline('browser');
 
-        assert.match(status.out, /A launch would use: .*Google Chrome for Testing \(the pinned Chrome for Testing/);
+        assert.match(status.out, windows ? /A launch would use: .*chrome-win64.chrome\.exe \(the pinned Chrome for Testing/ : /A launch would use: .*Google Chrome for Testing \(the pinned Chrome for Testing/);
         assert.match((await scanline('browser', 'install')).out, /is already installed/);
     });
 });

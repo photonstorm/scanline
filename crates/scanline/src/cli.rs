@@ -289,7 +289,16 @@ pub fn command_usage(name: &str) -> Option<String> {
 
     if !example.is_empty() {
         lines.push(String::new());
-        lines.push(format!("Example: {example}"));
+
+        if cfg!(windows) && windows_quoting(example) != example {
+            lines.push(format!("Example: {}", windows_quoting(example)));
+            lines.push(
+                "(JSON is written here with single quotes inside double quotes, which cmd and every PowerShell pass on whole. Scanline reads it as JSON.)"
+                    .into(),
+            );
+        } else {
+            lines.push(format!("Example: {example}"));
+        }
     }
 
     lines.push("Also: --json prints the whole result; --out file.png copies the returned image.".into());
@@ -298,8 +307,46 @@ pub fn command_usage(name: &str) -> Option<String> {
 }
 
 /// A value from the command line: JSON where it parses as JSON, text otherwise.
+///
+/// An object or a list may be written with single quotes for its double ones:
+/// `"{'draws': [6, 8]}"`. A Unix shell passes `'{"draws": [6, 8]}'` on whole, but cmd does
+/// not treat single quotes as quotes and Windows PowerShell drops the double quotes inside
+/// them; this is the one spelling every shell on every platform leaves alone.
 fn value(text: &str) -> Value {
-    serde_json::from_str(text).unwrap_or_else(|_| Value::String(text.to_string()))
+    if let Ok(parsed) = serde_json::from_str(text) {
+        return parsed;
+    }
+
+    if text.starts_with(['{', '[']) && text.contains('\'') && !text.contains('"') {
+        if let Ok(parsed) = serde_json::from_str(&text.replace('\'', "\"")) {
+            return parsed;
+        }
+    }
+
+    Value::String(text.to_string())
+}
+
+/// An example as a Windows shell needs it: each argument in single quotes that holds
+/// double quotes is turned inside out, to double quotes holding single ones.
+fn windows_quoting(example: &str) -> String {
+    let mut out = String::new();
+    let mut rest = example;
+
+    // An argument of JSON starts after a space, with a quote and then a bracket. A single
+    // quote anywhere else (inside an expression, say) is left as it is.
+    while let Some(start) = [" '{", " '["].iter().filter_map(|opening| rest.find(opening)).min().map(|at| at + 1) {
+        let Some(length) = rest[start + 1..].find('\'') else { break };
+        let inside = &rest[start + 1..start + 1 + length];
+
+        out.push_str(&rest[..start]);
+        out.push('"');
+        out.push_str(&inside.replace('"', "'"));
+        out.push('"');
+        rest = &rest[start + length + 2..];
+    }
+
+    out.push_str(rest);
+    out
 }
 
 struct Parsed {
@@ -527,6 +574,19 @@ mod tests {
         let parsed = parse(vec!["run_until".into(), "--until".into(), r#"{"expr": "game.level === 2"}"#.into(), "--timeout-s".into(), "10".into()]).unwrap();
 
         assert_eq!(parsed.params, json!({ "until": { "expr": "game.level === 2" }, "timeout_s": 10 }));
+
+        // Single quotes for double, which every shell on Windows passes on whole.
+        let parsed = parse(vec!["patch_draws".into(), "--filter".into(), "{'draws': [6, 8]}".into(), "--note".into(), "it's fine".into()]).unwrap();
+
+        assert_eq!(parsed.params, json!({ "filter": { "draws": [6, 8] }, "note": "it's fine" }));
+        assert_eq!(
+            windows_quoting(r#"scanline patch_state --filter '{"program": "prg_1"}' --state '{"cull": false}'"#),
+            r#"scanline patch_state --filter "{'program': 'prg_1'}" --state "{'cull': false}""#
+        );
+
+        let policy = r#"scanline policy "s => ({keys_down: s.x < 200 ? ['ArrowRight'] : []})" --frames 300"#;
+
+        assert_eq!(windows_quoting(policy), policy);
 
         // An expression that is also valid JSON is still an expression.
         let parsed = parse(vec!["eval".into(), "42".into()]).unwrap();

@@ -15,7 +15,7 @@ import { join } from 'node:path';
 import { after, afterEach, before, describe, test } from 'node:test';
 import { repoRoot, serve } from '../spikes/lib/serve.mjs';
 
-const binary = join(repoRoot, 'target', 'debug', 'scanline');
+import { binary, hostRunning } from './host.mjs';
 const home = mkdtempSync(join(tmpdir(), 'scanline-protocol-'));
 const env = { ...process.env, SCANLINE_HOME: home };
 
@@ -74,7 +74,7 @@ after(async () =>
 
 afterEach(async () =>
 {
-    if (!existsSync(join(home, 'control.sock')))
+    if (!hostRunning(home))
     {
         return;
     }

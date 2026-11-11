@@ -17,7 +17,7 @@ import { noteTargets } from './gpu/tracker';
 import { natives, type Handlers } from './hooks/install';
 import { declare } from './mods';
 import { entryOf, noteDevice } from './registry';
-import { G, type Fn } from './natives';
+import { G, nSetTimeout, type Fn } from './natives';
 import type { Tag } from './tag';
 import { gpuEncoderTag } from './tags.generated';
 import { emit } from './transport';
@@ -469,6 +469,51 @@ function beginPass (kind: string): Fn
     };
 }
 
+// Resolves when every WebGPU queue has done the work it was given, or after a quarter of
+// a second.
+//
+// The browser checks a WebGPU frame in another process, and says what was wrong with it
+// some milliseconds after the page submitted it. Waiting for the queue lets that arrive
+// first, so that whoever stepped the page hears of the errors its frames raised with those
+// frames, and not with the command after.
+export async function gpuWorkDone (): Promise<void>
+{
+    const waits: unknown[] = [];
+    const seen = new G.Set() as Set<object>;
+
+    for (const info of allContexts())
+    {
+        const device = info.gpu?.device;
+
+        if (!device || seen.has(device))
+        {
+            continue;
+        }
+
+        seen.add(device);
+
+        try
+        {
+            const wait = natives.GPUQueue?.onSubmittedWorkDone?.call(device.queue);
+
+            if (wait)
+            {
+                // A device that is lost rejects: that is news for another event, not for here.
+                waits.push(wait.then(() => undefined, () => undefined));
+            }
+        }
+        catch
+        {
+            // A queue that cannot be asked has nothing to wait for.
+        }
+    }
+
+    if (waits.length)
+    {
+        await G.Promise.race([G.Promise.all(waits), new G.Promise((resolve: () => void) => nSetTimeout(resolve, 250))]);
+    }
+}
+
 function gpuFrameEnd (): void
 {
     for (const info of allContexts())
@@ -520,8 +565,12 @@ function gpuFrameEnd (): void
                     const begin = times[i * 2];
                     const end = times[i * 2 + 1];
 
-                    // A pass whose commands were never submitted this frame leaves no usable pair.
-                    if (end > begin)
+                    // A pass whose commands were never submitted this frame leaves no usable pair:
+                    // a query that was not written resolves to zero. A pair that is equal is a
+                    // pass shorter than the step the browser rounds timestamps to, and counts
+                    // as zero: left out, only the rare pass that straddles a step would be
+                    // counted, and a quick GPU's mean would read as a whole step.
+                    if (begin > 0n && end >= begin)
                     {
                         const ms = G.Number(end - begin) / 1e6;
 

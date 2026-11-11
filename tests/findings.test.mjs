@@ -14,7 +14,7 @@ import { join } from 'node:path';
 import { after, afterEach, before, describe, test } from 'node:test';
 import { repoRoot, serve } from '../spikes/lib/serve.mjs';
 
-const binary = join(repoRoot, 'target', 'debug', 'scanline');
+import { assertPixel, binary, hostRunning } from './host.mjs';
 const home = mkdtempSync(join(tmpdir(), 'scanline-findings-'));
 const env = { ...process.env, SCANLINE_HOME: home };
 
@@ -74,7 +74,7 @@ after(async () =>
 
 afterEach(async () =>
 {
-    if (!existsSync(join(home, 'control.sock')))
+    if (!hostRunning(home))
     {
         return;
     }
@@ -573,7 +573,13 @@ describe('lint and shader analysis', () =>
 
             const history = async (x, y) => (await scanline('pixel_history', capture, x, y, ...target, '--session', session, '--json')).json;
             const steps = (reply) => reply.data.history.map((row) => [row.draw, row.changed, row.after]);
-            const [sky, grey, red, green] = [[32, 64, 96, 255], [128, 128, 128, 255], [255, 0, 0, 255], [0, 255, 0, 255]];
+            const [sky, red, green] = [[32, 64, 96, 255], [255, 0, 0, 255], [0, 255, 0, 255]];
+
+            // The floor is a grey of 0.5, which is 127.5: Metal rounds it up and Direct3D
+            // down. It is read once, held to those two, and then expected to stay as read.
+            const grey = (await history(100, 180)).data.history[1].after;
+
+            assertPixel(grey, [[127, 128], [127, 128], [127, 128], 255], 'the floor');
 
             // The middle of the disc: cleared, then drawn red.
             assert.deepEqual(steps(await history(80, 60)), [[0, true, sky], [2, true, red]]);
@@ -818,7 +824,12 @@ describe('views of a capture', () =>
 
         assert.equal(rows[0].draw, 10, draws.json.summary);
         assert.ok(rows[0].ns > draws.json.data.total_ns * 0.6, draws.json.summary);
-        assert.ok(rows[1].ns < rows[0].ns / 5, draws.json.summary);
+
+        // On a quick GPU the haze is some 20 µs, and a draw that changes what is drawn to
+        // costs a few of those whatever it draws: the next most costly draw is well under
+        // the haze, and each spark (events 11 to 22) is a small fraction of it.
+        assert.ok(rows[1].ns < rows[0].ns / 2, draws.json.summary);
+        assert.ok(rows.filter((row) => row.draw > 10 && row.draw <= 22).every((row) => row.ns < rows[0].ns / 5), draws.json.summary);
 
         const shaders = await scanline('profile', capture, '--by', 'shader', '--session', session, '--json');
 
