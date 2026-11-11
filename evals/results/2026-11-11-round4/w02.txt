@@ -1,0 +1,15 @@
+CAUSE: The crate texture (tex_2 "crate", 256x256 rgba8unorm) is created with 9 mip levels but only level 0 is ever uploaded. The crates are drawn smaller than 256px with a sampler (smp_1 "smooth") that has mipmapFilter "linear", so they sample the empty, zeroed mip levels and come out transparent black (0,0,0,0).
+EVIDENCE: Capture cap_5 flagged tex_2 with 9 mip levels where only level 0 was written. pixel_source at (100,200) shows the pixel went from the sky colour (89,153,229,255) to (0,0,0,0) at event 6. Events 6, 7 and 8 are the three crate draws (pip_1 "solid", textures tex_2). They cover 80x80, 100x100 and 70x70 px, all smaller than 256. Event 6 binds tex_2 (view of all 9 levels) and smp_1, with blend off and the tint at 1,1,1,1. The sprite uniforms (rect, tint, textured=1) are all sensible. smp_1's descriptor is magFilter linear, minFilter linear, mipmapFilter linear. The texture was created in makeCrateTexture (scene-webgpu.js:142). The ground draw uses tex_1, which has no mip problem, and draws correctly.
+FIX: Either create the crate texture with mipLevelCount: 1, or generate and upload every mip level (a downsample pass or manual blit). Alternatively, give the crate sampler mipmapFilter "nearest" and lodMaxClamp 0, or create the sampler used for the crate with no mip filtering. Generating the mips is the proper fix.
+COMMANDS:
+help
+launch http://127.0.0.1:8765/fixtures/bugs/w02.html --headless
+capture --session ses_3
+console --session ses_3
+draw_list --session ses_3 --capture cap_5
+pixel_source --session ses_3 --capture cap_5 --x 100 --y 200
+draw --session ses_3 --capture cap_5 --draw 6
+resource --session ses_3 tex_2 --preview
+resource --session ses_3 smp_1
+close --session ses_3
+FRICTION: None. The capture's "worth a look" note on unwritten mips pointed straight at the cause.

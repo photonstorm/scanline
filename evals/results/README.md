@@ -139,12 +139,59 @@ Read the limits before the numbers, as before: one small scene, one mistake each
 | b13 | Capture handles are shared across sessions, and the first one read was another agent's | Already warned about in every answer (it was, and the agent noticed) |
 | b14 | Nothing flags a draw as costly | `profile` does; see above |
 
+## Round 4: 11 November 2026, build `e4693f7`, the fifteen WebGPU bugs
+
+`2026-11-11-round4/`. The first round on WebGPU: the same scene in raw WebGPU with fifteen mistakes of the kind a WebGPU page makes (`w01` to `w15`). Run as the other rounds were: one Claude Sonnet sub-agent per bug, the command line, a shared host, `scanline help` as the only instruction.
+
+| Measure | Result | Target for 1.0 |
+|---|---|---|
+| Diagnosed correctly, no hints | 15 of 15 | 80% or more |
+| Median commands to a correct diagnosis | 8 (range 6 to 14) | 12 or fewer |
+| w13, the intermittent bug | Correct in 10 commands, by the flight recorder | |
+
+Read this limit before those numbers. The bugs were planted, and what Scanline says about five of them was written, in the same sitting, by the same hand: where a capture did not state a cause, a finding was added until it did (`docs/DEPARTURES.md`, "The WebGPU bugs, and what planting them found"). So this round shows that an agent finds these fifteen causes with what Scanline now says. It does not show how Scanline does on a WebGPU mistake nobody has thought of yet. All fifteen answers were read as well as scored, and each names the planted cause.
+
+| Bug | Commands | How it was found |
+|---|---|---|
+| w01 crates culled | 10 | the summary's "3 draws changed no pixels", then `draw`: culled, and a negative width in `sprite.rect` |
+| w02 mip levels never written | 10 | the summary's line about `tex_2`; confirmed with the sampler's `mipmapFilter` |
+| w03 no blend state | 7 | the summary's "alpha below 1" box, `pixel_source` there, then `draw`: blend off, tint alpha 0.4 |
+| w04 uniform layout | 13 | `draw` gave tint at byte 32 as (0.5, 0.2, 1, 0) and the note about a buffer written short; the agent then read the buffer's bytes with `resource` to see the tint one float early |
+| w05 depth cleared to 0 | 8 | `draw`: "the depth buffer was last cleared to 0 by event 4" |
+| w06 glass before crates | 8 | the summary's line about a blended draw before opaque ones |
+| w07 scissor left set | 7 | `draw` on the event that changed nothing: outside the scissor box |
+| w08 wrong bind group | 7 | `resources` listed the crate texture as "not seen in use"; `draw` showed the health bar's bind group |
+| w09 viewport | 9 | the summary's viewport line, and the one `setViewport` call by SQL |
+| w10 texture every frame | 7 | `memory`: "LIKELY LEAK", with the line that creates them |
+| w11 pipeline every frame | 6 | `stats`, `resources` and `memory` each said so |
+| w12 storeOp discard | 7 | the summary named the pass and the draw that reads zeros |
+| w13 intermittent order | 10 | `capture(when: {frames: 120}, flight_frames: 120)`, `recording` named frames 160, 200 and 240, then `compare` of a bad frame with its neighbour |
+| w14 costly haze | 14 | the full-screen draw and the 64-sample loop in its shader. The agent did not find `profile`, and said the cost was inferred, not measured |
+| w15 usage in one pass | 11 | the console's validation error and the summary's "events 0–24 did not run" |
+
+w13 is the one to compare with round 3. There the WebGL flicker was found by brute force, about 190 commands in shell loops. The route through a recording was signposted in `help` after that round, and this agent took it.
+
+### What the agents said slowed them down
+
+| Said by | Friction | What was done |
+|---|---|---|
+| w15 (and b12 in round 3) | `console` showed the last 25 of 258 lines, all the same two warnings | A line logged again and again is shown once, with how often and over which frames |
+| w15 | The summary's "alpha below 1" line was a side effect of the frame being dropped, and could mislead | Not reported for a frame in which a call was rejected |
+| w09, w13, w14 | `help` never says how to close a session; two agents left theirs open | `close()` is the last step of the loop in `help` |
+| w14 | `stats` gives GPU time by pass, not by draw, so the costly draw was inferred | `stats` and `help` now point to `profile(capture)` |
+| w04 | A `writeBuffer` call's data is shown as `<Uint8Array data>`, so what the page wrote cannot be read from the call | Not done. `resource(buffer)` shows the bytes the buffer holds |
+| w04 | The buffer was written before the captured frame, so the capture holds no write to compare with | Nothing: `draw` reads the buffer as the frame found it, and now says when it was written short |
+| w04 | A SQL filter on `buf_2` also matched `buf_20` and `buf_21` | Nothing: it is SQL's `like` |
+| w05 | A `beginRenderPass` call's arguments were cut off in a query | Nothing: the clear depth the agent wanted is also in `draw` on the clear event |
+| w15 | A `setBindGroup` call is not tagged with its pass | Nothing: `commands.for_draw` names the event it leads up to, and `draw` lists what is bound |
+| w09 | Guessed a column name; the error listed the real ones | As intended |
+
 ## Still open
 
 - The line of page code that made a call. Only object creation records a call site; a `clearDepth(0)` or a missing `bindTexture` is located by call number, not by file and line.
 - "Which texture should this draw have used?" A capture holds only what the frame used, so a texture the page created and never bound is invisible to it. `resources` shows it, with the frame it was last used in.
 - Pixel-level history: which fragments of a draw a test rejected, pixel by pixel.
 - WebGL's names are given for the arguments of a fixed list of methods, not for every enumerated argument.
-- Bugs not covered: back-end differences, anything on WebGPU, large frames, engines. The one intermittent bug (b13) is covered, the hard way.
+- Bugs not covered: back-end differences, large frames, engines. WebGPU is covered by round 4, with the limit said there.
 - The skills have not been in front of an agent. Every round has given agents `scanline help` and nothing else.
-- A runner that starts the agents, so that a round is one command and can be repeated with the MCP server instead of the command line.
+- The runner (`evals/run.mjs`) has not started a real agent: every round so far was started by hand.

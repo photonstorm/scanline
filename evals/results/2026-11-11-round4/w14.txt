@@ -1,0 +1,22 @@
+CAUSE: The haze is drawn as a full-screen (480x360) quad with a "shafts" fragment shader that does a 64-tap radial-blur / god-ray march (64 textureSampleLevel calls per pixel toward the sun) from a 256x256 r8 haze texture. The result is a very soft, low-frequency haze, but it is paid for at full resolution on all 172,800 pixels every frame, with 64 dependent texture fetches each.
+EVIDENCE: The capture shows 24 draws in 2 passes. Draw 10 (pip_5 «haze», fragment entry point "shafts", shd_2) covers 172800 px at 0,0,480,360, with additive blending (src-alpha/one) and depth test with no write. Its uniform has rect = 0,0,480,360 and tint = 1,0.95,0.8,0.3. The shader has `const SAMPLES = 64`, `SUN = vec2f(0.82, 0.12)`, and a `for (var i = 0; i < SAMPLES; i++) { light += textureSampleLevel(map, filtering, at, 0.0).r; at += stride; }` loop. Every other draw is a simple flat quad (the sparks are about 200 px each, the glass about 35k px, the ground 48k px). The stats show GPU time of about 0.29 ms per frame, with «scene» at 0.266 ms. That scene time includes this one full-screen draw, so the 64-tap draw is the dominant cost; I did not time it on its own.
+FIX: Make the haze much cheaper. Options: (a) render the shafts into a small offscreen target (e.g. 1/4 or 1/8 resolution, such as 120x90) and upsample it with a bilinear sampler when compositing; (b) cut SAMPLES to about 8-16, with per-pixel jitter if banding appears; (c) bake the haze into a static texture, since the sun position is constant and the content is static, and draw it as a plain textured quad using the cheap "fragment" entry point. Option (a) or (c) removes nearly all the cost.
+COMMANDS:
+help
+launch http://127.0.0.1:8765/fixtures/bugs/w14.html --headless
+step --session ses_13 --frames 5
+capture --session ses_13
+stats --session ses_13
+draw_list --session ses_13 cap_12
+pass_tree --session ses_13 cap_12
+resources --session ses_13 --kind texture
+draw --session ses_13 --capture cap_12 --draw 10
+pixels --session ses_13 5 5
+pixels --session ses_13 240 300
+resource --session ses_13 pip_5
+resource --session ses_13 tex_4 --preview true
+resource --session ses_13 shd_2
+(Not run: I did not close the session, ses_13. It is still open.)
+FRICTION:
+- Mostly smooth. stats gives only per-group GPU time («scene», «minimap»), not per-draw, so the draw 10 cost is inferred rather than measured.
+- I never ran a close/detach command, so the session was left open.

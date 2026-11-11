@@ -523,7 +523,8 @@ describe('MCP over loopback HTTP', () =>
 
         assert.equal(bare.status, 401);
         assert.equal(bare.headers['www-authenticate'], 'Bearer');
-        assert.equal((await post({ Authorization: `Bearer ${token.slice(0, -1)}0` }, ping)).status, 401);
+        // One character wrong (whichever the last one is, it is changed).
+        assert.equal((await post({ Authorization: `Bearer ${token.slice(0, -1)}${token.endsWith('0') ? '1' : '0'}` }, ping)).status, 401);
 
         // A page in a browser says where it is from. Even with the token, even from this machine.
         const page = await post({ ...auth, Origin: 'http://localhost:5173' }, ping);

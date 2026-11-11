@@ -1,0 +1,16 @@
+CAUSE: The three crate draws bind the wrong texture in bind group 1. They bind the 32×1 "health bar" texture (tex_3), not the 256×256 "crate" wood texture (tex_2). The crate texture is created but never used in any draw. The orange gradient is the health bar's gradient stretched over each crate.
+
+EVIDENCE: In capture cap_9, resources lists tex_2 «crate» (256×256, 9 mips, created in makeCrateTexture) as "not seen in use". The draw list shows crate draws 6, 7 and 8 (rects 60,180,80,80; 200,160,100,100; 340,190,70,70) all with "textures tex_3". Draw 6 shows bind group 1 as bgr_3 «health bar», with binding 0 a view of tex_3 (32×1) and binding 1 smp_1. The per-crate uniform bind group 0 (bgr_6 «crate 0») is correct and has textured=1. The tex_3 view is also the one used by the health-bar draw 23, so the crate draws reuse the health bar's bind group.
+
+FIX: Make the crate draws set bind group 1 to a bind group built from the crate texture's view (tex_2) and the sampler, not the health bar's bind group. Create that bind group once and use it in the crate loop.
+
+COMMANDS:
+help
+launch http://127.0.0.1:8765/fixtures/bugs/w08.html --headless
+capture --session ses_10
+resources --session ses_10 --kind texture
+draw_list --session ses_10 --capture cap_9
+draw --session ses_10 --capture cap_9 --draw 6
+close --session ses_10
+
+FRICTION: None

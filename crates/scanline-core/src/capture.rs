@@ -530,7 +530,11 @@ fn findings(body: &Value, tag: u64, errors: &HashMap<i64, String>, effects: &Has
         if let (Some(first), Some(last)) = (drawn.first().copied(), drawn.last().copied()) {
             let viewport = &draws[first]["viewport"];
 
-            if partial(viewport, size) && drawn.iter().all(|index| draws[*index]["viewport"] == *viewport) {
+            // One that starts at the target's corner: a size left over from another target,
+            // or never set. A viewport placed elsewhere in the target was put there on purpose.
+            let cornered = viewport[0].as_f64() == Some(0.0) && viewport[1].as_f64() == Some(0.0);
+
+            if cornered && partial(viewport, size) && drawn.iter().all(|index| draws[*index]["viewport"] == *viewport) {
                 let every = draws[start..=end].iter().all(|row| row["viewport"] == *viewport);
                 let set_in_frame = commands[..draws[first]["command"].as_u64().unwrap_or(0) as usize]
                     .iter()
@@ -1580,7 +1584,9 @@ pub(crate) async fn build(host: &Arc<Host>, session: &Arc<Session>, body: Value,
 
     let mut found = findings(&body, tag, &errors, &effects);
 
-    if let Some(picture) = &source.original {
+    // Not where a call was rejected: a frame the browser dropped leaves the canvas empty,
+    // which is the rejection's doing and is said there.
+    if let Some(picture) = source.original.as_ref().filter(|_| errors.is_empty()) {
         found.extend(translucent(&body, picture));
     }
 

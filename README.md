@@ -56,10 +56,11 @@ Every milestone of the build plan up to 1.0 has been worked through on macOS (Ap
 
 **Not built**
 
-- For WebGPU captures: external (video) textures; geometry and "which test rejected it" for a draw inside a render bundle.
+- For WebGPU captures: external (video) textures; geometry and "which test rejected it" for a draw inside a render bundle; more than one device in a capture.
+- The wireframe view on a running WebGPU page (a capture has it). Readback of multisampled textures, and of stencil.
 - An adapter for PlayCanvas (installing it was not allowed where this was built).
 - The fast binary channel for bulk data.
-- Windows and Linux.
+- Windows and Linux. A WebKit or Firefox mode. WebXR. A single window that holds both the game and the strip.
 - Signed and notarised installers, and updates: these need the maintainer's Apple Developer identity and somewhere to publish releases. The packaging script has the steps and they have not been run.
 
 It has been run only on macOS (Apple silicon) with the installed Google Chrome 157. Most runs were headless; sessions with a visible window have been checked by hand for the Debug key and the flight recorder, and the rest of what needs eyes is listed in [docs/BY-HAND.md](docs/BY-HAND.md). No licence has been chosen for the code yet.

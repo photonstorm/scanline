@@ -1,0 +1,12 @@
+CAUSE: The "minimap" render pass (offscreen target tex_5) uses storeOp "discard" on its colour attachment, so the three yellow dots it drew are thrown away at pass end. The main scene pass then samples tex_5 for the minimap quad and reads zeros (black).
+EVIDENCE: capture cap_10 (frame 126): pass 0, labelled «minimap», has 3 draws (one per crate) and 1 clear to tex_5. Its beginRenderPass args are colorAttachments[0] = {loadOp: "clear", clearValue [0.05,0.1,0.15,1], storeOp: "discard", view: tex_5}. The capture's "worth a look" note says event 24 samples tex_5 and reads zeros. The canvas region x 406, y 10, 64x64 ends with alpha as low as 0 (the minimap quad). No console errors.
+FIX: Change the minimap pass colour attachment to storeOp: "store".
+COMMANDS:
+help
+launch http://127.0.0.1:8765/fixtures/bugs/w12.html --headless
+capture --session ses_12
+console --session ses_12
+pass_tree --session ses_12 cap_10
+query cap_10 "select command, method, args from commands where method like '%beginRenderPass%'" --session ses_12
+close --session ses_12
+FRICTION: None. (The capture summary named the cause directly; I only confirmed it.)

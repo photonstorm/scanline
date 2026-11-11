@@ -471,6 +471,20 @@ describe('what a capture says about each planted WebGPU bug', () =>
         assert.match(summary, /2 calls raised a validation error when replayed\. WebGPU drops the whole command buffer such a call is encoded in, so none of its passes drew/);
         assert.match(summary, /\[Texture "minimap"\] usage \(TextureBinding\|RenderAttachment\) includes writable usage and another usage in the same synchronization scope/);
         assert.match(summary, /So events 0–24 did not run in the page/);
+
+        // The empty canvas is the rejection's doing: it is not also reported as translucent.
+        assert.doesNotMatch(summary, /alpha below 1/);
+    });
+
+    test('w15: the same warning every frame is one console line, with how often', async () =>
+    {
+        const { session } = await captured('w15', 12);
+        const lines = await scanline('console', '--session', session, '--json');
+
+        assert.match(lines.json.summary, /^\d+ lines, 2 different \(a repeated line is shown once, with how often\)/);
+        assert.match(lines.json.summary, /\[f\d+–f\d+\] warning ×\d+: «\[Texture "minimap"\] usage/);
+        assert.equal(lines.json.data.lines.length, 2);
+        assert.ok(lines.json.data.lines.every((line) => line.count >= 10 && line.first_frame < line.frame), JSON.stringify(lines.json.data.lines));
     });
 });
 

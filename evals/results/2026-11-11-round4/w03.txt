@@ -1,0 +1,12 @@
+CAUSE: The render pipeline "glass" (pip_2), used to draw the glass panel, is created with no blend state on its colour target. The draw therefore overwrites the crates behind it with the tint colour instead of blending with them.
+EVIDENCE: The capture's "Worth a look" list reported 35144 canvas pixels with alpha below 1 (as low as 0.4) in the box x 150, y 120, 220x160. pixel_source at (259,199) showed the crate colour (160,112,64,255), written by event 7 (pip_1), replaced by (51,102,255,102) at event 9. Event 9 is the draw with pip_2 in the "scene" group. Its state shows "blend: off (the draw replaces what is there)". sprite.tint = (0.2, 0.4, 1, 0.4), sprite.rect = 150,120,220,160. Depth test is "less" with depth write false, which is fine.
+FIX: Add a blend state to the glass pipeline's colour target. Use colour src-alpha / one-minus-src-alpha / add, and alpha one / one-minus-src-alpha / add. This is the standard alpha blend for a premultiplied-off output. Keep depth write off. Also draw the glass after the crates, as it already is.
+COMMANDS:
+help
+launch http://127.0.0.1:8765/fixtures/bugs/w03.html --headless
+capture --session ses_2
+help --topic capture
+pixel_source --session ses_2 --capture cap_2 --x 259 --y 199
+draw --session ses_2 --capture cap_2 --draw 9
+close --session ses_2
+FRICTION: None

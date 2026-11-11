@@ -1,0 +1,11 @@
+CAUSE: The spark-drawing code (sparkPipeline, called from drawSparks every frame) creates a brand-new shader module and render pipeline on every frame instead of creating them once and reusing them. That per-frame shader compile and pipeline creation causes the stutter, and the shaders and pipelines are never destroyed.
+EVIDENCE: memory() flagged a LIKELY LEAK: 125 shaders and 125 pipelines alive after about 125 frames, all created by one line each, about 1 per frame. Shader module: sparkPipeline (scene-webgpu.js:114:69) < drawSparks (369:22) < frame (445:9). Pipeline: pipeline (scene-webgpu.js:101:165) < sparkPipeline (114:33) < drawSparks. resources() showed 127 shaders and 130 pipelines alive, against 5 textures and 25 buffers. stats() showed "up to 1 shader compiles in a frame" and "up to 1 pipeline creations in a frame", with GPU time tiny (0.067 ms) and CPU in frame callbacks about 0.24 ms mean, so the cost is pipeline compilation, not draw load.
+FIX: Create the spark shader module and pipeline once at init, or cache them in a variable so sparkPipeline returns the existing pipeline. drawSparks should then only set the pipeline and bind groups and draw.
+COMMANDS:
+help
+launch http://127.0.0.1:8765/fixtures/bugs/w11.html --headless
+stats --session ses_15
+resources --session ses_15
+memory --session ses_15
+close --session ses_15
+FRICTION: None

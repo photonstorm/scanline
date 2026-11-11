@@ -1,0 +1,24 @@
+CAUSE: The page calls setViewport(0, 0, 64, 64, 0, 1) at the start of the main canvas pass and never resets it. 64×64 is the minimap target's size, so all 20 draws on the 480×360 canvas are squashed into the top-left 64×64 pixels.
+
+EVIDENCE:
+- Capture cap_8 has 2 passes. Pass 0 is labelled "minimap" and draws 3 times into tex_5. Pass 1 draws 20 times to the canvas.
+- Call 18 is GPURenderPassEncoder.setViewport [0,0,64,64,0,1], set right after the main pass begins at call 16. It is the only setViewport in the frame.
+- Scanline reported that every canvas draw (events 5-24) uses viewport 0,0,64,64 on a 480×360 target.
+- There were no console errors.
+
+FIX: In the main canvas pass, remove the setViewport(0,0,64,64,0,1) call, or set it to the full canvas, setViewport(0, 0, canvas.width, canvas.height, 0, 1). Any viewport meant for the minimap should be set only inside the minimap pass.
+
+COMMANDS:
+help
+launch http://127.0.0.1:8765/fixtures/bugs/w09.html --headless
+step --session ses_9 --frames 5
+capture --session ses_9
+console --session ses_9
+query --session ses_9 cap_8 "select idx, command, method, args from commands where method like '%iewport%' or idx<=20 limit 40"
+query --session ses_9 cap_8 "select command, method, args from commands where method like '%iewport%' or method like '%ScissorRect%' or method like '%beginRenderPass%'"
+--help
+close --session ses_9
+
+FRICTION:
+- My first query guessed a column name, idx, and failed. The error listed the real columns, so it cost one retry.
+- The help text never mentioned how to close a session. I had to run --help to find the close command.

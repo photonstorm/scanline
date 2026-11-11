@@ -1,0 +1,15 @@
+CAUSE: The three crate sprites (draws 6-8) are submitted with a negative width in the sprite rect. This reverses the quad's winding, and the pipeline has cull back and front face cw, so every triangle is culled and nothing is drawn.
+EVIDENCE: Capture cap_1 had 23 draws. Draws 6, 7 and 8 use pip_1 «solid» with tex_2 «crate» and each reported "changed nothing". draw 6 said that with face culling off it would change 6400 pixels (80x80), and that every triangle is culled (cull back, front face cw). The sprite.rect uniform (x, y, w, h) was 140,180,-80,80 for draw 6, 300,160,-100,100 for draw 7 and 410,190,-70,70 for draw 8. The ground draw 5, which uses the same pipeline, has rect 0,260,480,100 (positive width) and renders. The minimap yellow-dot draws and the glass panel render fine.
+FIX: Pass positive widths for the crate rects, so the rect is the left edge plus the width, for example 60,180,80,80 for the first crate, with the same left edge and size convention as the ground. If the negative width was an intended horizontal flip, do the flip in UVs or turn culling off (cullMode none) for the sprite pipeline. Do not flip the winding by using a negative size.
+COMMANDS:
+help
+launch http://127.0.0.1:8765/fixtures/bugs/w01.html --headless
+capture --session ses_1
+console --session ses_1
+draw_list --session ses_1 cap_1
+draw --session ses_1 cap_1 6
+draw --session ses_1 cap_1 5 | grep -E "rect|pipeline"
+draw --session ses_1 cap_1 7 | grep rect
+draw --session ses_1 cap_1 8 | grep rect
+close --session ses_1
+FRICTION: None

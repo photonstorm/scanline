@@ -1,0 +1,12 @@
+CAUSE: The minimap quad is drawn (draw 24) while the scissor rect set for the health-bar fill (draw 23) is still active: setScissorRect(12,12,150,12) is never reset, so the minimap, which sits at 406,10 64x64, is entirely clipped away.
+EVIDENCE: In capture cap_6, the minimap texture tex_5 is rendered correctly in pass 0 (yellow dots, draws 1-3). Draw 24 (pip_3 "hud", textures tex_5) reports "changed nothing". draw 24 shows sprite.rect = 406,10,64,64 but scissor test ON, box 12,12,150,12, and says that with the scissor off it would change 4096 pixels. Draw 23 (health bar fill) set that same scissor, and draw 22 before it had none. No console errors.
+FIX: In the HUD pass, reset the scissor to the full canvas (setScissorRect(0,0,480,360)) after drawing the health bar fill and before drawing the minimap, or set a scissor only around the health bar draw.
+COMMANDS:
+help
+launch http://127.0.0.1:8765/fixtures/bugs/w07.html --headless
+capture --session ses_8
+console --session ses_8
+draw_list cap_6 --session ses_8
+draw cap_6 24 --session ses_8
+close --session ses_8
+FRICTION: None.

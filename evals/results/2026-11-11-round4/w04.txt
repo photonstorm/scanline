@@ -1,0 +1,25 @@
+CAUSE: The page writes the ground sprite's uniform data with the wrong layout. It puts the tint (0.25, 0.5, 0.2, 1.0 = green) packed at byte 28, straight after the f32 depth. The shader's Sprite struct reads the vec4f tint at byte 32, because a vec4f must start on a 16-byte boundary. The shader therefore reads the tint as (0.5, 0.2, 1, 0), a purple colour with alpha 0, and the "textured" flag from the wrong slot.
+
+EVIDENCE: The ground is draw/event 5 in cap_4, pipeline pip_1 "solid", uniform buffer buf_2 "ground" (64 bytes), drawn with no blend. draw cap_4 5 decodes the struct as sprite.rect = 0,260,480,100, sprite.depth = 0.9, sprite.tint (byte 32) = 0.5, 0.2, 1, 0, sprite.textured (byte 48) = 0. pixels at (240,340) is (128,51,255,0), and pixel_source names event 5 as the writer. The raw bytes of buf_2 as float32 are: 0, 260, 480, 100, 480, 360, 0.9, 0.25, 0.5, 0.2, 1, 0, 0... The extra 0.25 sits at byte 28 and 0.5, 0.2, 1 follow it, so (0.25, 0.5, 0.2, 1) was written one float too early and the shader reads it one float late. The draw tool also warned that the page is writing another layout than the struct's. By contrast, the crate draw's buf_3 reads tint = 1,1,1,1 and textured = 1 correctly. capture also warned that 48000 pixels at x 0 y 260 480x100 end with alpha below 1.
+
+FIX: In the page's makeSprite uniform packing, write the tint at byte 32 (float index 8) and textured at byte 48 (float index 12), leaving bytes 28-31 as padding. That is, pad after depth, or lay the data out to match the WGSL struct alignment. Alternatively, change the WGSL struct to put a 4-byte field before tint, or to use a vec3 plus a float, so that tint really sits at byte 28. After the fix the ground tint reads (0.25, 0.5, 0.2, 1) and renders green.
+
+COMMANDS:
+help
+launch http://127.0.0.1:8765/fixtures/bugs/w04.html --headless
+capture --session ses_5
+pixels 240 340 --session ses_5
+pixel_source cap_4 240 340 --session ses_5
+draw cap_4 5 --session ses_5
+resource tex_1 --preview --session ses_5
+draw cap_4 6 --session ses_5
+query cap_4 "select command, method, args from commands where for_draw = 5" --session ses_5
+query cap_4 "select command, method, args from commands where method like '%writeBuffer%' and args like '%buf_2%'" --session ses_5
+resource buf_2 --session ses_5
+query cap_4 "select command, method, args from commands where command < 17" --session ses_5
+close --session ses_5
+
+FRICTION:
+- The query for writeBuffer calls matched buf_20 and buf_21 when I filtered on buf_2, because it is a substring match, and the writeBuffer args show only "<Uint8Array data>", so the page's write could not be inspected directly.
+- The ground's uniform data was written in frame 0, before the captured frame, so the capture holds no write to compare against. I had to read the raw bytes with resource buf_2 and infer the offset error from them.
+- The draw output's decoded tint looked like a plausible wrong colour value, so nothing there signalled a layout shift until I read the raw bytes.

@@ -59,7 +59,7 @@ The WebGPU bugs are the same scene with the mistakes a WebGPU page makes:
 
 Several have no WebGL counterpart: mip levels that were never written (w02), a uniform buffer written in another layout than its struct's (w04), a pass that ends with `storeOp: "discard"` (w12), and a texture drawn to and sampled in one pass, which loses the whole frame (w15).
 
-The WebGPU bugs have not been given to agents yet: `tests/findings.test.mjs` holds Scanline to stating the cause of each, and the next round is the first to include them.
+`tests/findings.test.mjs` holds Scanline to stating the cause of each, and round 4 gave them to agents: fifteen of fifteen, with a limit that `results/README.md` spells out.
 
 Not covered yet: back-end differences (right on WebGPU, wrong on WebGL).
 

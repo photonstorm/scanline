@@ -753,6 +753,7 @@ The loop
   3. pixels(x, y)                        the exact value of a pixel: prefer this to looking
   4. console(level: \"error\")             what the page and the browser complained about
   5. change the code, navigate(reload: true), repeat
+  6. close()                             when you have finished: closes the session's browser
 
 Looking inside
   resources(kind: \"texture\")           every texture, largest first, with the line that created it
@@ -764,6 +765,7 @@ Looking inside
   memory()                               estimated GPU memory by category; flags a likely leak
                                          (many alive from one line) and churn (made and destroyed)
   stats()                                frame times and draw counts: is it actually slow?
+                                         (which draw is slow: capture, then profile(capture))
   region_stats(region: {…})             is this area blank, clipped, one colour?
   diff(a, b)                             what changed between two screenshots
   capture()                              a whole frame to take apart: see help(topic: \"capture\"),

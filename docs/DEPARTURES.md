@@ -68,7 +68,7 @@ Built for WebGL 1, WebGL 2 and WebGPU: the capture, the store (BLAKE3-named, zst
 |---|---|
 | Replay matches on every matrix page | Met for the pages there are: eight on WebGL, and on WebGPU the two raw pages, three.js and PixiJS. At milestone 7 a Babylon.js scene with a shadow map was added, on its WebGL 2 and WebGPU engines (`fixtures/engines/babylon-shadows.html`); both replay identically. A WebGPU device in a worker, and the engines the matrix still lacks, are untried. |
 | Or reports why not | Met: every capture is replayed once when taken and compared with the frame's own image, the verdict is stored with it, and replay answers carry a warning when it failed. |
-| An agent diagnoses the planted bugs with no hints | Met for the bugs there were: twelve, in one small WebGL scene (`fixtures/bugs/`), all diagnosed by agents using only the command line, in a median of 8.5 commands. `evals/results/README.md` has both rounds and their limits. The rounds were started by hand; a runner now exists (`evals/run.mjs`), and fifteen WebGPU bugs that no agent has been given yet. |
+| An agent diagnoses the planted bugs with no hints | Met for the bugs there were: twelve, in one small WebGL scene (`fixtures/bugs/`), all diagnosed by agents using only the command line, in a median of 8.5 commands. `evals/results/README.md` has both rounds and their limits. The rounds were started by hand; a runner now exists (`evals/run.mjs`). Fifteen WebGPU bugs were planted later and diagnosed in round 4. |
 
 Differences from the specification:
 
@@ -296,7 +296,7 @@ The build plan gives milestone 7 a list and no exit sentence: "Capture viewer an
 
 | PRD section 10 | Target | Standing |
 |---|---|---|
-| Planted bugs diagnosed, no hints | 80% or more | Met on the bugs there are: 14 of 14 in round 3, on the finished build (12 of 12 and 6 of 6 in rounds 1 and 2). Those bugs are one small scene with one mistake each, all on WebGL; `evals/results/README.md` says what that does and does not show. The fifteen WebGPU bugs planted since have not been given to agents. |
+| Planted bugs diagnosed, no hints | 80% or more | Met on the bugs there are: 14 of 14 in round 3, on the finished build (12 of 12 and 6 of 6 in rounds 1 and 2). Those bugs are one small scene with one mistake each, all on WebGL; `evals/results/README.md` says what that does and does not show. The fifteen WebGPU bugs planted since were all diagnosed in round 4 (15 of 15, median 8 commands), with the limit that they and the findings that name their causes were written together. |
 | Median tool calls to a correct diagnosis | 12 or fewer | 9 in round 3. One bug is far outside it: the intermittent one (b13) took about 190 commands, because the agent did not find the flight recorder. The help now points at it; that has not been run past an agent. |
 | Tokens of tool results per diagnosis | Under 40,000 | Roughly 2,000 to 4,500 in rounds 1 and 2. Not measured in round 3; b13's 190 commands will have been well over it. |
 | Hand-off round trip with no manual steps | Works on both platforms | Works on macOS: checked by hand with a real F9 press on 11 November 2026, and by `tests/e2e.test.mjs` with `debug`. Windows is not built. |
@@ -327,6 +327,23 @@ Two things the new Babylon.js page (`fixtures/engines/babylon-shadows.html`) fou
 - More than one device in a capture. Calls on another device's objects are left out.
 - A call rejected in replay is found by wrapping every call in an error scope. WebGPU reports most errors when an encoder is finished, so the call named is `finish`, with the browser's message saying which pass call was at fault.
 
+## Milestone 8, "After 1.0", against its list
+
+The build plan gives milestone 8 one line of things for after 1.0. Each was built where it could be built and checked on this machine:
+
+| Item | State |
+|---|---|
+| Babylon.js adapter | Built, on both of its engines. See "The Babylon.js adapter". |
+| PlayCanvas adapter | **Not built.** Installing PlayCanvas to build and test against was not allowed where this was written. `docs/BY-HAND.md` has the one command that unblocks it. |
+| Native-capture profile | Built: `launch(profile: "native-capture")`. Attaching Xcode's Metal debugger is a by-hand check. |
+| CI assertions and baselines | Built: `assert`. See "Assertions for a test run". |
+| Frame sequences as video | Built: `recording(video: true)`. See "A recording as a video". |
+| "Send to agent" from the viewer | Built. See "Send to agent". |
+| Single-window builds | **Not built.** The game runs in the browser's own window and the control strip in a second one that follows it. One window that holds both needs a native shell around an embedded browser, which is a different application from the one this is. |
+| A WebKit or Firefox mode | **Not built.** Everything here drives Chromium through its debugging protocol: the launch, the probe's injection before the first script, input, tracing and screenshots. WebKit and Firefox would each need that layer written again against another protocol, and neither was available to test against. |
+| Linux | **Not built.** The browser launch, the hotkey helper and the packaging are written for macOS. Nothing has been run anywhere else. |
+| WebXR | **Not built.** An immersive session draws to the headset's own framebuffer on the headset's frame clock. Neither can be exercised without a device or an emulator that this machine does not have. |
+
 ## Textures that cannot be read directly
 
 A compressed texture, a depth texture and (on WebGL) a luminance or alpha texture cannot be attached to a framebuffer or copied to a buffer as texels. They are read by drawing them: a shader of the probe's own draws one level, texel for texel, into a target that can be read. A frame that only samples such a texture (a shadow map drawn once, a compressed atlas loaded at start) used to replay with it empty.
@@ -340,14 +357,14 @@ A compressed texture, a depth texture and (on WebGL) a luminance or alpha textur
 
 ## The WebGPU bugs, and what planting them found
 
-The planted-bug scene was written again in raw WebGPU (`fixtures/bugs/scene-webgpu.js`), with fifteen mistakes of the kind a WebGPU page makes (`evals/bugs.json`, `w01` to `w15`). Each reproduces (`tests/bugs.test.mjs`), and Scanline is held to stating the cause of each in a capture's summary or one further command (`tests/findings.test.mjs`). Agents have not been given them yet.
+The planted-bug scene was written again in raw WebGPU (`fixtures/bugs/scene-webgpu.js`), with fifteen mistakes of the kind a WebGPU page makes (`evals/bugs.json`, `w01` to `w15`). Each reproduces (`tests/bugs.test.mjs`), and Scanline is held to stating the cause of each in a capture's summary or one further command (`tests/findings.test.mjs`). Agents were then given them (round 4, `evals/results/README.md`): fifteen of fifteen diagnosed, in a median of 8 commands. The bugs and the findings below were written together, so that round shows these causes are found, not how Scanline does on a mistake nobody has thought of.
 
 Most were already answered by what was built. Planting them found these gaps, now closed:
 
 - **A pass that ends with `storeOp: "discard"` replayed wrongly.** The replay keeps what every pass draws, so that it can be read; a target the page's pass threw away was full in the replay and empty in the page. The replay now empties such a target when the pass ends, as the browser does, and the capture says when a later draw samples it.
 - **Mip levels that were never written.** The probe now follows which levels of a WebGPU texture have been written (an upload, a copy, a pass that draws to it), the inventory says `9 levels (only level 0 written)`, and a capture names the draws that sample such a texture. A texture a compute pass may write is not judged.
 - **Translucent colours written unblended to an opaque canvas.** The canvas shows as if alpha were 1, so nothing looks wrong until the colour does. A capture counts the pixels of an opaque WebGPU canvas that end the frame with alpha below 1 and says where.
-- **The viewport finding** looked for a run of events that all used one viewport. A WebGPU pass's clear is listed with the whole target, so the run never matched; the draws now decide.
+- **The viewport finding** looked for a run of events that all used one viewport. A WebGPU pass's clear is listed with the whole target, so the run never matched; the draws now decide. It is reported only for a viewport that starts at the target's corner, which is what one left over from another target looks like: a viewport placed elsewhere in the target was put there on purpose.
 - **A uniform buffer written short of what its shader reads.** `draw` gives each member's byte offset, and says when the page has only ever written part of what the struct covers: the usual sign of a layout written without WGSL's padding.
 
 ## State set up long before the frame

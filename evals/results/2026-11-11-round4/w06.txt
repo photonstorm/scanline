@@ -1,0 +1,17 @@
+CAUSE: The page draws the translucent glass panel (blended, depth-write off) before the three opaque crates, so the glass blends only over the ground and sky. The crates are drawn afterwards over those pixels and replace the tint, so they look as if they are in front of the glass.
+
+EVIDENCE: The capture (cap_7) has 23 draws. In the main pass, draw 5 is the opaque ground (blend 0, depth test and write on). Draw 6 is the glass: blend 1, src-alpha / one-minus-src-alpha, depth test on with func less, depth write off, 35200 pixels changed. Draws 7, 8 and 9 are the three crates: blend 0, depth test and write on, func less. They changed 6400, 10000 and 4900 pixels and were issued after the glass. The sparks (draws 10-21) are blended and drawn after the crates. Scanline's capture summary flagged the same thing: "Event 6 blends, but opaque depth-written events 8-9 are drawn after it on the same pixels." I did not read the vertex z values. The glass fails the depth test against the crates wherever the crates come later, so the crates overwrite the tinted pixels.
+
+FIX: Change the draw order to opaque first, then blended. Draw the glass after all three crates (after draw 9, before or among the sparks), sorted back to front among the blended draws. In the page's code, move the glass draw call below the crate draws, or sort draws by opaque/transparent.
+
+COMMANDS:
+help
+launch http://127.0.0.1:8765/fixtures/bugs/w06.html --headless
+capture --session ses_7
+help --topic sql
+query --session ses_7 --capture cap_7 --sql "select draw,pass,entity,blend,depth_test,depth_write,pixels_changed,path from draws where pass=1"
+query --session ses_7 --capture cap_7 --sql "select draw,depth_func,blend_src,blend_dst from draws where draw between 5 and 9"
+query --session ses_7 --capture cap_7 --sql "select draw,method,args from commands where method like '%draw%' and draw between 5 and 9"
+close --session ses_7
+
+FRICTION: None. The "Worth a look" line in capture pointed straight at the cause.

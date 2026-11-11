@@ -1,0 +1,12 @@
+CAUSE: Every frame, renderMap creates a brand-new 256×256 minimap render-target texture (makeMapTarget) and a new bind group for it (textured), and never destroys or reuses them, so GPU memory grows by about 256 KB per frame.
+EVIDENCE: After 245 frames, memory() reported "LIKELY LEAK: 245 textures still alive (61.2 MB) all created by one line, about 1 a frame": makeMapTarget (scene-webgpu.js:224) < renderMap (:326) < frame (:409). 245 bind groups were also alive, all created at textured (scene-webgpu.js:132) < renderMap (:327). resources(kind: texture) listed «minimap» 256×256 rgba8unorm 256 KB textures tex_5, tex_6, tex_7 and so on, one created per frame (f0, f1, f2...), each used only in the frame it was made. Every other texture (depth, crate) is a single instance. Alive counts were 250 textures and 273 bind groups, with no errors.
+FIX: Create the minimap render target and its bind group once at setup, and have renderMap reuse them every frame. If a per-frame target is truly needed, call .destroy() on the old texture and drop the old bind group each frame.
+COMMANDS:
+help
+launch http://127.0.0.1:8765/fixtures/bugs/w10.html --headless
+step --session ses_6 --frames 120
+memory --session ses_6
+resources --session ses_6
+resources --session ses_6 --kind texture
+close --session ses_6
+FRICTION: None

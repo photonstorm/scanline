@@ -1,0 +1,19 @@
+CAUSE: Every 40th frame (160, 200, 240) the page submits the glass panel's draw before the three crate draws instead of after them. The glass is a blended pass with depth write off, so when it comes first the crates (depth test "less") paint over it and look as if they are in front.
+
+EVIDENCE: The recording rec_1 (frames 127-245) flags frames 160, 200 and 240 as the only ones that draw differently. Comparing cap_15 (frame 159, good) with cap_14 (frame 160, bad): the glass draw (pip_2 «glass», blend src-alpha/one-minus-src-alpha, depth less, no depth write, rect 150,120,220,160, depth 0.3, tint 0.2,0.4,1,0.4) is event 9 in the good frame, after the three crate draws (pip_1, tex_2, events 6-8). In the bad frame it is event 6, before them. The draw's own state is identical in both frames; only its position in the order moves. 14476 pixels differ, mostly where the glass overlaps the crates (x200 y160 104x104). The rest of the frame is the same.
+
+FIX: Draw transparent objects after all opaque ones every frame, with a stable order (opaque first, then blended back to front). Do not let the glass go first on every 40th frame, for example through an unstable sort key or a periodic reorder. Alternatively, have the glass write depth or sort it by its depth value on every frame.
+
+COMMANDS:
+help
+launch http://127.0.0.1:8765/fixtures/bugs/w13.html --headless
+capture --session ses_11 --when {"frames":120} --flight_frames 120
+recording --session ses_11 --recording rec_1
+capture --session ses_11 --recording rec_1 --frame 160
+capture --session ses_11 --recording rec_1 --frame 159
+compare --session ses_11 --a cap_15 --b cap_14
+draw_list --session ses_11 --capture cap_14
+draw --session ses_11 --capture cap_14 --draw 6
+draw --session ses_11 --capture cap_15 --draw 9
+
+FRICTION: None. I did not find what makes the page reorder the draw (the sort key or the periodic trigger); the draw-order change is the extent of the evidence. I did not close the session: ses_11 is still open and I did not find a close command.

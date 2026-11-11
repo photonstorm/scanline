@@ -1,0 +1,24 @@
+CAUSE: The page's "minimap" render pass draws into the "minimap" texture (tex_5) while the draws in that same pass bind a bind group (bgr_4, "minimap") that samples that same texture. Reading and rendering to one texture in one pass is a WebGPU validation error. The encoder's finish() fails, the whole "frame" command buffer is invalid, and Queue.submit draws nothing, so the canvas stays black.
+
+EVIDENCE: The console repeats one warning every frame: «[Texture "minimap"] usage (TextureBinding|RenderAttachment) includes writable usage and another usage in the same synchronization scope. While finishing [CommandEncoder "frame"]», followed by «Invalid CommandBuffer ... Queue.Submit». The capture (cap_11) says calls 87 (GPUCommandEncoder.finish) and 88 (GPUQueue.submit) raised errors, so events 0-24, both passes and all 23 draws, did not run. Pass 0 (the «minimap» group, events 0-3) renders to tex_5 with a clear and 3 draws with pipeline pip_4, and the draw list shows these draws using "textures tex_5". Call 5 in that pass binds group 1 to bgr_4. The resource lookup shows bgr_4's descriptor has entries binding 0 = tex_5 and binding 1 = smp_2. So tex_5 is both the colour attachment and a sampled texture in the same pass. Pass 1 (the «scene» group, 20 draws to the canvas) is dropped along with it. The bind group was created in the page's scene-webgpu.js, at "textured" line 132, called from run at line 242.
+
+FIX: In the minimap pass, do not bind a bind group that contains the minimap texture. Give the minimap draws (the yellow crate dots) a bind group with a different texture, such as a 1x1 white texture, or one with no texture at all. Use the bgr_4 bind group, which samples the minimap texture, only in the main scene pass when the minimap is drawn onto the canvas. If the minimap really does need to sample its own previous contents, render to a second texture and ping-pong between the two.
+
+COMMANDS:
+help
+launch http://127.0.0.1:8765/fixtures/bugs/w15.html --headless
+console --session ses_14
+step --session ses_14 --frames 5
+capture --session ses_14
+pass_tree --session ses_14 --capture cap_11
+query --session ses_14 --capture cap_11 --sql "select command, method, args from commands where method like '%beginRenderPass%' or method like '%createBindGroup%' or method like '%setBindGroup%'"
+resource --session ses_14 --handle bgr_4
+draw --session ses_14 --capture cap_11 --draw 0
+draw_list --session ses_14 --capture cap_11 --filter "pass = 0"
+close --session ses_14
+
+FRICTION:
+- The console output was a long dump of the same repeated warning, and it showed only the last 25 lines of 258.
+- The capture summary's "alpha below 1" hint is a side effect of the dropped command buffer and could mislead.
+- The commands table does not show setBindGroup calls tagged with their pass, so I had to infer which bind group the minimap pass used from event numbers, which are not the same as call numbers.
+- The first `step` call printed only the page errors, with no frame image.

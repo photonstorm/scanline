@@ -1,0 +1,19 @@
+CAUSE: The main canvas pass clears its depth attachment to 0 (depthClearValue: 0), but every scene pipeline uses depthCompare "less". Nothing can be less than 0, so every scene fragment fails the depth test. The sky (the colour clear) and the HUD (pipeline pip_3, which has no depth test) are unaffected.
+
+EVIDENCE: In cap_3, draws 5 to 21 (ground, crates, glass, sparks) are all "changed nothing". draw 5 (ground, pip_1, depth less, write true; rect 0,260,480,100; depth 0.9) is reported as: "every fragment fails the depth test (less). The depth buffer was last cleared to 0 by event 4." Replaying draw 5 with the depth test off changes 48000 pixels. The query of the pass-begin call shows depthStencilAttachment.depthClearValue = 0 with the colour clear [0.35,0.6,0.9,1]. Draws 22 to 24 (HUD and minimap) use pip_3, which has no depth test, and they draw fine. The minimap's offscreen pass (tex_5) has no depth, which is why its yellow dots draw.
+
+FIX: Change the main pass's depthClearValue from 0 to 1.0. Alternatively, switch the depthCompare to "greater" (or "greater-equal") consistently, with the sprite depths adjusted to match.
+
+COMMANDS:
+help
+launch http://127.0.0.1:8765/fixtures/bugs/w05.html --headless
+console --session ses_4
+capture --session ses_4
+draw_list --session ses_4 cap_3
+draw --session ses_4 cap_3 5
+query --session ses_4 cap_3 "select command, method, args from commands where for_draw = 4"
+close --session ses_4
+
+FRICTION:
+- The query with for_draw = 4 returned the pass-begin call (the one carrying depthClearValue) only because it was truncated. Its args were cut off, though the value was still visible.
+- The draw command's "Why" line already named the cause, so little other digging was needed.
