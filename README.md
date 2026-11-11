@@ -43,6 +43,9 @@ Every milestone of the build plan up to 1.0 has been worked through on macOS (Ap
 - A capture as one file: `export` writes a capture and everything it uses to one `.scanline` file, and `import` reads it into any host, where it answers the same questions and replays.
 - Tiers: the person decides what a client may do when the host starts. By default patching and `eval` work only on pages served from this machine, and `navigate` keeps to the origin a session was launched on. See [docs/SECURITY.md](docs/SECURITY.md).
 - Skills: seven recipes (the core loop, wrong pixels, a slow frame, memory, working with a person, playing, and writing rendering code that can be debugged by name), held in the binary so they always match it: `scanline skill`, or `help(skill)` over MCP. A test checks that every command a skill names exists.
+- Assertions for a test run: `assert` holds the canvas to a baseline picture, a pixel to a colour, the console to "no errors" and a frame to budgets (draws, triangles, calls, GPU and CPU time), and exits 2 from a shell when anything fails. `scanline help testing` has the recipe.
+- MCP over loopback HTTP (`scanline serve --http`), for a client that cannot spawn a process: bound to 127.0.0.1, with a token and `Host` and `Origin` checks.
+- Engine adapters also cover Babylon.js (both engines).
 - A Claude Code plugin (`.claude-plugin/`): the MCP server and the skills, installed from this repository as a marketplace of one.
 - A release archive: `npm run package` builds the one binary (the probe, the replay page and the skills are inside it) and packs it with an install script. `scanline browser install` fetches the pinned Chrome for Testing; `--dry-run` says what it would do.
 - One owner of the input: when the agent takes control, the person's keys and mouse are kept out of the page; when the person has it, the agent may look but not act.
@@ -179,6 +182,26 @@ scanline stop
 `scanline --help` lists every command and `scanline <command> --help` one command's arguments. `scanline help` explains the workflow, `scanline help capture` taking a frame apart, `scanline help input` the input events, and `scanline help security` what a client may do, and `scanline help limits` what is not built. `scanline skill` lists the skills and `scanline skill wrong-pixels` prints one. Add `--json` to any command for the whole result.
 
 The first command starts a background host that holds the browsers; `scanline stop` ends it and closes them. Images and the host's log are kept under `~/Library/Application Support/Scanline` (set `SCANLINE_HOME` to move them).
+
+## Use it in a test run
+
+```bash
+scanline launch http://localhost:5173 --headless --paused --deterministic
+```
+
+```bash
+scanline step 120
+```
+
+```bash
+scanline assert --baseline tests/baselines/title.png --no_errors --max_draws 200
+```
+
+```bash
+scanline stop
+```
+
+The first run, with `--update` added to `assert`, saves the baseline. After that `assert` exits 0 when everything holds and 2 when anything fails, with a picture of where the canvas differs. `scanline help testing` says more.
 
 ## Use it from an agent
 

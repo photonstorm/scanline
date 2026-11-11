@@ -253,6 +253,29 @@ pub const TOOLS: &[Tool] = &[
         read_only: true,
     },
     Tool {
+        name: "assert",
+        description: "Check the running page against what it should be, for a test: the canvas against a baseline PNG (update: true saves it), one pixel against a colour, no errors in the console, and a frame's draws, triangles, calls, GPU and CPU time against budgets. Says pass or FAIL for each. From a shell, exits 2 if any fails.",
+        schema: schema!(
+            "[]",
+            session!(),
+            context!(),
+            r#""baseline": { "type": "string", "description": "Path of a PNG to compare the canvas with." }"#,
+            r#""update": { "type": "boolean", "description": "Save the canvas as the baseline instead of comparing." }"#,
+            r#""tolerance": { "type": "integer", "description": "baseline: ignore differences up to this size in a channel (0–255). Default 0." }"#,
+            r#""max_changed": { "type": "integer", "description": "baseline: how many pixels may differ. Default 0." }"#,
+            region!(),
+            r#""pixel": { "type": "object", "description": "{\"x\": 100, \"y\": 50, \"rgba\": [255, 0, 0, 255], \"tolerance\": 2}" }"#,
+            r#""no_errors": { "type": "boolean", "description": "Fail if the page has logged an error or thrown." }"#,
+            r#""max_draws": { "type": "number", "description": "Most draws in any one of the recent frames." }"#,
+            r#""max_triangles": { "type": "number" }"#,
+            r#""max_calls": { "type": "number", "description": "Most graphics API calls in a frame." }"#,
+            r#""max_gpu_ms": { "type": "number", "description": "Mean GPU time a frame." }"#,
+            r#""max_cpu_ms": { "type": "number", "description": "Mean CPU time in frame callbacks." }"#,
+            r#""window_frames": { "type": "integer", "description": "How many recent frames the budgets look at. Default 120." }"#,
+        ),
+        read_only: false,
+    },
+    Tool {
         name: "capture",
         description: "Capture one frame: every call, the state at each draw, and the contents of what the frame used. Returns a capture handle (cap_3) and a summary: draws, passes, textures and buffers used. The capture is replayed at once and compared with the frame, so you know whether answers from replay can be trusted. WebGL and WebGPU.",
         schema: schema!(
@@ -706,7 +729,7 @@ pub const TOOLS: &[Tool] = &[
         description: "How to use Scanline: the workflow, input events, and what is not built yet, by topic; or a whole skill, the recipe for one kind of job (a wrong pixel, a slow frame, growing memory, working with the person, playing a game). Matches this version exactly.",
         schema: schema!(
             "[]",
-            r#""topic": { "type": "string", "enum": ["workflow", "input", "capture", "analysis", "patch", "page", "handoff", "sql", "security", "limits", "skills"] }"#,
+            r#""topic": { "type": "string", "enum": ["workflow", "input", "capture", "analysis", "patch", "page", "handoff", "sql", "testing", "security", "limits", "skills"] }"#,
             r#""skill": { "type": "string", "enum": ["scanline", "scanline-wrong-pixels", "scanline-slow-frame", "scanline-memory", "scanline-with-a-person", "scanline-play", "scanline-debuggable-rendering"], "description": "Print this skill instead of a topic." }"#,
         ),
         read_only: true,
@@ -787,7 +810,8 @@ Sending a frame to someone: export(capture) writes it to one file; import(path) 
 A whole recipe for one kind of job (a wrong pixel, a slow frame, growing memory, working
 with the person, playing a game): help(topic: \"skills\") lists them, help(skill: \"…\") prints one.
 
-See help(topic: \"input\") for playing a game, help(topic: \"security\") for what you may
+See help(topic: \"input\") for playing a game, help(topic: \"testing\") for checking a page
+in a test run, help(topic: \"security\") for what you may
 do, and help(topic: \"limits\") for what is not built.";
 
 const INPUT: &str = "\
@@ -1284,6 +1308,38 @@ A recorded frame is replayed from the start of the recording, so the later the f
 longer its questions take. Only the frozen frame has a picture from the page to check the
 replay against; the others say so and rest on that one check.";
 
+const TESTING: &str = "\
+Checking a page in a test run
+
+assert checks the running page against what it should be, and says pass or FAIL for each
+thing asked. From a shell it exits 2 when anything fails, so a test script needs nothing
+else.
+
+  assert(baseline: \"tests/baselines/title.png\")   the canvas against a picture kept from a run
+                                                   that was right. tolerance: n ignores small
+                                                   differences in a channel; max_changed: n
+                                                   allows a few pixels; region checks a part.
+  assert(baseline: \"…\", update: true)             saves the canvas as that picture
+  assert(pixel: {x, y, rgba: [255, 0, 0]})         one pixel against a colour
+  assert(no_errors: true)                          nothing logged as an error, nothing thrown
+  assert(max_draws: 200, max_triangles: 50000, max_calls: 3000)
+                                                   the worst of the recent frames against a budget
+  assert(max_gpu_ms: 4, max_cpu_ms: 2)             mean times over the recent frames
+
+Several may be given at once. A failed baseline writes the canvas as it is now and a
+picture of where it differs, and names both.
+
+For a run that gives the same picture every time
+  launch(url, headless: true, start: \"paused\", deterministic: true)
+      a fixed clock, fixed random numbers and frames that only advance when stepped
+  step(frames: 120)          to the frame the baseline was taken at, the same number each run
+  assert(...)
+  scanline stop              when the script has finished
+
+A baseline is a picture from one GPU and one browser. Another machine may differ in the
+last bit of a few pixels along an edge: give tolerance and max_changed a little room, or
+keep a baseline for each. GPU time is real time: a budget needs room for a busy machine.";
+
 pub fn help(topic: Option<&str>) -> String {
     match topic {
         Some("page") => PAGE.to_string(),
@@ -1293,6 +1349,7 @@ pub fn help(topic: Option<&str>) -> String {
         Some("input") => INPUT.to_string(),
         Some("capture") => CAPTURE.to_string(),
         Some("sql") => SQL.to_string(),
+        Some("testing" | "ci" | "assert") => TESTING.to_string(),
         Some("limits") => LIMITS.to_string(),
         Some("security") => SECURITY.to_string(),
         Some("skills") => {

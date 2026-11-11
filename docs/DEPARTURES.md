@@ -327,6 +327,12 @@ Two things the new Babylon.js page (`fixtures/engines/babylon-shadows.html`) fou
 - More than one device in a capture. Calls on another device's objects are left out.
 - A call rejected in replay is found by wrapping every call in an error scope. WebGPU reports most errors when an encoder is finished, so the call named is `finish`, with the browser's message saying which pass call was at fault.
 
+## Assertions for a test run
+
+Built after milestone 7. The build plan names "CI assertions and baselines" for after 1.0 and the specification says nothing more, so the design is this project's. One command, `assert`, checks the running page: the canvas against a baseline PNG (`update: true` saves it; `tolerance` and `max_changed` give it room; `region` checks a part), one pixel against a colour, the console against "no errors", and the recent frames against budgets for draws, triangles, API calls, GPU time and CPU time. It answers pass or FAIL for each and, from a shell, exits 2 when anything fails. A failed baseline writes the canvas as it is and a picture of where it differs. Baselines are plain PNG files wherever the caller keeps them (the files tier applies); nothing is stored in Scanline's own directory.
+
+Not built: baselines of anything but the canvas (a capture's draw list, a texture), and a report in a format a CI system reads (JUnit). `--json` gives every check as data.
+
 ## Send to agent
 
 Built after milestone 7 (PRD UI-5, which the build plan puts after 1.0). In the viewer's Capture tab the person chooses an event, clicks a pixel of its picture to pin it, writes a note if they like, and presses Send to agent. The host queues a `selection` event holding the capture, the event number, the target, the pixel with its value, the shader if they were reading one, the note, and the call to make next. `wait(kinds: ["selection"])` returns it. `viewer(pin: [x, y], send: "note")` does the same as the person's clicks, which is how it is tested. A texture cannot be chosen: the viewer has no texture list.

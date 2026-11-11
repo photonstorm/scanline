@@ -1501,6 +1501,65 @@ describe('live patches', () =>
     });
 });
 
+describe('assertions for a test run', () =>
+{
+    test('the canvas is held to a baseline, a pixel, the console and budgets, and a shell sees the outcome', async () =>
+    {
+        const baseline = join(home, 'baselines', 'b00.png');
+
+        await scanline('launch', server.url('fixtures/bugs/b00.html'), '--paused', '--headless', '--deterministic');
+        await scanline('step', '10');
+
+        // No baseline yet: that is a failure, and says how to make one.
+        const none = await scanline('assert', '--baseline', baseline);
+
+        assert.equal(none.code, 2);
+        assert.match(none.out, /FAIL baseline: there is no baseline at .*b00\.png\. Run once with update: true/);
+
+        const saved = await scanline('assert', '--baseline', baseline, '--update');
+
+        assert.equal(saved.code, 0, saved.out);
+        assert.deepEqual(readFileSync(baseline).subarray(0, 4), PNG);
+
+        // The same frame holds, with everything else asked at once.
+        const held = await scanline('assert', '--baseline', baseline, '--no_errors', '--max_draws', '30', '--max_calls', '400', '--pixel', '{"x": 30, "y": 320, "rgba": [64, 128, 51]}', '--json');
+
+        assert.equal(held.code, 0, held.out);
+        assert.equal(held.json.data.passed, true);
+        assert.deepEqual(held.json.data.checks.map((check) => [check.name, check.passed]), [['baseline', true], ['pixel', true], ['no_errors', true], ['max_draws', true], ['max_calls', true]]);
+        assert.match(held.json.summary, /^PASS: 5 checks held\./);
+
+        // Thirty frames on the sparks have moved: the picture differs, and the budget is too tight.
+        await scanline('step', '30');
+
+        const failed = await scanline('assert', '--baseline', baseline, '--max_draws', '10', '--pixel', '{"x": 30, "y": 320, "rgba": [0, 0, 0]}', '--json');
+
+        assert.equal(failed.code, 2);
+        assert.equal(failed.json.data.passed, false);
+        assert.match(failed.json.summary, /^FAIL: 3 of 3 checks did not hold\./);
+        assert.match(failed.json.summary, /FAIL baseline: \d+ of 172800 pixels differ .* within x \d+ y \d+ \d+×\d+\. The canvas now: .*b00-actual\.png\. Where it differs: .*b00-difference\.png/);
+        assert.match(failed.json.summary, /FAIL max_draws: 23 draws a frame, and the budget is 10/);
+        assert.match(failed.json.summary, /FAIL pixel: the pixel at \(30, 320\) is \(64, 128, 51, 255\) and should be \(0, 0, 0\)/);
+        assert.deepEqual(readFileSync(failed.json.data.checks[0].detail.difference).subarray(0, 4), PNG);
+
+        // A little room lets it through: every pixel may differ by anything.
+        assert.equal((await scanline('assert', '--baseline', baseline, '--tolerance', '255')).code, 0);
+        assert.match((await scanline('assert')).out, /assert needs something to check/);
+        assert.match((await scanline('help', 'testing')).out, /Checking a page in a test run/);
+    });
+
+    test('a page that logs an error fails no_errors', async () =>
+    {
+        await scanline('launch', server.url('fixtures/matrix/webgpu-invalid.html'), '--paused', '--headless');
+        await scanline('step', '5');
+
+        const failed = await scanline('assert', '--no_errors');
+
+        assert.equal(failed.code, 2);
+        assert.match(failed.out, /FAIL no_errors: the page has logged \d+ errors?; the first: «/);
+    });
+});
+
 describe('the viewer and the activity log', () =>
 {
     test('every command is logged, with who ran it, how long it took and what it said', async () =>

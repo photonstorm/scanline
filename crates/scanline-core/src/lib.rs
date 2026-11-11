@@ -10,6 +10,7 @@
 
 mod analysis;
 mod capture;
+mod check;
 mod commands;
 mod handoff;
 mod inventory;
@@ -301,6 +302,7 @@ impl Host {
             "region_stats" => commands::region_stats(&live()?, &params).await,
             // Two image files can be compared with no session at all.
             "diff" => commands::diff(self, live().ok().as_ref(), &params).await,
+            "assert" => check::assert(self, &live()?, &params).await,
             "eval" => commands::eval(&live()?, &params).await,
             "events" => commands::events(&self.session(&params)?, &params).await,
             "wait" => commands::wait(&self.session(&params)?, &params).await,

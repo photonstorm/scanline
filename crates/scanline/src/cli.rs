@@ -172,7 +172,7 @@ pub fn usage() -> String {
         String::new(),
         "Exit status: 0 done, 1 error, 2 ran but found nothing (a wait that timed out, a run_until not met).".into(),
         String::new(),
-        "`scanline help` explains the workflow; `scanline help capture`, `analysis`, `patch`, `handoff`, `input`, `sql` and `limits` the rest.".into(),
+        "`scanline help` explains the workflow; `scanline help capture`, `analysis`, `patch`, `handoff`, `input`, `sql`, `testing` and `limits` the rest.".into(),
         "`scanline <command> --help` lists one command's arguments, with an example.".into(),
         format!("Files are kept in {} (set SCANLINE_HOME to move them).", scanline_core::default_home().display()),
     ]);
@@ -410,9 +410,15 @@ fn parse(args: Vec<String>) -> Result<Parsed> {
     }
 
     // The host has a working directory of its own: a file named here is named from here.
-    if matches!(command.as_str(), "export" | "import") {
-        if let Some(path) = params["path"].as_str().map(std::path::PathBuf::from).filter(|path| path.is_relative()) {
-            params["path"] = json!(std::env::current_dir().unwrap_or_default().join(path));
+    let named = match command.as_str() {
+        "export" | "import" => Some("path"),
+        "assert" => Some("baseline"),
+        _ => None,
+    };
+
+    if let Some(key) = named {
+        if let Some(path) = params[key].as_str().map(std::path::PathBuf::from).filter(|path| path.is_relative()) {
+            params[key] = json!(std::env::current_dir().unwrap_or_default().join(path));
         }
     }
 
@@ -429,7 +435,7 @@ pub async fn run(args: Vec<String>) -> Result<ExitCode> {
         // A command's name is a topic too.
         let topic = parsed.params["topic"].as_str();
         let is_topic = |topic: &str| {
-            ["workflow", "input", "capture", "analysis", "patch", "page", "handoff", "sql", "security", "limits", "skills", "help"].contains(&topic)
+            ["workflow", "input", "capture", "analysis", "patch", "page", "handoff", "sql", "testing", "security", "limits", "skills", "help"].contains(&topic)
         };
         let text = match topic.filter(|topic| !is_topic(topic)).and_then(|topic| command_usage(&topic.replace('-', "_"))) {
             Some(usage) => usage,
@@ -445,7 +451,7 @@ pub async fn run(args: Vec<String>) -> Result<ExitCode> {
             },
             // Something that is neither a topic nor a command: say so, and not the workflow again.
             None if topic.is_some_and(|topic| !is_topic(topic)) => bail!(
-                "There is no help topic or command named \"{}\". Topics: workflow, input, capture, analysis, patch, page, handoff, sql, security, limits, skills. `scanline --help` lists the commands, and `scanline <command> --help` gives one command's arguments.{}",
+                "There is no help topic or command named \"{}\". Topics: workflow, input, capture, analysis, patch, page, handoff, sql, testing, security, limits, skills. `scanline --help` lists the commands, and `scanline <command> --help` gives one command's arguments.{}",
                 topic.unwrap_or(""),
                 if matches!(topic, Some("calls" | "commands")) {
                     "\nThe calls of a captured frame are a table: scanline query cap_1 \"select command, method, args from commands where for_draw = 7\"."
