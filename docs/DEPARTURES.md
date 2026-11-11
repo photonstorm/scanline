@@ -151,7 +151,7 @@ A frame taken from a recording is replayed from the recording's first frame. Tha
 | Pixel history correct on hand-checked fixtures | Correct on the planted bugs, where the answer is known: the culled crates, the depth clear, the scissor left on, the glass before and after the crates. **Not checked on a shader that discards, one that writes depth, or a multisampled target.** A draw whose every fragment is discarded at the pixel is reported as not reaching it. |
 | The planted performance and memory bugs are diagnosed by an agent | Met in both evaluation rounds (b10, b11). |
 
-Built: `pixel_history` (WebGL; rejected fragments need WebGL 2), `compare`, `lint`, `shader_analysis`, and the `overdraw` and `wireframe` views (WebGL).
+Built: `pixel_history` (WebGL; rejected fragments need WebGL 2), `compare`, `lint`, `shader_analysis`, `profile` (WebGL 2), and the `overdraw` and `wireframe` views (WebGL).
 
 | The specification says | The code does | Why |
 |---|---|---|
@@ -160,10 +160,11 @@ Built: `pixel_history` (WebGL; rejected fragments need WebGL 2), `compare`, `lin
 | `discard` is detected by replaying with a constant fragment shader. | Not detected. | Needs the shader replacement of milestone 6. |
 | Static shader analysis uses a parser (`naga`, ANGLE's translator). | A reading of the text: words and braces. It counts sample calls, loops with constant bounds, branches, `discard`, and inputs never mentioned again. | Enough for "64 samples in a loop". It does not follow function calls, so a sample inside a helper called from a loop is counted once. |
 | Overdraw is counted by replaying into a float target with a constant output and additive blending. | It is counted in the stencil buffer: every draw adds one wherever a fragment lands, or only where it also passes the depth test, and the counts are then drawn out a level at a time and read. | No shader has to be replaced. It works for the canvas only, not for other targets, and not for a frame that uses the stencil test itself. It counts to 64. |
+| Per-draw timing is amplified and attributes time to the vertex, fragment and texture work. | Each draw is issued 16 times inside one timer query during a replay, three replays are run, and the middle figure is kept. No attribution. | On the scene tested the figures repeat to within about a fifth and rank the large blended draw first. A tile-based GPU (this one) defers shading, so a draw's cost can be charged elsewhere; the command says so. |
 | The depth view reads the depth attachment. | Not built. | WebGL cannot read a depth buffer back; it would have to be reconstructed by drawing. |
 | `gfx_compare` gives per-target image differences. | The final pictures only. | Intermediate targets are not stored; they come from replay. |
 
-Not built from the milestone's list: the other views (depth, stencil, mip, NaN, draw ID), geometry and vertex stage output, per-draw GPU time, translated shaders in a capture, the GPU process's real memory, exact error attribution beyond what a capture's rejected calls give, and tracing.
+Not built from the milestone's list: the other views (depth, stencil, mip, NaN, draw ID), geometry and vertex stage output, attribution of GPU time within a draw, translated shaders in a capture, the GPU process's real memory, exact error attribution beyond what a capture's rejected calls give, and tracing.
 
 ## WebGPU capture: what it does not do
 

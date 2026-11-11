@@ -1658,6 +1658,93 @@ const api = {
         }
     },
 
+    // GPU time of each draw. One draw is over too quickly to time, so each is issued
+    // `times` times inside one timer query before the frame moves on, and the total divided.
+    // The repeats draw for real, so the picture this replay leaves is not the frame's.
+    async profile (args: { key: string; times?: number }): Promise<Json>
+    {
+        const item = capture(args.key);
+
+        if (isGpu(item))
+        {
+            return { unsupported: 'webgpu' };
+        }
+
+        const run = new Run(item);
+        const gl = run.gl;
+        const times = Math.max(1, Math.min(args.times ?? 16, 256));
+        const started = performance.now();
+
+        try
+        {
+            const timer = run.gl2 ? gl.getExtension('EXT_disjoint_timer_query_webgl2') : null;
+
+            if (!timer)
+            {
+                return { unsupported: 'no-timer' };
+            }
+
+            const byCommand = new Map<number, number>();
+
+            item.data.draws.forEach((row, index) => byCommand.set(row.command, index));
+
+            const queries: Array<{ draw: number; query: any }> = [];
+
+            // Anything the context was doing before is finished first, so it is not charged to the first draw.
+            gl.finish();
+            gl.getParameter(0x8FBB);
+
+            run.play(item.data.commands.length, undefined, (index) =>
+            {
+                const draw = byCommand.get(index);
+
+                if (draw === undefined || item.data.draws[draw].kind !== 'draw' || gl.getQuery(0x88BF, 0x8865))
+                {
+                    return;
+                }
+
+                const query = gl.createQuery();
+
+                gl.beginQuery(0x88BF, query);
+
+                for (let i = 0; i < times; i++)
+                {
+                    run.execute(item.data.commands[index]);
+                }
+
+                gl.endQuery(0x88BF);
+                queries.push({ draw, query });
+            });
+
+            const deadline = performance.now() + 5000;
+
+            while (queries.some((entry) => !gl.getQueryParameter(entry.query, 0x8867)) && performance.now() < deadline)
+            {
+                gl.flush();
+                await new Promise((resolve) => setTimeout(resolve, 4));
+            }
+
+            const disjoint = Boolean(gl.getParameter(0x8FBB));
+            const rows: Json[] = [];
+
+            for (const entry of queries)
+            {
+                if (gl.getQueryParameter(entry.query, 0x8867))
+                {
+                    rows.push({ draw: entry.draw, ns: Number(gl.getQueryParameter(entry.query, 0x8866)) / times });
+                }
+
+                gl.deleteQuery(entry.query);
+            }
+
+            return { rows, times, disjoint, notes: run.notes, ms: performance.now() - started };
+        }
+        finally
+        {
+            run.dispose();
+        }
+    },
+
     // The frame with its triangles drawn as outlines, up to an event or to its end.
     async wireframe (args: { key: string; draw?: number | null; target?: Json }): Promise<Json>
     {

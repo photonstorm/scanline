@@ -992,6 +992,139 @@ pub async fn lint(host: &Arc<Host>, params: &Value) -> Result<Value> {
     Ok(result(lines.join("\n"), json!({ "session": session.id, "findings": found })))
 }
 
+// ---- Timing ----
+
+/// GPU time of each draw of a capture, measured by replaying each one several times inside
+/// a timer query, then ranked by draw, by program or by pass.
+pub async fn profile(host: &Arc<Host>, params: &Value) -> Result<Value> {
+    let (handle, meta) = the_capture(host, params)?;
+    let by = params["by"].as_str().unwrap_or("draw");
+
+    if !["draw", "shader", "pass"].contains(&by) {
+        bail!("by must be draw, shader or pass, not \"{by}\".");
+    }
+
+    let top = params["top"].as_u64().unwrap_or(10).clamp(1, 100) as usize;
+    let session = host.replayer(params)?;
+
+    load_into(host, &session, &handle).await?;
+
+    // Three runs, and the middle figure for each draw: one run can be thrown by whatever
+    // else the GPU was doing.
+    let mut samples: BTreeMap<i64, Vec<f64>> = BTreeMap::new();
+    let mut times = 16;
+    let mut disjoint = false;
+
+    for _ in 0..3 {
+        let reply = session.replay("profile", &json!({ "key": handle, "times": params["times"] }), LONG).await?;
+
+        match reply["unsupported"].as_str() {
+            Some("webgpu") => bail!("profile is built for WebGL captures. For a WebGPU page, stats() gives GPU time per pass while it runs."),
+            Some(_) => bail!("This browser has no timer queries for WebGL 2 (EXT_disjoint_timer_query_webgl2), so GPU time cannot be measured by replay."),
+            None => {}
+        }
+
+        times = reply["times"].as_u64().unwrap_or(16);
+        disjoint |= reply["disjoint"] == true;
+
+        for row in reply["rows"].as_array().into_iter().flatten() {
+            samples.entry(row["draw"].as_i64().unwrap_or(-1)).or_default().push(row["ns"].as_f64().unwrap_or(0.0));
+        }
+    }
+
+    if samples.is_empty() {
+        bail!("The replay timed no draws. The capture may have none, or the timer gave no results.");
+    }
+
+    let measured: BTreeMap<i64, f64> = samples
+        .into_iter()
+        .map(|(draw, mut values)| {
+            values.sort_by(f64::total_cmp);
+
+            (draw, values[values.len() / 2])
+        })
+        .collect();
+    let total: f64 = measured.values().sum();
+    let events = events(host, &handle)?;
+    let micro = |ns: f64| format!("{:.1} µs", ns / 1000.0);
+    let share = |ns: f64| if total > 0.0 { format!("{:.0}%", ns * 100.0 / total) } else { "0%".to_string() };
+
+    let mut lines = vec![format!(
+        "{}: GPU time by {by}. {} draws took {} in all, each timed over {times} repeats, the middle of 3 runs. gpu-measured.",
+        about(host, params, &handle, &meta),
+        measured.len(),
+        if total >= 1e6 { format!("{:.2} ms", total / 1e6) } else { micro(total) }
+    )];
+    let mut rows = Vec::new();
+
+    if by == "draw" {
+        let mut ranked: Vec<(&i64, &f64)> = measured.iter().collect();
+
+        ranked.sort_by(|a, b| b.1.total_cmp(a.1));
+
+        for (draw, ns) in ranked.iter().take(top) {
+            let what = events.get(**draw as usize).map(brief).unwrap_or_default();
+
+            lines.push(format!("  event {draw:>4}  {:>10}  {:>4}   {}", micro(**ns), share(**ns), page_text(&what, 150)));
+            rows.push(json!({ "draw": draw, "ns": ns }));
+        }
+
+        if ranked.len() > top {
+            lines.push(format!("  … and {} more draws. top: n shows more.", ranked.len() - top));
+        }
+    } else {
+        // Summed by the program each draw uses, or by the pass it is in.
+        let key = if by == "shader" { "program" } else { "pass" };
+        let mut groups: BTreeMap<String, (f64, Vec<i64>)> = BTreeMap::new();
+
+        for (draw, ns) in &measured {
+            let name = events
+                .get(*draw as usize)
+                .and_then(|event| event.get(key))
+                .map(|value| value.as_str().map(str::to_string).unwrap_or_else(|| value.to_string()))
+                .unwrap_or_default();
+            let group = groups.entry(name).or_default();
+
+            group.0 += ns;
+            group.1.push(*draw);
+        }
+
+        let mut ranked: Vec<(&String, &(f64, Vec<i64>))> = groups.iter().collect();
+
+        ranked.sort_by(|a, b| b.1.0.total_cmp(&a.1.0));
+
+        for (name, (ns, draws)) in ranked.iter().take(top) {
+            lines.push(format!(
+                "  {:<10} {:>10}  {:>4}   {} draw{}: event{} {}",
+                if by == "pass" { format!("pass {name}") } else { name.to_string() },
+                micro(*ns),
+                share(*ns),
+                draws.len(),
+                if draws.len() == 1 { "" } else { "s" },
+                if draws.len() == 1 { "" } else { "s" },
+                runs(draws)
+            ));
+            rows.push(json!({ by: name, "ns": ns, "draws": draws }));
+        }
+
+        if by == "shader" {
+            lines.push("  shader_analysis(handle, capture) reads what one of these programs does for each pixel.".into());
+        }
+    }
+
+    lines.push("How it is measured: the frame is replayed, and each draw is issued 16 times in a row inside a timer query before the frame moves on. The figure is that time divided by 16. It ranks draws against each other well; it is not what the draw cost in the page, where it ran once among the others.".into());
+    lines.push("A GPU that works a tile at a time (Apple's, and most phones') puts off shading until it must, so a draw's cost can be charged to a later draw or missed. Treat small differences as noise.".into());
+
+    if disjoint {
+        lines.push("Warning: the GPU reported a disjoint while timing (it was interrupted), so some of these figures are unreliable. Run it again.".into());
+    }
+
+    Ok(result(
+        lines.join("\n"),
+        json!({ "capture": handle, "by": by, "total_ns": total, "draws": measured.len(), "rows": rows, "provenance": "gpu-measured", "method": "amplified replay" }),
+    ))
+}
+
 // ---- Views ----
 
 /// A colour for a count of draws on one pixel: black for none, then blue, green, yellow,

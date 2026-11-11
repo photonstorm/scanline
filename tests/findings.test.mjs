@@ -411,6 +411,30 @@ describe('views of a capture', () =>
         assert.ok(wasted.all.mean > wasted.visible.mean * 4, `drawn ${wasted.all.mean} a pixel, kept ${wasted.visible.mean}`);
     });
 
+    test('profile times every draw by replay and ranks them', async () =>
+    {
+        const { capture, session } = await captured('b00');
+        const draws = await scanline('profile', capture, '--top', 30, '--session', session, '--json');
+
+        assert.equal(draws.code, 0, draws.out);
+        assert.equal(draws.json.data.draws, 23, 'every draw of the frame was timed');
+        assert.equal(draws.json.data.rows.length, 23);
+        assert.ok(draws.json.data.rows.every((row) => row.ns >= 0));
+        assert.ok(draws.json.data.total_ns > 0);
+        assert.match(draws.json.summary, /each timed over 16 repeats, the middle of 3 runs/);
+        assert.match(draws.json.summary, /A GPU that works a tile at a time/);
+
+        // Summed by the program the draws use: the scene has two.
+        const shaders = await scanline('profile', capture, '--by', 'shader', '--session', session, '--json');
+
+        assert.deepEqual(shaders.json.data.rows.map((row) => row.shader).sort(), ['prg_1', 'prg_2']);
+        assert.equal(shaders.json.data.rows.reduce((sum, row) => sum + row.draws.length, 0), 23);
+
+        const passes = await scanline('profile', capture, '--by', 'pass', '--session', session, '--json');
+
+        assert.equal(passes.json.data.rows.length, 2);
+    });
+
     test('wireframe draws the frame as outlines', async () =>
     {
         const { capture, session } = await captured('b00');

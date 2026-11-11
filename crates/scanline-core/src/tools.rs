@@ -370,6 +370,18 @@ pub const TOOLS: &[Tool] = &[
         read_only: true,
     },
     Tool {
+        name: "profile",
+        description: "GPU time of a capture's draws, ranked: by draw, by the program they use (shader), or by pass. Measured by replaying each draw several times inside a timer query. Good for finding which draws and which shader cost the most; says how it was measured and what the figures cannot tell. WebGL 2 captures.",
+        schema: schema!(
+            r#"["capture"]"#,
+            r#""capture": { "type": "string" }"#,
+            r#""by": { "type": "string", "enum": ["draw", "shader", "pass"], "description": "Default draw." }"#,
+            r#""top": { "type": "integer", "description": "How many to list. Default 10." }"#,
+            session!(),
+        ),
+        read_only: true,
+    },
+    Tool {
         name: "shader_analysis",
         description: "What a shader could cost, read from its source: texture samples and how many of them are inside loops, loop counts, branches, discard, derivatives, costly maths calls, and inputs declared but never used. For a shader, or every shader of a program or pipeline. Live, or from a capture's copy. Static figures, not measurements.",
         schema: schema!(
@@ -594,8 +606,8 @@ Not built yet (planned, in this order):
     some other application has the keyboard, annotation by clicking on the frozen frame, a
     gamepad, and pointer lock.
   - Analysis, beyond what is built (pixel history, compare, lint, shader_analysis, the
-    overdraw and wireframe views): depth, stencil, mip and NaN views, vertex data, GPU time
-    per draw, and all of these but compare, lint and shader_analysis for WebGPU.
+    overdraw and wireframe views, profile): depth, stencil, mip and NaN views, vertex data,
+    and all of these but compare, lint and shader_analysis for WebGPU.
   - Live patching: shader replacement, uniform and state overrides.
 
 Known limits
@@ -741,6 +753,9 @@ Going deeper into a capture
                                          (all fragments, and those that passed the depth test)
                                          with the mean, the most and where it is worst
   view(capture, view: \"wireframe\")     the frame as outlines; at_draw stops it early
+  profile(capture, by: \"shader\")       GPU time of the frame's draws, ranked by draw, by
+                                         shader or by pass, measured by replaying each draw
+                                         several times inside a timer query
   lint(capture)                          what is worth a look in the frame, most serious first
   lint()                                 the same for the live page: leaks, churn, logged errors
   shader_analysis(handle)                what a shader could cost, read from its source: samples,
@@ -751,8 +766,8 @@ Which to reach for
   Something should be at a pixel and is not        pixel_history at that pixel
   It is right in one frame and wrong in another    compare the two captures
   It was right before a change                     capture before and after, then compare
-  A pass is slow                                   shader_analysis of the pipeline or program
-                                                   its draws use
+  A frame is slow                                  profile by shader, then shader_analysis of
+                                                   the costliest; view overdraw if it is fill
 
 pixel_history is for WebGL captures (WebGL 2 for rejected fragments). A draw whose shader
 discards every fragment at the pixel cannot be told from one that never covered it.
