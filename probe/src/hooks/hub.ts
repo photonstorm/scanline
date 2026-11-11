@@ -16,6 +16,12 @@ export interface Rec extends Counters
     // Set while a capture is recording: (record, methodId, receiver, result, argCount, ...args).
     rec: null | ((record: Rec, method: number, self: unknown, result: unknown, count: number, ...args: any[]) => void);
 
+    // Set while a live patch is in force (patch.ts). `gate` runs before a draw and returns
+    // false to drop it; `after` runs once the draw has been issued, to put back what the
+    // gate changed.
+    gate: null | ((record: Rec, self: any, method: number) => boolean);
+    after: null | ((record: Rec, self: any) => void);
+
     // The value of `calls` when this record's image was last kept.
     keptAtCalls: number;
 
@@ -36,7 +42,7 @@ export interface Hub
 
 export function newRecord (): Rec
 {
-    const record: any = { rec: null, keptAtCalls: -1, x: null };
+    const record: any = { rec: null, gate: null, after: null, keptAtCalls: -1, x: null };
 
     for (const name of COUNTERS)
     {

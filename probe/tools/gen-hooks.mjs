@@ -155,7 +155,19 @@ function wrapper (family, qualified, name, op, entry = {})
 
     body.push('if (H.off) { return N.apply(this, arguments as any); }');
     body.push(`const c = ${lookup};`);
-    body.push('const r = N.apply(this, arguments as any);');
+
+    if (entry.draw)
+    {
+        // A live patch may drop the draw, or change state around it and put it back after.
+        body.push(`if (c.gate !== null && c.gate(c, this, ${id}) === false) { c.calls++; return undefined; }`);
+        body.push('const r = N.apply(this, arguments as any);');
+        body.push('if (c.after !== null) { c.after(c, this); }');
+    }
+    else
+    {
+        body.push('const r = N.apply(this, arguments as any);');
+    }
+
     body.push('c.calls++;');
 
     if (entry.draw)

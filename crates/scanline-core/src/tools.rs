@@ -459,6 +459,90 @@ pub const TOOLS: &[Tool] = &[
         read_only: false,
     },
     Tool {
+        name: "patch_draws",
+        description: "Leave some of the running page's draws out (skip), or draw only them (isolate), from now on. To see what a draw contributes, or what is behind it. Returns a patch handle; patches(revert) undoes it. WebGL.",
+        schema: schema!(
+            "[]",
+            session!(),
+            context!(),
+            r#""filter": { "type": "object", "description": "Which draws: {\"program\": \"prg_2\"}, {\"texture\": \"tex_3\"} and/or {\"draws\": [6, 8]} (event numbers, as draw_list gives them).", "properties": { "program": { "type": "string" }, "texture": { "type": "string" }, "draws": {} } }"#,
+            r#""mode": { "type": "string", "enum": ["skip", "isolate"], "description": "Default skip." }"#,
+        ),
+        read_only: false,
+    },
+    Tool {
+        name: "patch_state",
+        description: "Override state for some or all of the running page's draws: blending, the depth test, depth writes, culling, the colour mask, the scissor box. To test whether a state is the cause before changing the code. Returns a patch handle. WebGL.",
+        schema: schema!(
+            r#"["state"]"#,
+            session!(),
+            context!(),
+            r#""filter": { "type": "object", "description": "Which draws, as for patch_draws. Left out: every draw.", "properties": { "program": { "type": "string" }, "texture": { "type": "string" }, "draws": {} } }"#,
+            r#""state": { "type": "object", "description": "Any of blend, depth_test, depth_write, cull (true or false), color_mask ([r, g, b, a]), scissor ([x, y, w, h], or false for off)." }"#,
+        ),
+        read_only: false,
+    },
+    Tool {
+        name: "patch_uniform",
+        description: "Hold one uniform of a program at a value, whatever the running page sets it to. To test a colour, a matrix or a constant before changing the code. Returns a patch handle. WebGL.",
+        schema: schema!(
+            r#"["target", "name", "value"]"#,
+            session!(),
+            context!(),
+            r#""target": { "type": "string", "description": "The program, such as prg_1." }"#,
+            r#""name": { "type": "string" }"#,
+            r#""value": { "description": "A number, or a list of as many numbers as the uniform has components." }"#,
+        ),
+        read_only: false,
+    },
+    Tool {
+        name: "patch_shader",
+        description: "Change a shader of the running page: find-and-replace edits, #defines, or whole new source. Draws that use the program then use a rebuilt copy; the page's own program is untouched. Returns a patch handle and the compile log; a shader that fails to compile changes nothing. WebGL.",
+        schema: schema!(
+            r#"["handle"]"#,
+            session!(),
+            context!(),
+            r#""handle": { "type": "string", "description": "The program, such as prg_1." }"#,
+            r#""shader": { "type": "string", "description": "Which of its shaders, such as shd_1. Default: the fragment shader." }"#,
+            r#""edits": { "type": "array", "description": "[{\"find\": \"64\", \"replace\": \"24\"}]: each find must occur in the source; every occurrence is replaced.", "items": { "type": "object" } }"#,
+            r#""defines": { "type": "object", "description": "{\"SAMPLES\": 24}: added as #define lines after #version." }"#,
+            r#""source": { "type": "string", "description": "The whole new shader." }"#,
+        ),
+        read_only: false,
+    },
+    Tool {
+        name: "patch_texture",
+        description: "Draw with a stand-in wherever one texture of the running page is bound: a checkerboard (are the texture coordinates right?), plain white or black, or a texture whose mip levels are each a different colour (which level is sampled?). Returns a patch handle. WebGL.",
+        schema: schema!(
+            r#"["handle"]"#,
+            session!(),
+            context!(),
+            r#""handle": { "type": "string", "description": "The texture, such as tex_3." }"#,
+            r#""with": { "type": "string", "enum": ["checker", "white", "black", "mips"], "description": "Default checker." }"#,
+            r#""filter": { "type": "object", "description": "Only for these draws, as for patch_draws.", "properties": { "program": { "type": "string" }, "draws": {} } }"#,
+        ),
+        read_only: false,
+    },
+    Tool {
+        name: "patches",
+        description: "The live patches in force, each with a plain description of what it changes (the change to make in source, if it turns out to be the fix) and how many draws a frame it applies to. revert undoes one, or \"all\".",
+        schema: schema!("[]", session!(), r#""revert": { "type": "string", "description": "A patch handle such as pat_2, or \"all\"." }"#),
+        read_only: false,
+    },
+    Tool {
+        name: "experiment",
+        description: "Try a change for a number of frames, measure GPU and CPU frame time with and without it, and take it away again. scissor_1px clips every draw to one pixel: if the frame gets much cheaper, the cost is in filling pixels. skip with a filter leaves draws out: what they cost. Says what the result implies. WebGL.",
+        schema: schema!(
+            r#"["kind"]"#,
+            session!(),
+            context!(),
+            r#""kind": { "type": "string", "enum": ["scissor_1px", "skip"] }"#,
+            r#""filter": { "type": "object", "description": "For skip: which draws, as for patch_draws." }"#,
+            r#""frames": { "type": "integer", "description": "How many frames to measure each way. Default 60." }"#,
+        ),
+        read_only: false,
+    },
+    Tool {
         name: "save_run",
         description: "Keep the input this page has received since it loaded, by frame, with a fingerprint of the frame every so often, as a run that can be played again. Use it once a bug has been reached, by you or by the person, so it can be reached again after every change. Replays exactly only in a session launched with deterministic: true.",
         schema: schema!("[]", session!()),
@@ -491,7 +575,7 @@ pub const TOOLS: &[Tool] = &[
     Tool {
         name: "help",
         description: "How to use Scanline: the workflow, input events, and what is not built yet. Matches this version exactly.",
-        schema: schema!("[]", r#""topic": { "type": "string", "enum": ["workflow", "input", "capture", "analysis", "handoff", "sql", "limits"] }"#),
+        schema: schema!("[]", r#""topic": { "type": "string", "enum": ["workflow", "input", "capture", "analysis", "patch", "handoff", "sql", "limits"] }"#),
         read_only: true,
     },
 ];
@@ -547,6 +631,8 @@ Getting back to where the bug is
   replay_run(run: \"run_1\", to_frame: n) the same, stopped earlier: this is how to go back
   A replay checks a fingerprint of the frame every 30 frames against the original and stops
   where they first differ, so after a code change you learn whether the page still gets there.
+
+Think you know the fix? Try it in the running page first: help(topic: \"patch\").
 
 Cannot reproduce it yourself? request_human(instruction) asks the person to play and press
 Debug when it happens; the frames before the press are kept. See help(topic: \"handoff\").
@@ -608,7 +694,9 @@ Not built yet (planned, in this order):
   - Analysis, beyond what is built (pixel history, compare, lint, shader_analysis, the
     overdraw and wireframe views, profile): depth, stencil, mip and NaN views, vertex data,
     and all of these but compare, lint and shader_analysis for WebGPU.
-  - Live patching: shader replacement, uniform and state overrides.
+  - Live patching for WebGPU, and for WebGL beyond what is built: debug views on the live
+    page, a solid-colour mode for draws, substituting a texture from a file, patches that
+    survive a reload.
 
 Known limits
   - A page whose loop runs on MessageChannel or scheduler.postTask is not paused by the frame gate.
@@ -773,6 +861,39 @@ pixel_history is for WebGL captures (WebGL 2 for rejected fragments). A draw who
 discards every fragment at the pixel cannot be told from one that never covered it.
 shader_analysis reads text: it says what a shader could cost, not what it did.";
 
+const PATCH: &str = "\
+Trying a change in the running page
+
+Before editing the code, try the fix live. A patch changes how the page draws from the
+next draw on, and is undone at will. The page's own objects are never touched.
+
+  patch_state(filter, state: {cull: false})         blend, depth_test, depth_write, cull,
+                                                    color_mask, scissor, for matching draws
+  patch_draws(filter)                               leave draws out; mode: \"isolate\" draws only them
+  patch_uniform(target: \"prg_1\", name, value)      hold a uniform at a value
+  patch_shader(handle: \"prg_1\", edits: [{find, replace}])
+                                                    edit a shader; also defines, or whole source
+  patch_texture(handle: \"tex_3\", with: \"checker\") a stand-in: checker, white, black, mips
+  patches()                                         what is in force, as the change to make in source
+  patches(revert: \"pat_2\")                         undo one; revert: \"all\" undoes every one
+  experiment(kind: \"scissor_1px\")                  is the cost in filling pixels? Measures the
+                                                    frame with and without, then puts it back
+  experiment(kind: \"skip\", filter)                 what do these draws cost?
+
+A filter names draws by {program: \"prg_2\"}, {texture: \"tex_3\"} and/or {draws: [6, 8]}.
+The draw numbers are event numbers, the ones draw_list and pixel_history give. Left out,
+a filter means every draw.
+
+The way to use it
+  1. Find the suspect with a capture: the draw, its state, its uniforms.
+  2. Patch what you think is wrong. step, then pixels or screenshot.
+  3. If the picture is right, patches() gives the change in words. Make it in the source,
+     navigate(reload: true), and check again without the patch.
+
+Handles (prg_1, tex_3) have to have been listed first: resources(kind: \"program\").
+A reload removes every patch. A patched shader that does not compile changes nothing and
+returns the compiler's message. Patches are for WebGL.";
+
 const HANDOFF: &str = "\
 Working with the person at the keyboard
 
@@ -816,6 +937,7 @@ pub fn help(topic: Option<&str>) -> String {
     match topic {
         Some("handoff") => HANDOFF.to_string(),
         Some("analysis") => ANALYSIS.to_string(),
+        Some("patch") => PATCH.to_string(),
         Some("input") => INPUT.to_string(),
         Some("capture") => CAPTURE.to_string(),
         Some("sql") => SQL.to_string(),

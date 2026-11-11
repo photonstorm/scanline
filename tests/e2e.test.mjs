@@ -995,6 +995,174 @@ describe('the control strip and the input owner', () =>
     });
 });
 
+describe('live patches', () =>
+{
+    const pixel = async (x, y) => (await scanline('pixels', String(x), String(y), '--json')).json.data.rgba8;
+
+    // Handles have to have been shown before they can be named.
+    const open = async (page) =>
+    {
+        await scanline('launch', server.url(page), '--paused', '--headless');
+        await scanline('step', '4');
+        await scanline('resources', 'program');
+        await scanline('resources', 'texture');
+    };
+
+    test('state, draws, a uniform and a texture are overridden and put back', async () =>
+    {
+        await open('fixtures/bugs/b01.html');
+
+        const sky = [89, 153, 229, 255];
+        const crate = [187, 131, 75, 255];
+
+        assert.deepEqual(await pixel(100, 220), sky, 'the bug: the crate is culled');
+
+        // The fix, tried live: culling off for the draws of that program.
+        const culling = await scanline('patch_state', '--filter', '{"program": "prg_1"}', '--state', '{"cull": false}', '--json');
+
+        assert.equal(culling.code, 0, culling.out);
+        assert.equal(culling.json.data.patch, 'pat_1');
+        assert.equal(culling.json.data.description, 'draws that use prg_1: cull off');
+
+        await scanline('step', '2');
+        assert.deepEqual(await pixel(100, 220), crate, 'with culling off the crate is there');
+
+        const listed = await scanline('patches', '--json');
+
+        assert.deepEqual(listed.json.data.patches.map((patch) => [patch.patch, patch.kind, patch.draws]), [['pat_1', 'state', 11]]);
+        assert.match(listed.json.summary, /Each line is the change to make in the page's source if it is the fix/);
+
+        await scanline('patches', '--revert', 'pat_1');
+        await scanline('step', '2');
+        assert.deepEqual(await pixel(100, 220), sky, 'undone, the bug is back');
+
+        // One event left out, numbered as a capture numbers it: the glass panel is event 9.
+        const before = await pixel(160, 130);
+
+        await scanline('patch_draws', '--filter', '{"draws": 9}');
+        await scanline('step', '2');
+        assert.deepEqual(await pixel(160, 130), sky, 'no glass: the sky shows');
+        assert.notDeepEqual(before, sky);
+
+        // Only that event, and nothing else that is drawn.
+        await scanline('patches', '--revert', 'all');
+        await scanline('patch_draws', '--filter', '{"draws": 9}', '--mode', 'isolate');
+        await scanline('step', '2');
+        assert.deepEqual(await pixel(30, 320), sky, 'the ground is not drawn');
+        assert.notDeepEqual(await pixel(160, 130), sky, 'the glass is');
+        await scanline('patches', '--revert', 'all');
+
+        // A uniform held, with the texture it multiplies made white.
+        const ground = [64, 128, 51, 255];
+
+        await scanline('step', '2');
+        assert.deepEqual(await pixel(30, 320), ground);
+
+        await scanline('patch_texture', 'tex_2', '--with', 'white');
+
+        const held = await scanline('patch_uniform', '--target', 'prg_1', '--name', 'tint', '--value', '[1, 0, 0, 1]', '--json');
+
+        assert.equal(held.json.data.description, 'uniform tint of prg_1 held at 1, 0, 0, 1');
+
+        await scanline('step', '3');
+        assert.deepEqual(await pixel(30, 320), [255, 0, 0, 255], 'the page sets the tint every frame, and it is set straight back');
+
+        const undone = await scanline('patches', '--revert', 'all');
+
+        assert.match(undone.out, /2 patches undone/);
+
+        await scanline('step', '2');
+        assert.deepEqual(await pixel(30, 320), ground, 'the page draws as its own code says again');
+        assert.match((await scanline('patches')).out, /No patches are in force/);
+
+        // The frame is right after all that: the state the patches changed was put back each time.
+        assert.deepEqual((await scanline('console', '--level', 'error', '--json')).json.data.lines, []);
+    });
+
+    test('a shader is edited live, and one that does not compile changes nothing', async () =>
+    {
+        await open('fixtures/bugs/b00.html');
+
+        const crate = await pixel(100, 220);
+
+        // The sprite shader made to ignore its texture and show its coordinates instead.
+        const patched = await scanline('patch_shader', 'prg_1', '--edits', '[{"find": "tint * mix(vec4(1.0), texture(map, uv), textured)", "replace": "vec4(uv, 0.0, 1.0)"}]', '--json');
+
+        assert.equal(patched.code, 0, patched.out);
+        assert.match(patched.json.data.description, /^fragment shader of prg_1: «tint \* mix/);
+        assert.match(patched.json.summary, /It compiled and linked/);
+        assert.match(patched.json.summary, /The page's own program is untouched/);
+
+        await scanline('step', '2');
+
+        // The crate at x 60–140, y 180–260: its texture coordinates run 0 to 1 across it.
+        const left = await pixel(64, 220);
+        const right = await pixel(136, 220);
+
+        assert.ok(left[0] < 30 && right[0] > 225, `red rises with u: ${left} → ${right}`);
+        assert.equal(left[2], 0);
+        assert.notDeepEqual(await pixel(100, 220), crate);
+
+        // The sparks use another program and are untouched; the scene still animates through the patched one.
+        assert.equal((await scanline('patches', '--json')).json.data.patches[0].draws, 11);
+
+        // Whole frames replay as before once it is undone.
+        await scanline('patches', '--revert', 'pat_1');
+        await scanline('step', '2');
+        assert.deepEqual(await pixel(100, 220), crate);
+
+        // A #define, placed after the version line.
+        const defined = await scanline('patch_shader', 'prg_1', '--defines', '{"UNUSED_SWITCH": 1}', '--json');
+
+        assert.match(defined.json.data.description, /#define UNUSED_SWITCH 1/);
+        await scanline('step', '1');
+        assert.deepEqual(await pixel(100, 220), crate, 'a define nothing reads changes nothing');
+        await scanline('patches', '--revert', 'all');
+
+        // Broken source is refused, with the compiler's words, and the page is left alone.
+        const broken = await scanline('patch_shader', 'prg_1', '--edits', '[{"find": "colour = ", "replace": "colour = oops + "}]');
+
+        assert.equal(broken.code, 1);
+        assert.match(broken.out, /does not compile, so nothing was changed/);
+        assert.match(broken.out, /oops/);
+
+        const missing = await scanline('patch_shader', 'prg_1', '--edits', '[{"find": "no such text", "replace": ""}]');
+
+        assert.equal(missing.code, 1);
+        assert.match(missing.out, /does not contain «no such text»/);
+
+        await scanline('step', '1');
+        assert.deepEqual(await pixel(100, 220), crate);
+        assert.match((await scanline('patches')).out, /No patches are in force/);
+    });
+
+    test('an experiment measures a change and takes it away again', async () =>
+    {
+        await open('fixtures/bugs/b00.html');
+
+        const before = await pixel(100, 220);
+        const tried = await scanline('experiment', 'scissor_1px', '--frames', '20', '--json');
+
+        assert.equal(tried.code, 0, tried.out);
+        assert.match(tried.json.summary, /Tried for 20 frames: every draw clipped to a single pixel/);
+        assert.match(tried.json.summary, /The page is back as it was/);
+        assert.equal(typeof tried.json.data.cpu_ms.without, 'number');
+        assert.match((await scanline('patches')).out, /No patches are in force/);
+
+        await scanline('step', '1');
+        assert.deepEqual(await pixel(100, 220), before);
+
+        const skipped = await scanline('experiment', 'skip', '--filter', '{"program": "prg_2"}', '--frames', '20', '--json');
+
+        assert.match(skipped.json.summary, /the matching draws left out \(draws that use prg_2 are not drawn\)/);
+
+        const none = await scanline('experiment', 'skip');
+
+        assert.equal(none.code, 1);
+        assert.match(none.out, /needs a filter/);
+    });
+});
+
 describe('runs: play it again', () =>
 {
     const state = 'JSON.stringify([game.frame, game.time, game.x, game.y, game.clicks, game.sparks, Date.now(), performance.now()])';

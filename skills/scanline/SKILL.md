@@ -76,6 +76,14 @@ The capture's summary says whether replaying it matched the original frame. If i
 
 On WebGPU the commands are the same, with these differences. A pass that clears as it begins is an event, as are copies into a texture and compute dispatches. `gfx_draw` shows the pipeline and what each bind group holds (buffers, texture views, samplers); uniform values are bytes in those buffers and are not named. Which test rejected a draw is not worked out: read the pipeline's cull mode and depth compare in `gfx_draw`. A call the browser rejects takes its whole command buffer with it, so the summary quotes the browser's message and marks every event that was in that command buffer DID NOT RUN. That is the usual reason a WebGPU canvas is blank.
 
+## Try the fix before you write it
+
+On a WebGL page, change the running page first and look. `gfx_patch_state(filter: {program: "prg_1"}, state: {cull: false})` overrides blending, the depth test, depth writes, culling, the colour mask or the scissor box for the draws that match. `gfx_patch_uniform(target, name, value)` holds a uniform at a value. `gfx_patch_shader(handle: "prg_1", edits: [{find, replace}])` edits a shader (the page's own program is untouched; a shader that does not compile changes nothing). `gfx_patch_draws(filter)` leaves draws out, or with `mode: "isolate"` draws only them. `gfx_patch_texture(handle, with: "checker")` shows whether texture coordinates are right.
+
+A filter's `draws` are event numbers, the ones `gfx_draw_list` gives. Step a frame, read a pixel, and if the picture is right, `gfx_patches()` states the change in words: make that change in the source, reload, and check again with no patch. `gfx_patches(revert: "all")` undoes everything; so does a reload.
+
+`gfx_experiment(kind: "scissor_1px")` answers "is this frame slow because of the pixels it fills?" by measuring it with every draw clipped to one pixel.
+
 ## When you cannot reproduce it
 
 Ask the person. `gfx_request_human(instruction: "Play until the water flickers, then press Debug")` returns at once with `req_1`. They get the input, the page runs, and the last 120 frames are recorded. `gfx_wait(request: "req_1")` returns their Debug press, or `still_waiting` with the call to make next; the press is acted on when it happens, so nothing is lost if you are busy.

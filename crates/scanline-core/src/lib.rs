@@ -14,6 +14,7 @@ mod commands;
 mod handoff;
 mod inventory;
 mod keys;
+mod patch;
 mod runs;
 mod session;
 mod tools;
@@ -146,6 +147,13 @@ impl Host {
             "debug" => handoff::debug(self, &live()?, &params).await,
             "recording" => handoff::recording(self, &params).await,
             "strip" => handoff::strip(&live()?, &params).await,
+            "patch_draws" => patch::patch_draws(&live()?, &params).await,
+            "patch_state" => patch::patch_state(&live()?, &params).await,
+            "patch_uniform" => patch::patch_uniform(&live()?, &params).await,
+            "patch_shader" => patch::patch_shader(&live()?, &params).await,
+            "patch_texture" => patch::patch_texture(&live()?, &params).await,
+            "patches" => patch::patches(&live()?, &params).await,
+            "experiment" => patch::experiment(&live()?, &params).await,
             "save_run" => runs::save_run(self, &live()?).await,
             "replay_run" => runs::replay_run(self, &live()?, &params).await,
             "captures" => capture::captures(self, &params),

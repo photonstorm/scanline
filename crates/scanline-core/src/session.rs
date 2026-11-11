@@ -129,6 +129,8 @@ pub struct State {
     pub actions: VecDeque<String>,
     /// What the strip says when nothing has been asked of the person: how the last press went.
     pub strip_note: Option<String>,
+    /// Live patches made in this session: the handle shown, and the probe and number behind it.
+    pub patches: std::collections::BTreeMap<String, (Instance, i64)>,
     worker_urls: HashMap<String, String>,
     /// Workers stopped at start, waiting for the instrumentation pause where the probe goes in.
     waiting_workers: HashSet<String>,

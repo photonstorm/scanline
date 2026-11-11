@@ -64,6 +64,9 @@ export const GL = {
     drawArraysInstanced: { draw: { mode: 0, count: 2, instances: 3 } },
     drawElementsInstanced: { draw: { mode: 0, count: 1, instances: 4 } },
     drawRangeElements: { draw: { mode: 0, count: 3, instances: null } },
+    // A blit changes pixels as a draw does: a capture counts it as an event, and so must
+    // anything that numbers a frame's events the way a capture does.
+    blitFramebuffer: { count: 'blits' },
     clear: { count: 'clears' },
     clearBufferfv: { count: 'clears' },
     clearBufferiv: { count: 'clears' },

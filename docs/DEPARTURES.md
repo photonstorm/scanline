@@ -166,6 +166,30 @@ Built: `pixel_history` (WebGL; rejected fragments need WebGL 2), `compare`, `lin
 
 Not built from the milestone's list: the other views (depth, stencil, mip, NaN, draw ID), geometry and vertex stage output, attribution of GPU time within a draw, translated shaders in a capture, the GPU process's real memory, exact error attribution beyond what a capture's rejected calls give, and tracing.
 
+## Milestone 6 so far
+
+"Journey J3 (slow frame, patched live, confirmed, then fixed in source) works on WebGL 2 and WebGPU. On the three adapted engines every draw resolves to an engine object."
+
+| Criterion | Standing |
+|---|---|
+| J3 works on WebGL 2 | The pieces are there and tested one by one: `profile` and `shader_analysis` find the cost, `patch_shader` changes it live, `experiment` measures with and without, `patches` states the change. **Not run end to end on a slow fixture**: there is no planted "64 samples in a loop" bug yet. |
+| J3 works on WebGPU | **Not built.** No live patches on WebGPU. |
+| Every draw resolves to an engine object on three engines | **Not started.** No page protocol, no adapters. |
+
+Built, for WebGL: `patch_state`, `patch_draws`, `patch_uniform`, `patch_shader`, `patch_texture`, `patches`, `experiment` (`scissor_1px`, `skip`).
+
+| The specification says | The code does | Why |
+|---|---|---|
+| A patched shader is compiled into the page's program, which is relinked; the page's uniform locations are then translated on every `uniform*` call. | The page's program is left alone. A second program, the shadow, is linked from the edited source with every attribute at the location it had. Before each draw that uses the page's program the shadow is made current and given the page's uniform values (only when one has changed); after it, the page's program is made current again. | No translation on the hot path, nothing of the page's is invalidated, and reverting is simply to stop. It costs a program switch and, when uniforms changed, their re-upload for each patched draw. |
+| Uniform override replaces the value in matching `uniform*` calls. | The page's call goes through, and the held value is set straight after it. | The wrappers do not rewrite arguments. The page's own record of what it set is kept, so reverting puts its value back. |
+| State override replaces arguments of the state call, or sets state around draws. | Around draws only: every draw wrapper passes through a gate that can change state before the draw and restores it after. | One mechanism for state, shaders, textures and skipping. The gate is one null check on a draw when no patch is in force. |
+| `gfx_patch_draws` has a `solid` mode; `gfx_patch_texture` takes a file; `gfx_live_view` shows overdraw and the like on the live page. | Not built. | Solid colour needs a substitute fragment shader that keeps `discard`; live views need the same. |
+| `gfx_experiment` kinds `textures_2x2`, `flat_fragment`, `half_resolution`. | `scissor_1px` and `skip` only. | The others need texture substitution in bulk, a substitute shader, and resizing the canvas under the page. |
+| Patches survive a reload when asked. | They do not. | They live in the page's probe. |
+| A filter selects draws. | By program, by a texture bound, and by event number, numbered as a capture numbers events (clears and blits counted), so a number from `draw_list` can be used as it is. | |
+
+The gate and the uniform watch were added to the generated wrappers and the WebGL tracker; the overhead spike has not been run again since.
+
 ## WebGPU capture: what it does not do
 
 - Which test rejected a draw that changed nothing. The tests are part of the pipeline, so trying a draw without one means building the pipeline again without it.

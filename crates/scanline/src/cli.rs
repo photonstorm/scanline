@@ -30,7 +30,8 @@ fn positional(command: &str) -> &'static [&'static str] {
         "draw_diff" => &["capture", "a", "b"],
         "pixel_source" | "pixel_history" => &["capture", "x", "y"],
         "query" => &["capture", "sql"],
-        "resource" | "shader_analysis" => &["handle"],
+        "resource" | "shader_analysis" | "patch_shader" | "patch_texture" => &["handle"],
+        "experiment" => &["kind"],
         "request_human" => &["instruction"],
         "recording" => &["recording"],
         "replay_run" => &["run"],
@@ -75,7 +76,7 @@ pub fn usage() -> String {
         String::new(),
         "Exit status: 0 done, 1 error, 2 ran but found nothing (a wait that timed out, a run_until not met).".into(),
         String::new(),
-        "`scanline help` explains the workflow; `scanline help capture`, `analysis`, `handoff`, `input`, `sql` and `limits` the rest.".into(),
+        "`scanline help` explains the workflow; `scanline help capture`, `analysis`, `patch`, `handoff`, `input`, `sql` and `limits` the rest.".into(),
         "`scanline <command> --help` lists one command's arguments, with an example.".into(),
         format!("Files are kept in {} (set SCANLINE_HOME to move them).", scanline_core::default_home().display()),
     ]);
@@ -169,6 +170,13 @@ pub fn command_usage(name: &str) -> Option<String> {
         "lint" => "scanline lint --capture cap_1",
         "view" => "scanline view cap_1 overdraw",
         "profile" => "scanline profile cap_1 --by shader",
+        "patch_state" => "scanline patch_state --filter '{\"program\": \"prg_1\"}' --state '{\"cull\": false}'",
+        "patch_draws" => "scanline patch_draws --filter '{\"draws\": [6, 8]}'",
+        "patch_uniform" => "scanline patch_uniform --target prg_1 --name tint --value '[1, 0, 0, 1]'",
+        "patch_shader" => "scanline patch_shader prg_1 --edits '[{\"find\": \"64\", \"replace\": \"24\"}]'",
+        "patch_texture" => "scanline patch_texture tex_3 --with checker",
+        "patches" => "scanline patches --revert all",
+        "experiment" => "scanline experiment scissor_1px",
         "strip" => "scanline strip --open",
         "take_control" => "scanline take_control",
         "save_run" => "scanline save_run",
@@ -301,7 +309,7 @@ pub async fn run(args: Vec<String>) -> Result<ExitCode> {
     } else if parsed.command == "help" {
         // A command's name is a topic too.
         let topic = parsed.params["topic"].as_str();
-        let is_topic = |topic: &str| ["workflow", "input", "capture", "analysis", "handoff", "sql", "limits", "help"].contains(&topic);
+        let is_topic = |topic: &str| ["workflow", "input", "capture", "analysis", "patch", "handoff", "sql", "limits", "help"].contains(&topic);
         let text = match topic.filter(|topic| !is_topic(topic)).and_then(|topic| command_usage(&topic.replace('-', "_"))) {
             Some(usage) => usage,
             None => format!("{}\n\n{CALLS}", scanline_core::help(topic)),

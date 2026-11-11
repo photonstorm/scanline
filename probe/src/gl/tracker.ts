@@ -520,6 +520,9 @@ function setStencil (t: GlTracker, face: number, apply: (side: StencilSide) => v
 
 // ---- Uniforms ----
 
+// Set while a live patch needs to know of every uniform the page sets (patch.ts).
+export const uniformWatch: { set: null | ((slot: UniformSlot) => void) } = { set: null };
+
 function uniformN (location: object | null, count: number, a: number, b: number, c: number, d: number): void
 {
     const slot = location ? locationTag.get(location) : undefined;
@@ -554,6 +557,11 @@ function uniformN (location: object | null, count: number, a: number, b: number,
     }
 
     slot.set = currentFrame();
+
+    if (uniformWatch.set !== null)
+    {
+        uniformWatch.set(slot);
+    }
 }
 
 function uniformV (location: object | null, data: ArrayLike<number> | null, srcOffset: number | undefined, srcLength: number | undefined): void
@@ -581,6 +589,11 @@ function uniformV (location: object | null, data: ArrayLike<number> | null, srcO
     }
 
     slot.set = currentFrame();
+
+    if (uniformWatch.set !== null)
+    {
+        uniformWatch.set(slot);
+    }
 }
 
 const scalar = (count: number): Fn => (_c: Rec, _self: unknown, _r: unknown, location: object | null, a: number, b: number, c: number, d: number) => uniformN(location, count, a, b, c, d);
