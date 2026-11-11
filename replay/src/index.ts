@@ -832,6 +832,12 @@ void main ()
             return;
         }
 
+        // What transform feedback captures from it is fixed when it is linked.
+        if (this.gl2 && program.feedbackVaryings?.names?.length)
+        {
+            gl.transformFeedbackVaryings(object, program.feedbackVaryings.names, program.feedbackVaryings.mode);
+        }
+
         gl.linkProgram(object);
 
         if (!gl.getProgramParameter(object, 0x8B82))
@@ -1023,6 +1029,42 @@ void main ()
         this.bindVertexArray(this.object('vertex_array', state.vertexArray));
 
         gl.bindBuffer(0x8892, this.object('buffer', state.arrayBuffer));
+
+        // Numbered binding points first: binding one also sets the plain binding point of
+        // its kind, which is put right just after.
+        if (this.gl2 && state.indexed)
+        {
+            const bind = (target: number, point: Json): void =>
+            {
+                const buffer = this.object('buffer', point.buffer);
+
+                if (point.size > 0)
+                {
+                    gl.bindBufferRange(target, point.index, buffer, point.offset, point.size);
+                }
+                else
+                {
+                    gl.bindBufferBase(target, point.index, buffer);
+                }
+            };
+
+            for (const point of state.indexed.uniform ?? [])
+            {
+                bind(0x8A11, point);
+            }
+
+            for (const feedback of state.indexed.feedback ?? [])
+            {
+                gl.bindTransformFeedback(0x8E22, feedback.object === null ? null : this.object('query', feedback.object));
+
+                for (const point of feedback.bound)
+                {
+                    bind(0x8C8E, point);
+                }
+            }
+
+            gl.bindTransformFeedback(0x8E22, state.indexed.transformFeedback === null ? null : this.object('query', state.indexed.transformFeedback));
+        }
 
         for (const target of Object.keys(state.otherBuffers ?? {}))
         {

@@ -431,6 +431,11 @@ pub(crate) fn plural(count: i64, noun: &str) -> String {
 
 /// Things about the frame that are often the bug, found without being asked. Each is a
 /// plain fact about the capture; whether it is a mistake is for the reader to judge.
+/// True for a draw made with RASTERIZER_DISCARD on: it is not meant to change a pixel.
+fn discards(row: &Value) -> bool {
+    row["enabled"].as_array().is_some_and(|caps| caps.iter().any(|cap| cap == 0x8C89))
+}
+
 fn findings(body: &Value, tag: u64, errors: &HashMap<i64, String>, effects: &HashMap<i64, Value>) -> Vec<String> {
     let draws = body["draws"].as_array().cloned().unwrap_or_default();
     let sizes = Sizes::of(body);
@@ -454,7 +459,9 @@ fn findings(body: &Value, tag: u64, errors: &HashMap<i64, String>, effects: &Has
     let idle: Vec<i64> = draws
         .iter()
         .enumerate()
-        .filter(|(index, row)| row["kind"] == "draw" && !rejected(row) && effects.get(&(*index as i64)).is_some_and(|effect| effect["changed"] == 0))
+        .filter(|(index, row)| {
+            row["kind"] == "draw" && !rejected(row) && !discards(row) && effects.get(&(*index as i64)).is_some_and(|effect| effect["changed"] == 0)
+        })
         .map(|(index, _)| index as i64)
         .collect();
 
@@ -2727,6 +2734,10 @@ async fn unchanged(host: &Arc<Host>, session: &Arc<Session>, handle: &str, index
 
     if state["kind"] != "draw" {
         return format!("{start} It wrote what was already there, or the scissor box or colour mask kept it out.");
+    }
+
+    if discards(state) {
+        return "  Effect: none on its target, as it is meant to have: RASTERIZER_DISCARD is on, so nothing is rasterised. The draw is there for what its vertex shader writes by transform feedback, or for a query.".into();
     }
 
     let Ok(tried) = session.replay("why", &json!({ "key": handle, "draw": index }), LONG).await else {

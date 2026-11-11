@@ -338,6 +338,16 @@ A compressed texture, a depth texture and (on WebGL) a luminance or alpha textur
 - Depth render targets are read before the frame, as colour targets are, so a frame that loads depth an earlier one drew replays from the right start.
 - Not read: multisampled textures, stencil, and 3D compressed textures.
 
+## State set up long before the frame
+
+A capture begins from the state the frame began with. Three parts of that state were missing for WebGL 2, and a page that used them replayed wrongly or not at all:
+
+- **Numbered buffer binding points.** `bindBufferBase` and `bindBufferRange` bind a uniform block's buffer, or a transform feedback target, to a numbered point, and a page often does it once at start. The capture now asks the context for every such binding (and its offset and size) as the frame begins, for uniform buffers and for each transform feedback object, and the replay makes them again. The tracker does not follow these calls; they are read when a capture is taken.
+- **Transform feedback varyings.** What a program writes by transform feedback is fixed when it is linked. The capture reads the names and the mode from each linked program, and the replay sets them before it links.
+- **Buffers that transform feedback writes.** A frame that steps a simulation with transform feedback reads what the last frame left. Such buffers (any that has been bound as a feedback target, up to 64 MB each) are read before the frame, as render targets are. Read after it they held the frame's own step, and the replay took it twice.
+
+A draw made with `RASTERIZER_DISCARD` on is no longer listed as "changed no pixels": it is not meant to.
+
 ## Assertions for a test run
 
 Built after milestone 7. The build plan names "CI assertions and baselines" for after 1.0 and the specification says nothing more, so the design is this project's. One command, `assert`, checks the running page: the canvas against a baseline PNG (`update: true` saves it; `tolerance` and `max_changed` give it room; `region` checks a part), one pixel against a colour, the console against "no errors", and the recent frames against budgets for draws, triangles, API calls, GPU time and CPU time. It answers pass or FAIL for each and, from a shell, exits 2 when anything fails. A failed baseline writes the canvas as it is and a picture of where it differs. Baselines are plain PNG files wherever the caller keeps them (the files tier applies); nothing is stored in Scanline's own directory.

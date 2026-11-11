@@ -26,7 +26,7 @@ import { METHOD_NAMES } from './hooks/generated';
 import type { Rec } from './hooks/hub';
 import { G } from './natives';
 import { isCompressedFormat, isSrgbCompressed } from './gl/sample';
-import { base64, gzip, readBuffer, readGlTexture } from './readback';
+import { base64, gzip, readBuffer, readGlBuffer, readGlTexture } from './readback';
 import { alive, all, entryOf, find, type Entry, type Kind } from './registry';
 import { emit, expose } from './transport';
 
@@ -301,6 +301,87 @@ function use (capture: Capture, object: object | null): number | null
     return object ? entry?.id ?? 0 : null;
 }
 
+// WebGL 2: the buffers bound to numbered binding points, which a draw reads uniform blocks
+// from and transform feedback writes to. A page often binds them once, long before the
+// frame. They are read from the context: the tracker does not follow them.
+function indexedBindings (capture: Capture, t: GlTracker): Record<string, unknown> | null
+{
+    if (!t.gl2)
+    {
+        return null;
+    }
+
+    const gl = t.info.ctx;
+    const n = t.info.natives;
+    const points = (binding: number, start: number, size: number, count: number): unknown[] =>
+    {
+        const out: unknown[] = [];
+
+        for (let index = 0; index < count; index++)
+        {
+            const buffer = n.getIndexedParameter.call(gl, binding, index);
+
+            if (buffer)
+            {
+                out.push({
+                    index,
+                    buffer: use(capture, buffer),
+                    offset: G.Number(n.getIndexedParameter.call(gl, start, index)) || 0,
+                    size: G.Number(n.getIndexedParameter.call(gl, size, index)) || 0
+                });
+            }
+        }
+
+        return out;
+    };
+
+    try
+    {
+        const uniform = points(0x8A28, 0x8A29, 0x8A2A, G.Math.min(96, G.Number(n.getParameter.call(gl, 0x8A2F)) || 0));
+
+        // Transform feedback's binding points belong to the transform feedback object that
+        // is bound: each one is bound in turn to be asked, and the page's put back.
+        const separate = G.Math.min(8, G.Number(n.getParameter.call(gl, 0x8C8B)) || 0);
+        const feedback: unknown[] = [];
+        const active = n.getParameter.call(gl, 0x8E24);
+
+        if (!active)
+        {
+            const objects: Array<object | null> = [null];
+
+            for (const entry of all('query'))
+            {
+                const object = entry.ref.deref();
+
+                if (entry.context === t.info.id && alive(entry) && entry.p.transformFeedback && object)
+                {
+                    objects.push(object);
+                }
+            }
+
+            for (const object of objects)
+            {
+                n.bindTransformFeedback.call(gl, 0x8E22, object);
+
+                const bound = points(0x8C8F, 0x8C84, 0x8C85, separate);
+
+                if (bound.length)
+                {
+                    feedback.push({ object: use(capture, object), bound });
+                }
+            }
+
+            n.bindTransformFeedback.call(gl, 0x8E22, t.transformFeedback);
+        }
+
+        return { uniform, feedback, transformFeedback: use(capture, t.transformFeedback) };
+    }
+    catch
+    {
+        return null;
+    }
+}
+
 // The texture a framebuffer's first colour attachment is, if it is one.
 function colourTarget (framebuffer: object | null): { texture: number; level: number } | null
 {
@@ -492,6 +573,7 @@ function initialState (capture: Capture, t: GlTracker): Record<string, unknown>
     }
 
     return {
+        indexed: indexedBindings(capture, t),
         unit: t.unit,
         units: t.units.map((unit) => ({
             t2d: use(capture, unit.t2d),
@@ -673,7 +755,11 @@ async function describe (capture: Capture, entry: Entry): Promise<Record<string,
             out.usage = p.usage ?? 0x88E4;
             out.element = p.element ?? null;
 
-            if (alive(entry) && p.size > 0 && !p.createdInFrame)
+            if (capture.buffersBefore?.has(entry.id) && !p.createdInFrame)
+            {
+                out.data = capture.buffersBefore.get(entry.id);
+            }
+            else if (alive(entry) && p.size > 0 && !p.createdInFrame)
             {
                 try
                 {
@@ -714,6 +800,28 @@ async function describe (capture: Capture, entry: Entry): Promise<Record<string,
             out.shaders = p.shaders;
             out.blockBindings = p.blockBindings ?? {};
             out.uniforms = capture.uniformsAtStart.get(entry.id) ?? {};
+
+            // What the program was linked to capture with transform feedback, and how.
+            if (capture.info.api === 'webgl2' && object && alive(entry) && p.links > 0)
+            {
+                try
+                {
+                    const count: number = n.getProgramParameter.call(gl, object, 0x8C83) ?? 0;
+
+                    if (count > 0)
+                    {
+                        const names: string[] = [];
+
+                        for (let i = 0; i < count; i++)
+                        {
+                            names.push(G.String(n.getTransformFeedbackVarying.call(gl, object, i)?.name ?? ''));
+                        }
+
+                        out.feedbackVaryings = { names, mode: n.getProgramParameter.call(gl, object, 0x8C7F) };
+                    }
+                }
+                catch { /* a program with none */ }
+            }
 
             // Attribute locations are the linker's choice unless bound. Replay must bind them
             // to the same places, or the vertex layout would point at the wrong attributes.
@@ -906,6 +1014,28 @@ function begin (info: ContextInfo, light = false): Capture
         }
     }
 
+    // Buffers that transform feedback writes, as the frame begins: a frame may step what
+    // the last one left (particles simulated on the GPU). Read after the frame they would
+    // hold this frame's step, and a replay would take it twice.
+    const before: Map<number, number> = new G.Map();
+
+    capture.buffersBefore = before;
+
+    for (const entry of light ? [] : all('buffer'))
+    {
+        if (entry.context === info.id && entry.api === 'webgl' && alive(entry) && entry.p.feedback && entry.p.size > 0 && entry.p.size <= MAX_FEEDBACK)
+        {
+            try
+            {
+                before.set(entry.id, blob(capture, readGlBuffer(entry, 0, entry.p.size)));
+            }
+            catch
+            {
+                // Read after the frame, as any other buffer is.
+            }
+        }
+    }
+
     // Render targets as the frame begins: a frame may sample what the last one drew.
     for (const entry of light ? [] : all('texture'))
     {
@@ -936,6 +1066,9 @@ function begin (info: ContextInfo, light = false): Capture
 
     return capture;
 }
+
+// The largest buffer written by transform feedback that is read before a frame.
+const MAX_FEEDBACK = 64 * 1024 * 1024;
 
 // Marks objects made during the frame: replay makes them by running the frame's own calls.
 function markCreatedInFrame (capture: Capture): void

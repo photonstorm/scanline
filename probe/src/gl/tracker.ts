@@ -97,6 +97,21 @@ const locationTag: Tag<UniformSlot> = uniformLocationTag;
 // bind and every upload, so each is its own tag with its own inline cache.
 const texOf = (object: object | null | undefined): Entry | undefined => (object ? glTextureTag.get(object) : undefined);
 const bufOf = (object: object | null | undefined): Entry | undefined => (object ? glBufferTag.get(object) : undefined);
+
+// A buffer that transform feedback writes to is one the GPU fills: a capture reads it
+// before the frame, since the frame may step what the last one left there.
+function feedbackTarget (target: number, buffer: object | null): void
+{
+    if (target === 0x8C8E && buffer)
+    {
+        const entry = bufOf(buffer);
+
+        if (entry)
+        {
+            entry.p.feedback = true;
+        }
+    }
+}
 const shdOf = (object: object | null | undefined): Entry | undefined => (object ? glShaderTag.get(object) : undefined);
 const prgOf = (object: object | null | undefined): Entry | undefined => (object ? glProgramTag.get(object) : undefined);
 const fboOf = (object: object | null | undefined): Entry | undefined => (object ? glFramebufferTag.get(object) : undefined);
@@ -715,11 +730,13 @@ const handlers: Record<string, H> = {
     {
         // The indexed bind also sets the generic binding point.
         tracker(c)?.otherBuffers.set(target, buffer);
+        feedbackTarget(target, buffer);
     },
 
     bindBufferRange (c, _s, _r, target: number, _index: number, buffer: object | null)
     {
         tracker(c)?.otherBuffers.set(target, buffer);
+        feedbackTarget(target, buffer);
     },
 
     bindFramebuffer (c, _s, _r, target: number, framebuffer: object | null)

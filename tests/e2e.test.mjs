@@ -778,6 +778,40 @@ describe('textures a framebuffer cannot read', () =>
     }
 });
 
+describe('what was set up long before the frame', () =>
+{
+    // fixtures/history/feedback.html: transform feedback moves a bar 8 px a frame, between
+    // two buffers only the GPU writes; the bar's colour is in a uniform block bound to a
+    // numbered binding point once, at an offset, before the first frame.
+    test('a capture holds feedback buffers as the frame found them, numbered bindings and feedback varyings', async () =>
+    {
+        await scanline('launch', server.url('fixtures/history/feedback.html'), '--headless', '--paused');
+        await scanline('step', 3);
+
+        const taken = await scanline('capture', '--json');
+        const capture = taken.json.data.capture;
+
+        // Identical means all three: the step is taken once, from where frame 3 left the
+        // bar; the program is linked to write it; and the block is read from the right bytes.
+        assert.equal(taken.json.data.replay, 'identical', taken.json.summary);
+        assert.doesNotMatch(taken.json.summary, /raised a GL error/);
+
+        const pixel = async (x) => (await scanline('pixels', x, 60, '--capture', capture, '--json')).json.data.rgba8;
+
+        assert.deepEqual([await pixel(28), await pixel(36), await pixel(44)], [[26, 26, 26, 255], [255, 204, 0, 255], [26, 26, 26, 255]]);
+
+        // The step itself draws nothing, on purpose: it is not reported as a draw that failed.
+        assert.doesNotMatch(taken.json.summary, /changed no pixels/);
+        assert.match((await scanline('draw', capture, 0)).out, /Effect: none on its target, as it is meant to have: RASTERIZER_DISCARD is on/);
+
+        // Asking the context for its bindings left them as they were.
+        assert.match((await scanline('resource', 'ctx_1', '--verify', 'true')).out, /Verified: all \d+ values match what the context reports/);
+        await scanline('step', 1);
+        assert.deepEqual((await scanline('pixels', 44, 60, '--json')).json.data.rgba8, [255, 204, 0, 255], 'the page carries on: frame 5');
+        await scanline('stop');
+    });
+});
+
 describe('working with the person', () =>
 {
     test('ask, play, Debug: the frames before the press are kept and the flicker is found', async () =>

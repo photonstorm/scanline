@@ -112,6 +112,8 @@ A WebGL 2 page for the stencil and mip views. Two overlapping squares write the 
 
 `history/compute-webgpu.html` is a simulation stepped on the GPU: a compute pass moves a bar 8 px a frame by adding to a storage buffer, and tints the background through a storage texture. For checking that a capture holds what the frame began with, so that its replay takes the step once.
 
+`history/feedback.html` is the WebGL 2 one: transform feedback moves the bar, between two buffers only the GPU writes, and the bar's colour is in a uniform block bound to a numbered binding point once, at an offset, before the first frame. A capture replays it only if it holds the buffers as the frame found them, the binding, and what the program was linked to write.
+
 `history/bundles-webgpu.html` draws three of its four quads from render bundles: one bundle built before the first frame (two draws, one with a pipeline of layout `'auto'`) and one built every frame. For checking that a capture holds a bundle built long before it, that the views take a bundle apart, and that a live patch reaches the draws inside. With `?spare` it also makes a bind group and a buffer that nothing uses, for checking what the inventory says is in use.
 
 `history/deleted.html` (and `?api=webgpu`) deletes a texture and a vertex buffer at frame 20 and replaces them, for the flight recorder: a recording that spans frame 20 has to replay the frames before it with what the page has thrown away.

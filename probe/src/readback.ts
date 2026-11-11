@@ -542,11 +542,11 @@ async function readGpuTexture (entry: Entry, level: number, layer: number, regio
 
 // ---- Buffers ----
 
-export async function readBuffer (entry: Entry, offset: number, length: number): Promise<Uint8Array>
+// A WebGL buffer's bytes, read there and then.
+export function readGlBuffer (entry: Entry, offset: number, length: number): Uint8Array
 {
     const object = entry.ref.deref() as any;
 
-    if (entry.api === 'webgl')
     {
         const info = contextById(entry.context);
         const t = info ? trackerFor(info) : null;
@@ -587,6 +587,16 @@ export async function readBuffer (entry: Entry, offset: number, length: number):
         }
 
         return out;
+    }
+}
+
+export async function readBuffer (entry: Entry, offset: number, length: number): Promise<Uint8Array>
+{
+    const object = entry.ref.deref() as any;
+
+    if (entry.api === 'webgl')
+    {
+        return readGlBuffer(entry, offset, length);
     }
 
     if (!entry.p.readable)
