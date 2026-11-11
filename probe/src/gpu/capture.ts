@@ -522,6 +522,41 @@ function drawRow (capture: Capture, state: PassState, name: string, args: any[],
     };
 }
 
+// What the bundles of one executeBundles call draw: each draw with the pipeline it was
+// recorded with, in order.
+function insideOf (bundles: unknown): Array<Record<string, unknown>>
+{
+    const out: Array<Record<string, unknown>> = [];
+
+    for (const bundle of G.Array.from(bundles as Iterable<unknown> ?? []))
+    {
+        const entry = bundle && typeof bundle === 'object' ? entryOf(bundle) : undefined;
+
+        let pipeline: number | null = null;
+
+        for (const [name, args] of (entry?.p.commands ?? []) as Array<[string, any[]]>)
+        {
+            if (name === 'setPipeline')
+            {
+                pipeline = args[0]?.id ?? null;
+            }
+            else if (name.startsWith('draw'))
+            {
+                const direct = !name.endsWith('Indirect');
+
+                out.push({ bundle: entry!.id, method: name, pipeline, count: direct ? (args[0] ?? 0) : null, instances: direct ? (args[1] ?? 1) : null });
+            }
+        }
+
+        if (!entry)
+        {
+            out.push({ bundle: null });
+        }
+    }
+
+    return out;
+}
+
 function passCommand (capture: Capture, state: PassState, name: string, args: any[], command: number): void
 {
     switch (name)
@@ -563,9 +598,22 @@ function passCommand (capture: Capture, state: PassState, name: string, args: an
             break;
 
         case 'executeBundles':
-            // What a bundle draws was decided when it was built; here it is one event.
-            capture.draws.push({ ...drawRow(capture, state, name, [], command), count: null, instances: null, bundles: G.Array.from(args[0] as Iterable<unknown> ?? []).length });
+        {
+            // What a bundle draws was recorded when it was built; here it is one event.
+            const inside = insideOf(args[0]);
+
+            capture.draws.push({
+                ...drawRow(capture, state, name, [], command),
+                mode: 'bundles',
+                count: inside.filter((inner) => inner.bundle !== null).length,
+                instances: null,
+                pipeline: null,
+                bundles: G.Array.from(args[0] as Iterable<unknown> ?? []).length,
+                inside
+            });
             break;
+        }
+
 
         case 'dispatchWorkgroups':
         case 'dispatchWorkgroupsIndirect':
@@ -949,6 +997,12 @@ function closure (entry: Entry, into: Set<Entry>): void
 {
     references(entry.p.descriptor, into);
 
+    // A bundle uses whatever was set and drawn with while it was recorded.
+    if (entry.kind === 'bundle')
+    {
+        references(entry.p.commands, into);
+    }
+
     if (entry.kind === 'layout' && entry.p.pipeline)
     {
         references({ ref: 'pipeline', id: entry.p.pipeline }, into);
@@ -1074,6 +1128,10 @@ async function describe (capture: Capture, entry: Entry): Promise<Record<string,
         case 'query':
             G.Object.assign(out, { type: p.type, count: p.count });
             break;
+
+        case 'bundle':
+            G.Object.assign(out, { descriptor: p.descriptor, commands: p.commands, draws: p.draws });
+            break;
     }
 
     return out;
@@ -1095,7 +1153,7 @@ export async function gpuFinish (capture: Capture): Promise<void>
         closure(entry, capture.used);
     }
 
-    const order: Kind[] = ['shader', 'sampler', 'texture', 'buffer', 'query', 'layout', 'pipeline', 'bind_group'];
+    const order: Kind[] = ['shader', 'sampler', 'texture', 'buffer', 'query', 'layout', 'pipeline', 'bind_group', 'bundle'];
     const entries = (G.Array.from(capture.used) as Entry[]).filter((entry) => entry.api === 'webgpu').sort((a, b) => (order.indexOf(a.kind) - order.indexOf(b.kind)) || (a.id - b.id));
 
     for (const entry of entries)

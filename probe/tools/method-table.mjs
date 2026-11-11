@@ -159,6 +159,7 @@ export const GPU = {
         createSampler: { post: true },
         createQuerySet: { post: true },
         createCommandEncoder: { post: true },
+        createRenderBundleEncoder: { post: true },
         destroy: { post: true }
     },
     GPUQueue: {
@@ -182,7 +183,9 @@ export const GPU = {
         setBindGroup: { post: true },
         setScissorRect: { post: true },
         setBlendConstant: { post: true },
-        executeBundles: { post: true },
+        // Intercepted: while a live patch is in force, what a bundle recorded is issued on
+        // the pass draw by draw, so that the patch reaches it (gpu/patch.ts).
+        executeBundles: { intercept: true },
         draw: { draw: { mode: null, count: 0, instances: 1 } },
         drawIndexed: { draw: { mode: null, count: 0, instances: 1 } },
         drawIndirect: { draw: { mode: null, count: null, instances: null } },
@@ -193,8 +196,20 @@ export const GPU = {
         dispatchWorkgroupsIndirect: { count: 'dispatches', post: true }
     },
     GPURenderBundleEncoder: {
-        // Draws recorded into a bundle are counted when the bundle is built, not when it
-        // runs. Counting at executeBundles needs the registry (milestone 2).
+        // What is recorded into a bundle is kept with it (gpu/tracker.ts), so that a
+        // capture can hold a bundle built before its frame and say what it draws.
+        setPipeline: { post: true },
+        setBindGroup: { post: true },
+        setVertexBuffer: { post: true },
+        setIndexBuffer: { post: true },
+        draw: { post: true },
+        drawIndexed: { post: true },
+        drawIndirect: { post: true },
+        drawIndexedIndirect: { post: true },
+        pushDebugGroup: { post: true },
+        popDebugGroup: { post: true },
+        insertDebugMarker: { post: true },
+        finish: { post: true }
     },
     GPUCanvasContext: {
         configure: { intercept: true },

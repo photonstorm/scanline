@@ -1649,10 +1649,7 @@ pub async fn stats(session: &Arc<Session>, params: &Value) -> Result<Value> {
         }
     }
 
-    lines.push(
-        "  Triangle counts leave out indirect draws and what WebGPU render bundles draw. Stepped frames show the display's interval, not the page's own pace."
-            .into(),
-    );
+    lines.push("  Triangle counts leave out indirect draws. Stepped frames show the display's interval, not the page's own pace.".into());
 
     Ok(result(lines.join("\n"), figures))
 }

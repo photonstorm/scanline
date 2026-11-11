@@ -187,7 +187,7 @@ pub const TOOLS: &[Tool] = &[
         schema: schema!(
             "[]",
             session!(),
-            r#""kind": { "type": "string", "description": "Left out: counts of every kind.", "enum": ["texture", "buffer", "shader", "program", "pipeline", "framebuffer", "renderbuffer", "sampler", "bind_group", "vertex_array", "layout", "query", "context"] }"#,
+            r#""kind": { "type": "string", "description": "Left out: counts of every kind.", "enum": ["texture", "buffer", "shader", "program", "pipeline", "framebuffer", "renderbuffer", "sampler", "bind_group", "vertex_array", "layout", "query", "bundle", "context"] }"#,
             r#""filter": { "type": "string", "description": "Text to find in the label, description or call site." }"#,
             r#""sort": { "type": "string", "enum": ["bytes", "created", "last_used"] }"#,
             r#""limit": { "type": "integer", "description": "Default 25." }"#,
@@ -901,10 +901,10 @@ Not built:
     key, the flight recorder, runs, one owner of the input): a Debug hotkey that works when
     some other application has the keyboard, and the browser's own pointer lock (a shim
     stands in: launch(pointer_lock: \"shim\")).
-  - Analysis of what a WebGPU render bundle draws: a bundle is one event, and the views
-    that draw the frame with other pipelines leave it out or draw it as it is.
-  - Live patching of what a WebGPU render bundle draws, and the wireframe and depth views
-    on a running WebGPU page (view on a capture has both).
+  - For the draws inside a WebGPU render bundle: geometry, and which test turned one away
+    (in draw and in pixel_history). The bundle is one event; draw lists what it draws, and
+    the views, profile and live patches reach inside it.
+  - The wireframe and depth views on a running WebGPU page (view on a capture has both).
   - Adapters for Babylon.js and PlayCanvas. Windows and Linux. A loopback HTTP transport
     for MCP (stdio only). Signed installers and updates: a release is an archive holding
     the one binary.
@@ -922,8 +922,7 @@ Known limits
     for a fresh launch) and unmodified mode is off.
   - Pointer lock and fullscreen have not been verified.
   - Windows is not supported yet. macOS only.
-  - Draw and triangle counts are per frame as issued. Triangle counts leave out indirect
-    draws and what WebGPU render bundles draw.
+  - Draw and triangle counts are per frame as issued. Triangle counts leave out indirect draws.
   - Texture readback: compressed, depth and stencil formats are not read yet, nor multisampled
     textures. A capture that uses one replays it empty, and its replay check says so.
   - pixel_source lists the events that changed a pixel; pixel_history adds the draws that
@@ -933,9 +932,10 @@ Known limits
   - What each event changed is measured when a capture is taken, by reading its target back
     around every event. A frame too large for that (many events on large targets) goes without.
   - \"Last used\" is tracked for WebGL objects only.
-  - A WebGPU capture does not hold: render bundles built before the frame, external (video)
-    textures, or the contents of depth, stencil, multisampled and compressed textures. The
-    first two make the calls that use them fail in replay; the summary says so.
+  - A WebGPU capture does not hold external (video) textures, or the contents of depth,
+    stencil, multisampled and compressed textures. A call that uses an external texture
+    fails in replay; the summary says so. A render bundle is held as what was recorded
+    into it, whenever it was built (not in an unmodified session, which follows nothing).
   - A WebGPU frame that reads what the GPU wrote in an earlier frame through a buffer or a
     storage texture (a simulation stepped by a compute pass) is captured with their contents
     as the frame left them, so its replay is one step ahead. Render targets are read before
@@ -1165,8 +1165,8 @@ patch_state can switch culling, the depth test, depth writes and blending off, s
 colour mask, and set a scissor box. patch_uniform takes the pipeline and the uniform's name
 as its shaders have it (\"camera.fog\", or \"fog\" where only one has that name): the value
 is written into the buffer that pipeline's draws read it from, so every draw that reads the
-same bytes sees it. live_view has overdraw and draw_id. What a render bundle draws is not
-patched: its pipelines were set when it was built.
+same bytes sees it. live_view has overdraw and draw_id. While a patch is in force, what a
+render bundle recorded is issued on the pass draw by draw, so that the patch reaches it.
 
 The way to use it
   1. Find the suspect with a capture: the draw, its state, its uniforms.

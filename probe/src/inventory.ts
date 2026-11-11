@@ -84,6 +84,9 @@ function what (entry: Entry): string
         case 'layout':
             return `${p.type} layout`;
 
+        case 'bundle':
+            return `render bundle of ${p.draws} draw${p.draws === 1 ? '' : 's'}`;
+
         case 'query':
             return p.transformFeedback ? 'transform feedback' : (p.type ? `${p.type} query set of ${p.count}` : 'query');
 

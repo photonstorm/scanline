@@ -1,0 +1,131 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Render bundles: a WebGPU frame with known answers</title>
+<style>body { margin: 0; background: #111; } canvas { display: block; }</style>
+<canvas id="game" width="160" height="120"></canvas>
+<script type="module">
+// Four quads, each a quarter of the canvas wide and all of it tall, 160×120:
+//
+//   x   0–40   red     in bundle «early», built once before the first frame
+//   x  40–80   blue    in bundle «early» too, drawn by a pipeline with layout 'auto'
+//   x  80–120  green   in bundle «late», built again every frame
+//   x 120–160  yellow  drawn straight on the pass, after the bundles
+//
+// The frame's events:
+//   0  the pass clears to (26, 26, 26)
+//   1  executeBundles([early, late]): three draws, 14,400 px
+//   2  the yellow quad: 4,800 px
+//
+// A capture taken at any frame has to hold «early», which was built long before it.
+const canvas = document.getElementById('game');
+const adapter = await navigator.gpu.requestAdapter();
+const device = await adapter.requestDevice();
+const context = canvas.getContext('webgpu');
+const format = navigator.gpu.getPreferredCanvasFormat();
+
+context.configure({ device, format, alphaMode: 'opaque' });
+
+const module = device.createShaderModule({ label: 'flat', code: `
+    struct Tint
+    {
+        colour: vec4f,
+        rect: vec4f         // left, top, right, bottom, in pixels
+    }
+
+    @group(0) @binding(0) var<uniform> tint: Tint;
+
+    @vertex fn vertex (@location(0) corner: vec2f) -> @builtin(position) vec4f
+    {
+        let pixel = mix(tint.rect.xy, tint.rect.zw, corner);
+
+        return vec4f(pixel.x / 160.0 * 2.0 - 1.0, 1.0 - pixel.y / 120.0 * 2.0, 0.0, 1.0);
+    }
+
+    @fragment fn fragment () -> @location(0) vec4f
+    {
+        return tint.colour;
+    }` });
+
+const corners = { arrayStride: 8, attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x2' }] };
+const tintLayout = device.createBindGroupLayout({
+    label: 'tint',
+    entries: [{ binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } }]
+});
+
+const pipelineWith = (label, layout) => device.createRenderPipeline({
+    label,
+    layout,
+    vertex: { module, entryPoint: 'vertex', buffers: [corners] },
+    fragment: { module, entryPoint: 'fragment', targets: [{ format }] },
+    primitive: { topology: 'triangle-list' }
+});
+
+const own = pipelineWith('own layout', device.createPipelineLayout({ bindGroupLayouts: [tintLayout] }));
+const auto = pipelineWith('auto layout', 'auto');
+
+const vertices = device.createBuffer({ label: 'corners', size: 32, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
+const indices = device.createBuffer({ label: 'quad', size: 12, usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST });
+
+device.queue.writeBuffer(vertices, 0, new Float32Array([0, 0, 1, 0, 1, 1, 0, 1]));
+device.queue.writeBuffer(indices, 0, new Uint16Array([0, 3, 2, 0, 2, 1]));
+
+function tinted (label, layout, colour, left)
+{
+    const buffer = device.createBuffer({ label, size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+
+    device.queue.writeBuffer(buffer, 0, new Float32Array([...colour, left, 0, left + 40, 120]));
+
+    return device.createBindGroup({ label, layout, entries: [{ binding: 0, resource: { buffer } }] });
+}
+
+const red = tinted('red', tintLayout, [0.8, 0.2, 0.2, 1], 0);
+const blue = tinted('blue', auto.getBindGroupLayout(0), [0.2, 0.2, 0.8, 1], 40);
+const green = tinted('green', tintLayout, [0.2, 0.8, 0.2, 1], 80);
+const yellow = tinted('yellow', tintLayout, [0.8, 0.8, 0.2, 1], 120);
+
+function bundle (label, draws)
+{
+    const encoder = device.createRenderBundleEncoder({ label, colorFormats: [format] });
+
+    encoder.setVertexBuffer(0, vertices);
+    encoder.setIndexBuffer(indices, 'uint16');
+
+    for (const [pipeline, group] of draws)
+    {
+        encoder.setPipeline(pipeline);
+        encoder.setBindGroup(0, group);
+        encoder.drawIndexed(6);
+    }
+
+    return encoder.finish({ label });
+}
+
+const early = bundle('early', [[own, red], [auto, blue]]);
+const state = window.game = { frame: 0 };
+
+function frame ()
+{
+    state.frame++;
+
+    const late = bundle('late', [[own, green]]);
+    const encoder = device.createCommandEncoder();
+    const pass = encoder.beginRenderPass({
+        label: 'scene',
+        colorAttachments: [{ view: context.getCurrentTexture().createView(), clearValue: [0.1, 0.1, 0.1, 1], loadOp: 'clear', storeOp: 'store' }]
+    });
+
+    pass.executeBundles([early, late]);
+
+    // A bundle leaves the pass with nothing set: everything is set again.
+    pass.setVertexBuffer(0, vertices);
+    pass.setIndexBuffer(indices, 'uint16');
+    pass.setPipeline(own);
+    pass.setBindGroup(0, yellow);
+    pass.drawIndexed(6);
+    pass.end();
+    device.queue.submit([encoder.finish()]);
+    requestAnimationFrame(frame);
+}
+
+requestAnimationFrame(frame);
+</script>

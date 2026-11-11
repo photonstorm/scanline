@@ -9,7 +9,7 @@ import { G } from './natives';
 
 export type Kind =
     | 'texture' | 'buffer' | 'shader' | 'program' | 'pipeline' | 'framebuffer' | 'renderbuffer'
-    | 'sampler' | 'bind_group' | 'vertex_array' | 'layout' | 'query';
+    | 'sampler' | 'bind_group' | 'vertex_array' | 'layout' | 'query' | 'bundle';
 
 export interface Entry
 {

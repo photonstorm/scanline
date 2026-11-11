@@ -32,6 +32,7 @@ import { natives } from '../hooks/install';
 import { G } from '../natives';
 import { all, deviceFor, entryOf, find, type Entry } from '../registry';
 import { imageOf } from '../standin';
+import { recordIntercepted } from './rec';
 import { bufferWatch, madeFromOf, viewOf } from './tracker';
 
 export interface GpuPatch
@@ -707,8 +708,9 @@ function shadowGroup (plan: Plan, pipeline: object, index: number, group: object
 
 function gate (_c: Rec, pass: any): boolean
 {
-    // Its number among the frame's events, whether or not anything is done to it.
-    const index = events++;
+    // Its number among the frame's events, whether or not anything is done to it. The
+    // draws of a bundle are one event.
+    const index = unbundling >= 0 ? unbundling : events++;
     const state = passes.get(pass);
     const entry = state?.pipeline ? entryOf(state.pipeline) : undefined;
 
@@ -1122,11 +1124,6 @@ export const gpuPatchHandlers: Record<string, Post> = {
     },
 
     // The rest are events of the frame, counted so that a patch can name a draw by its number.
-    'GPURenderPassEncoder.executeBundles' ()
-    {
-        events++;
-    },
-
     'GPUComputePassEncoder.dispatchWorkgroups' ()
     {
         events++;
@@ -1145,6 +1142,135 @@ export const gpuPatchHandlers: Record<string, Post> = {
     'GPUCommandEncoder.copyBufferToTexture' ()
     {
         events++;
+    }
+};
+
+// A call a bundle recorded, with the page's live objects in place of the references kept.
+// Null when one of them has gone.
+function liveCall (given: unknown[]): unknown[] | null
+{
+    const out: unknown[] = [];
+
+    for (const value of given as any[])
+    {
+        if (value && typeof value === 'object' && typeof value.ref === 'string' && typeof value.id === 'number')
+        {
+            const object = find(value.ref, value.id)?.ref.deref();
+
+            if (!object)
+            {
+                return null;
+            }
+
+            out.push(object);
+        }
+        else
+        {
+            out.push(value ?? undefined);
+        }
+    }
+
+    return out;
+}
+
+// The event number the draws of a bundle being issued one by one all share, or -1.
+let unbundling = -1;
+
+export const gpuPatchIntercepts: Record<string, (self: any, native: (...args: any[]) => unknown, args: IArguments) => unknown> = {
+
+    // A bundle's pipelines were set when it was built, so a patch cannot reach its draws
+    // as a bundle. While a patch is in force, what the bundle recorded is issued on the
+    // pass instead, call by call, through the same wrappers the page's own calls go
+    // through: the gate sees each draw. It draws the same.
+    'GPURenderPassEncoder.executeBundles' (pass, native, args)
+    {
+        const c = hub.gpu;
+        const index = events++;
+
+        c.calls++;
+
+        let calls: Array<[string, unknown[]]> | null = patches.length > 0 ? [] : null;
+        const counted: any[] = [];
+
+        try
+        {
+            for (const bundle of G.Array.from(args[0] as Iterable<object> ?? []))
+            {
+                const entry = entryOf(bundle);
+
+                if (entry?.p.counts)
+                {
+                    counted.push(entry.p.counts);
+                }
+
+                for (const [name, given] of (calls && entry ? entry.p.commands : []) as Array<[string, unknown[]]>)
+                {
+                    const live = liveCall(given);
+
+                    if (!live)
+                    {
+                        calls = null;
+                        break;
+                    }
+
+                    calls!.push([name, live]);
+                }
+
+                if (!entry)
+                {
+                    calls = null;
+                }
+            }
+        }
+        catch
+        {
+            calls = null;
+        }
+
+        if (calls === null)
+        {
+            const result = native.apply(pass, args as any);
+
+            // What the bundles draw is counted in the frame they run in.
+            for (const counts of counted)
+            {
+                c.draws += counts.draws;
+                c.instances += counts.instances;
+                c.vertices += counts.vertices;
+                c.triangles += counts.triangles;
+            }
+
+            recordIntercepted('GPURenderPassEncoder.executeBundles', pass, result, args);
+
+            return result;
+        }
+
+        const wrapped = G.GPURenderPassEncoder.prototype;
+
+        unbundling = index;
+
+        try
+        {
+            for (const [name, live] of calls)
+            {
+                wrapped[name].apply(pass, live);
+            }
+        }
+        finally
+        {
+            unbundling = -1;
+        }
+
+        // As a bundle leaves it: nothing set.
+        const state = passes.get(pass);
+
+        if (state)
+        {
+            state.pipeline = null;
+            state.groups = [];
+        }
+
+        return undefined;
     }
 };
 

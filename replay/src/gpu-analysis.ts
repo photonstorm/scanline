@@ -1933,7 +1933,10 @@ export const gpuAnalysis = {
                 const draw = byCommand.get(index);
                 const [, name] = run.name(index);
 
-                if (draw === undefined || item.data.draws[draw].kind !== 'draw' || !DRAW_CALLS.includes(name) || run.open?.kind !== 'render')
+                // A render bundle is timed whole, as the page runs it.
+                const bundle = name === 'executeBundles';
+
+                if (draw === undefined || item.data.draws[draw].kind !== 'draw' || !(DRAW_CALLS.includes(name) || bundle) || run.open?.kind !== 'render')
                 {
                     return;
                 }
@@ -1965,7 +1968,7 @@ export const gpuAnalysis = {
                 const now = run.now();
                 const raw = variants.raw(now.pipeline);
                 const opaque = (target: any): boolean => Boolean(target) && !target.blend && !/uint|sint|32float/.test(String(target.format));
-                const variant = raw && now.pipeline !== null && Array.from(raw.fragment?.targets ?? []).some(opaque)
+                const variant = !bundle && raw && now.pipeline !== null && Array.from(raw.fragment?.targets ?? []).some(opaque)
                     ? await variants.make(now.pipeline, 'timed', (descriptor) =>
                     {
                         const replace = { srcFactor: 'constant', dstFactor: 'one-minus-constant', operation: 'add' };

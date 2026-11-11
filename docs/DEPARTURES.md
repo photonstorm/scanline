@@ -56,7 +56,7 @@ Decided 10 November 2026, replacing the percentages in the PRD (section 9.1). Th
 
 Also from the milestone's list, and built later: WGSL reflection (not the plan's `scanline-shader` crate and `naga`: a reader of declarations in TypeScript, `shared/wgsl.ts`, because it has to run in the page), the real memory of the GPU process (milestone 5), and GPU time per pass on WebGL. Queries cannot nest, so a WebGL frame is timed in spans: the frame's query ends and another begins whenever the context starts drawing to another framebuffer, if it drew anything to the last one. `stats` lists them as `pass 0 → fbo_1`, `pass 1 → canvas`; a frame drawn in one go lists none. At most 24 spans a frame. WebGL shader reflection comes from the driver (active attributes and uniforms), which needs no parser.
 
-WebGPU triangle counts are built too: the probe notes the topology of the pipeline each render pass last set, and counts from that. Indirect draws, and what a render bundle draws, are left out.
+WebGPU triangle counts are built too: the probe notes the topology of the pipeline each render pass last set, and counts from that. Indirect draws are left out. What a render bundle draws is counted each time it runs.
 
 ## Milestone 3 against its exit criteria
 
@@ -246,7 +246,7 @@ A fault found on the way: a WebGPU capture of a PixiJS frame did not replay once
 | A shader that fails to compile changes nothing. | The edited module's compilation messages are read before anything is swapped, and the shadow of every pipeline it applies to is made inside an error scope. An error from either is returned and the patch is not added. | The browser also logs the failed attempt to the console, where it reads as a warning about a module labelled "(Scanline patch)". |
 | `gfx_patch_uniform` on WebGPU. | Built after milestone 7. The target is a pipeline; the name is looked up in the uniform buffers its shaders declare (`shared/wgsl.ts`), which gives a binding and an offset. At each draw of that pipeline the probe finds the buffer bound there, reads what it holds (to put back), and writes the value; when the page writes or unmaps that buffer, the value is written again. | A buffer is shared by whatever reads it, so every draw that reads those bytes sees the value. A page that fills the buffer by copying another into it wins: the copy runs after the write. |
 | State overrides on WebGPU. | Culling and the depth test can be switched off, depth writes and blending switched either way, the colour mask and a scissor box set. They cannot be switched on where the pipeline has none: which faces to cull and how to compare depth are the pipeline's to say. | |
-| Draws in render bundles. | Not patched: a bundle's draws are recorded once and replayed by the GPU. | |
+| Draws in render bundles. | Patched, since render bundles were built (below): while a patch is in force, `executeBundles` is not passed on. What each bundle recorded is issued on the pass instead, call by call, through the same wrappers as the page's own calls, so the draw gate sees every draw. | A bundle's pipelines are fixed when it is built. Issuing what it recorded draws the same, and leaves the pass as a bundle leaves it as far as a page can tell (it must set everything again either way). A capture taken while a patch is on records those calls, not `executeBundles`. |
 
 ### Overhead, measured again on 11 November 2026
 
@@ -320,12 +320,23 @@ Two things the new Babylon.js page (`fixtures/engines/babylon-shadows.html`) fou
 
 ## WebGPU capture: what it does not do
 
-- What a render bundle draws, one draw at a time. A bundle is one event; its pipelines were set when it was built, so the analysis that redraws the frame leaves it out (draw_id, overdraw) or draws it as it is (wireframe), and says so.
-- Render bundles built before the captured frame, and external textures. The calls that use them fail in replay and the summary says so.
+- Geometry, and which test turned a draw away, for a draw inside a render bundle.
+- External textures. The calls that use them fail in replay and the summary says so.
 - The contents of depth, stencil, multisampled and compressed textures. They are empty in replay; a pass normally clears them.
 - Buffers and storage textures the GPU wrote in an earlier frame (a compute simulation) are captured as the frame left them, not as it found them, so such a frame replays one step ahead. Render targets are read before the frame. The replay check shows when this matters.
 - More than one device in a capture. Calls on another device's objects are left out.
 - A call rejected in replay is found by wrapping every call in an error scope. WebGPU reports most errors when an encoder is finished, so the call named is `finish`, with the browser's message saying which pass call was at fault.
+
+## Render bundles
+
+Built after milestone 7. The probe keeps what is recorded into every bundle encoder (each call, with the objects it names by reference), and the list becomes the bundle's when the encoder is finished. A bundle is a registry object like any other (`bnd_N`, in `resources`).
+
+- A capture holds every bundle its frame runs, whenever it was built, with the pipelines, bind groups and buffers it uses. The replay records it again, call by call.
+- `executeBundles` stays one event, so event numbers do not change. `draw` lists the draws inside, each with its pipeline. `stats` counts what a bundle draws in each frame it runs.
+- Where an analysis issues draws its own way (draw_id, overdraw, wireframe, mip), the replay does not run the bundle: it issues what the bundle recorded on the pass, which draws the same, and each draw goes through the analysis. Their pixels belong to the bundle's event. `profile` times a bundle whole.
+- Not done for a draw inside a bundle: `geometry`, and the tests in `pixel_history` and `draw` ("which test rejected it"). They are worked out per event, and a bundle's event is several draws.
+
+Checked against `fixtures/history/bundles-webgpu.html`: one bundle built before the first frame (two draws, one with a pipeline of layout `'auto'`), one built every frame, and a draw straight on the pass.
 
 ## WebGPU analysis
 

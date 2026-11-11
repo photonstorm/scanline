@@ -410,6 +410,81 @@ describe('GPU time by draw of a WebGPU capture', () =>
     });
 });
 
+describe('render bundles', () =>
+{
+    // fixtures/history/bundles-webgpu.html: «early» (red, then blue with a pipeline of layout
+    // auto) is built before the first frame, «late» (green) every frame, and a yellow quad
+    // is drawn straight on the pass. Event 1 is executeBundles([early, late]).
+    const pixel = async (x, y) => (await scanline('pixels', x, y, '--json')).json.data.rgba8;
+
+    test('a capture holds a bundle built before its frame, and says what it draws', async () =>
+    {
+        const { session, capture } = await captured('fixtures/history/bundles-webgpu.html');
+        const list = await scanline('draw_list', capture, '--session', session);
+
+        assert.match(list.out, /1 {2}3 draws in render bundles → canvas {2}⇒ 14400 px at 0, 0, 120, 120/);
+
+        const event = await scanline('draw', capture, 1, '--session', session);
+
+        assert.match(event.out, /runs 2 render bundles: what they draw was recorded when they were built/);
+        assert.match(event.out, /bnd_1: drawIndexed × 6 with pip_1\n {4}bnd_1: drawIndexed × 6 with pip_2\n {4}bnd_\d+: drawIndexed × 6 with pip_1/);
+        assert.doesNotMatch(event.out, /pipeline none/);
+
+        assert.match((await scanline('resources', 'bundle', '--session', session)).out, /bnd_1 «early» {2}render bundle of 2 draws/);
+        assert.match((await scanline('stats', '--session', session)).out, /Per frame: 4 draws, 4 instances, 8 triangles/);
+    });
+
+    test('the views take a bundle apart, and its draws belong to its event', async () =>
+    {
+        const { session, capture } = await captured('fixtures/history/bundles-webgpu.html');
+        const owners = await scanline('view', capture, 'draw_id', '--session', session, '--json');
+
+        assert.equal(owners.code, 0, owners.out);
+        assert.deepEqual(owners.json.data.owners.map((owner) => [owner.draw, owner.pixels]), [[1, 14400], [2, 4800]]);
+        assert.doesNotMatch(owners.json.summary, /left out/);
+
+        const over = await scanline('view', capture, 'overdraw', '--session', session, '--json');
+
+        assert.equal(over.json.data.all.mean, 1);
+        assert.equal(over.json.data.all.max, 1);
+
+        const history = await scanline('pixel_history', capture, 60, 60, '--session', session, '--json');
+
+        assert.deepEqual(history.json.data.history.map((row) => [row.draw, row.changed]), [[0, true], [1, true]]);
+        assert.match(history.json.summary, /\[3 draws in render bundles\]/);
+
+        const profile = await scanline('profile', capture, '--session', session, '--json');
+
+        assert.deepEqual(profile.json.data.rows.map((row) => row.draw).sort(), [1, 2], 'the bundle is timed whole');
+    });
+
+    test('a live patch reaches the draws inside a bundle', async () =>
+    {
+        await scanline('launch', server.url('fixtures/history/bundles-webgpu.html'), '--headless', '--paused');
+        await scanline('step', 3);
+        await scanline('resources', 'pipeline');
+
+        const plain = [await pixel(20, 60), await pixel(60, 60), await pixel(100, 60), await pixel(140, 60)];
+
+        assert.deepEqual(plain, [[204, 51, 51, 255], [51, 51, 204, 255], [51, 204, 51, 255], [204, 204, 51, 255]]);
+
+        // pip_2 draws only the blue quad, inside «early».
+        await scanline('patch_draws', '--mode', 'solid', '--filter', '{"pipeline": "pip_2"}');
+        await scanline('step', 2);
+        assert.deepEqual([await pixel(20, 60), await pixel(60, 60), await pixel(100, 60)], [plain[0], [255, 0, 255, 255], plain[2]]);
+        await scanline('patches', '--revert', 'all');
+
+        // Event 1 is the bundles, as a capture numbers them: all three of their quads go.
+        await scanline('patch_draws', '--filter', '{"draws": 1}');
+        await scanline('step', 2);
+        assert.deepEqual([await pixel(20, 60), await pixel(60, 60), await pixel(100, 60), await pixel(140, 60)], [[26, 26, 26, 255], [26, 26, 26, 255], [26, 26, 26, 255], plain[3]]);
+        await scanline('patches', '--revert', 'all');
+        await scanline('step', 2);
+        assert.deepEqual([await pixel(20, 60), await pixel(60, 60), await pixel(100, 60), await pixel(140, 60)], plain);
+        assert.doesNotMatch((await scanline('console', '--level', 'error')).out, /not compatible|is invalid|Invalid/);
+    });
+});
+
 describe('frame statistics', () =>
 {
     test('triangles are counted on WebGPU, from each pipeline\'s topology', async () =>

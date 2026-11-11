@@ -9,7 +9,7 @@ import type { Handlers } from '../hooks/install';
 import { hub, type Rec } from '../hooks/hub';
 import { declare } from '../mods';
 import { G, type Fn } from '../natives';
-import { all, alive, create, destroy, deviceFor, entryOf, noteDevice, type Entry, type Kind } from '../registry';
+import { all, alive, create, destroy, deviceFor, entryOf, find, noteDevice, type Entry, type Kind } from '../registry';
 import type { Tag } from '../tag';
 import { gpuDeviceTag, gpuViewTag } from '../tags.generated';
 import { textureBytes } from './formats';
@@ -126,6 +126,38 @@ export function snapshot (value: any, depth = 0): unknown
     {
         return null;
     }
+}
+
+// Bundle encoders the page is recording into, with what has been recorded so far.
+const building = new G.WeakMap() as WeakMap<object, { device: object; descriptor: unknown; commands: Array<[string, unknown[]]>; draws: number }>;
+
+// One argument of a call recorded into a bundle: a number or a string as it is, an object
+// the registry knows by reference, and a list of numbers (dynamic offsets) as its numbers.
+function argument (value: any): unknown
+{
+    if (value === undefined || value === null)
+    {
+        return null;
+    }
+
+    if (typeof value !== 'object')
+    {
+        return value;
+    }
+
+    const entry = entryOf(value);
+
+    if (entry)
+    {
+        return { ref: entry.kind, id: entry.id };
+    }
+
+    if (G.ArrayBuffer.isView(value) || G.Array.isArray(value))
+    {
+        return G.Array.from(value as ArrayLike<number>, G.Number);
+    }
+
+    return snapshot(value);
 }
 
 // What a bind group or a pipeline was made from, as the page's own objects: its layout
@@ -339,6 +371,70 @@ const post: Record<string, Post> = {
     {
         register('sampler', device, sampler, { descriptor: snapshot(descriptor ?? {}) }, descriptor);
     },
+
+    // A render bundle is what was recorded into its encoder. Each call is kept as it is
+    // made, and the list becomes the bundle's when the encoder is finished.
+    'GPUDevice.createRenderBundleEncoder' (_c, device, encoder, descriptor)
+    {
+        if (encoder && !config.unmodified)
+        {
+            building.set(encoder, { device, descriptor: snapshot(descriptor ?? {}), commands: [], draws: 0 });
+        }
+    },
+
+    'GPURenderBundleEncoder.finish' (_c, encoder, bundle, descriptor)
+    {
+        const built = building.get(encoder);
+
+        if (built && bundle)
+        {
+            // What it adds to a frame's counts each time it runs. Indirect draws say nothing here.
+            const counts = { draws: 0, instances: 0, vertices: 0, triangles: 0 };
+
+            let topology = 'triangle-list';
+
+            for (const [name, args] of built.commands as Array<[string, any[]]>)
+            {
+                if (name === 'setPipeline')
+                {
+                    topology = G.String(find('pipeline', args[0]?.id ?? -1)?.p.descriptor?.primitive?.topology ?? 'triangle-list');
+                }
+                else if (name.startsWith('draw'))
+                {
+                    const direct = !name.endsWith('Indirect');
+                    const count: number = direct ? (G.Number(args[0]) || 0) : 0;
+                    const copies: number = direct ? (args[1] === null || args[1] === undefined ? 1 : G.Number(args[1]) || 0) : 1;
+
+                    counts.draws++;
+                    counts.instances += copies;
+                    counts.vertices += count * copies;
+                    counts.triangles += (topology === 'triangle-list' ? ((count / 3) | 0) : (topology === 'triangle-strip' ? G.Math.max(0, count - 2) : 0)) * copies;
+                }
+            }
+
+            register('bundle', built.device, bundle, { descriptor: built.descriptor, commands: built.commands, draws: built.draws, counts }, descriptor ?? built.descriptor);
+        }
+    },
+
+    ...G.Object.fromEntries(['setPipeline', 'setBindGroup', 'setVertexBuffer', 'setIndexBuffer', 'draw', 'drawIndexed', 'drawIndirect', 'drawIndexedIndirect', 'pushDebugGroup', 'popDebugGroup', 'insertDebugMarker'].map((name) => [
+        `GPURenderBundleEncoder.${name}`,
+        (_c: Rec, encoder: object, _result: unknown, ...args: unknown[]): void =>
+        {
+            const built = building.get(encoder);
+
+            if (built)
+            {
+                // Arguments left out are left out here too.
+                while (args.length && args[args.length - 1] === undefined)
+                {
+                    args.pop();
+                }
+
+                built.commands.push([name, args.map(argument)]);
+                built.draws += name.startsWith('draw') ? 1 : 0;
+            }
+        }
+    ])),
 
     'GPUDevice.createQuerySet' (_c, device, set, descriptor)
     {

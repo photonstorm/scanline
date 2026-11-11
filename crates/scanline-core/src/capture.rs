@@ -197,6 +197,7 @@ fn describe_gpu_object(object: &Value, body: &Value) -> (String, i64) {
         ),
         "sampler" => (format!("sampler{made}"), 0),
         "query" => (format!("{} {} queries", object["count"], object["type"].as_str().unwrap_or("")), 0),
+        "bundle" => (format!("render bundle of {}{made}", plural(object["draws"].as_i64().unwrap_or(0), "draw")), 0),
         _ => (String::new(), 0),
     }
 }
@@ -1931,6 +1932,9 @@ pub(crate) fn describe_event(row: &serde_json::Map<String, Value>) -> String {
         "clear" => text.push_str(&format!("clear          → {}", word("target"))),
         "blit" => text.push_str(&format!("blit           → {}", word("target"))),
         "dispatch" => text.push_str(&format!("dispatch       {} (compute)", word("program"))),
+        _ if word("mode") == "bundles" => {
+            text.push_str(&format!("{} in render bundles → {}", plural(get("count").as_i64().unwrap_or(0), "draw"), word("target")))
+        }
         _ => {
             let instances = get("instances").as_i64().unwrap_or(1);
 
@@ -2212,7 +2216,7 @@ pub async fn draw(host: &Arc<Host>, params: &Value) -> Result<Value> {
         list(&state["colorMask"])
     ));
 
-    if kind == "draw" {
+    if kind == "draw" && state["method"] != "executeBundles" {
         lines.push(match state["blend"].as_object() {
             Some(_) => format!(
                 "  blend: rgb {} × {} + dst × {}, alpha {} × {} + dst × {}",
@@ -2507,10 +2511,30 @@ fn gpu_draw_lines(host: &Host, handle: &str, state: &Value, tag: u64) -> Vec<Str
         });
     } else if state["method"] == "executeBundles" {
         lines.push(format!(
-            "  runs {} render bundle{}: what they draw was decided when they were built",
+            "  runs {} render bundle{}: what they draw was recorded when they were built",
             state["bundles"],
             if state["bundles"] == 1 { "" } else { "s" }
         ));
+
+        // What is inside, draw by draw.
+        for inner in state["inside"].as_array().into_iter().flatten().take(24) {
+            lines.push(if inner["bundle"].is_null() {
+                "    a bundle built before Scanline could follow it: what it draws is not known".to_string()
+            } else {
+                format!(
+                    "    {}: {}{}{} with {}",
+                    named("bundle", &inner["bundle"]),
+                    inner["method"].as_str().unwrap_or("draw"),
+                    if inner["count"].is_number() { format!(" × {}", inner["count"]) } else { " (indirect)".to_string() },
+                    if inner["instances"].as_i64().unwrap_or(1) != 1 { format!(", {} instances", inner["instances"]) } else { String::new() },
+                    named("pipeline", &inner["pipeline"])
+                )
+            });
+        }
+
+        if state["inside"].as_array().map_or(0, Vec::len) > 24 {
+            lines.push(format!("    … and {} more draws.", state["inside"].as_array().map_or(0, Vec::len) - 24));
+        }
     } else if state["indirect"].is_object() {
         lines.push(format!(
             "  {}, counts read from {} at byte {} (indirect)",
@@ -2540,7 +2564,10 @@ fn gpu_draw_lines(host: &Host, handle: &str, state: &Value, tag: u64) -> Vec<Str
 
     let pipeline = named("pipeline", &state["pipeline"]);
 
-    lines.push(format!("  pipeline {pipeline}{}", about(&pipeline)));
+    // A bundle sets its own pipelines, listed with its draws above.
+    if state["method"] != "executeBundles" {
+        lines.push(format!("  pipeline {pipeline}{}", about(&pipeline)));
+    }
 
     for (slot, group) in state["bindGroups"].as_array().into_iter().flatten().enumerate() {
         if group.is_null() {

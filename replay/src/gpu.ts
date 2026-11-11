@@ -169,14 +169,26 @@ export function toRgba8 (raw: Raw): Uint8Array
     return out;
 }
 
+// A call that set some of a pass's state: a command of the frame (arguments as the capture
+// encodes them) or one recorded into a render bundle (as a descriptor keeps them).
+export interface Setting
+{
+    name: string;
+    given: Json[];
+    bundled: boolean;
+}
+
 export interface Open
 {
     key: string;            // the pass
     encoderKey: string;
     kind: 'render' | 'compute';
     descriptor: Json;       // as given to the browser
-    state: number[];        // the commands that set its state, in order
+    state: Setting[];       // the calls that set its state, in order
 }
+
+// What a render bundle resets when it has run.
+const BUNDLE_RESETS = ['setPipeline', 'setBindGroup', 'setVertexBuffer', 'setIndexBuffer'];
 
 // What a render pass has set so far, by the capture's own numbers for its objects.
 export interface PassNow
@@ -471,6 +483,19 @@ export class GpuRun
 
             case 'bind_group':
                 return device.createBindGroup(this.revive(record.descriptor));
+
+            case 'bundle':
+            {
+                // Recorded again, call by call, as the page recorded it.
+                const encoder = device.createRenderBundleEncoder(this.revive(record.descriptor));
+
+                for (const [name, given] of record.commands ?? [])
+                {
+                    encoder[name](...this.revive(given));
+                }
+
+                return encoder.finish({ label });
+            }
         }
 
         throw new Error(`a ${record.kind} cannot be made again`);
@@ -851,6 +876,13 @@ export class GpuRun
             args[0] = { ...args[0], usage: args[0].usage | BUFFER_COPY_SRC };
         }
 
+        // An analysis that issues draws its own way is given a bundle's draws one by one:
+        // what was recorded into the bundle is issued on the pass, which draws the same.
+        if (this.onDraw && this.open && owner === 'GPURenderPassEncoder' && name === 'executeBundles' && await this.inline(index, encoded[0]))
+        {
+            return;
+        }
+
         let target = receiver;
 
         if (this.onDraw && this.open && owner === 'GPURenderPassEncoder' && (DRAW_CALLS.includes(name) || name === 'executeBundles'))
@@ -900,7 +932,11 @@ export class GpuRun
             }
             else if (this.open && PASS_STATE.includes(name))
             {
-                this.open.state.push(index);
+                this.open.state.push({ name, given: encoded, bundled: false });
+            }
+            else if (this.open && name === 'executeBundles')
+            {
+                this.open.state = this.open.state.filter((setting) => !BUNDLE_RESETS.includes(setting.name));
             }
         }
     }
@@ -1058,13 +1094,11 @@ export class GpuRun
             this.objects.set(open.key, open.kind === 'render' ? encoder.beginRenderPass(open.descriptor) : encoder.beginComputePass(open.descriptor));
 
             // The state the old pass had set.
-            const state = open.state;
+            const pass = this.objects.get(open.key);
 
-            open.state = [];
-
-            for (const index of state)
+            for (const setting of open.state)
             {
-                await this.run(index);
+                pass[setting.name](...this.live(setting));
             }
         }
     }
@@ -1098,27 +1132,76 @@ export class GpuRun
         return this.open ? this.objects.get(this.open.key) : null;
     }
 
+    // The arguments of a call that set state, as live objects.
+    live (setting: Setting): any[]
+    {
+        return setting.bundled ? this.revive(setting.given) : setting.given.map((value: Json) => this.decode(value));
+    }
+
+    // The draws of the bundles one executeBundles call runs, issued on the open pass. False
+    // when a bundle is not one the capture can take apart.
+    async inline (index: number, bundles: Json): Promise<boolean>
+    {
+        const records: Json[] = Array.from(bundles ?? [], (bundle: Json) => (typeof bundle?.i === 'number' ? this.records.get(`bundle:${bundle.i}`) : null));
+
+        if (records.length === 0 || records.some((record) => !record || !Array.isArray(record.commands)))
+        {
+            return false;
+        }
+
+        for (const record of records)
+        {
+            for (const [name, given] of record.commands as Array<[string, Json[]]>)
+            {
+                const args: any[] = this.revive(given);
+
+                if (DRAW_CALLS.includes(name))
+                {
+                    if (!(await this.onDraw!(index, name, args)))
+                    {
+                        this.pass()[name](...args);
+                    }
+
+                    continue;
+                }
+
+                this.pass()[name](...args);
+
+                if (PASS_STATE.includes(name))
+                {
+                    this.open!.state.push({ name, given, bundled: true });
+                }
+            }
+
+            // A bundle leaves the pass with no pipeline, bind groups or buffers set.
+            this.open!.state = this.open!.state.filter((setting) => !BUNDLE_RESETS.includes(setting.name));
+        }
+
+        return true;
+    }
+
     // What the open pass has set, read from the calls that set it.
     now (): PassNow
     {
         const out: PassNow = { pipeline: null, groups: new Map(), vertex: new Map(), index: null, viewport: null, scissor: null };
-        const given = (value: Json): any => (value && typeof value === 'object' && value.$u === 1 ? undefined : value);
+        const given = (value: Json): any => (value === null || (value && typeof value === 'object' && value.$u === 1) ? undefined : value);
+        const idOf = (value: Json): number | undefined => (typeof value?.i === 'number' ? value.i : (typeof value?.id === 'number' ? value.id : undefined));
 
-        for (const index of this.open?.state ?? [])
+        for (const setting of this.open?.state ?? [])
         {
-            const [, encoded] = this.data.commands[index];
-            const [, name] = this.name(index);
+            const encoded = setting.given;
+            const name = setting.name;
 
             switch (name)
             {
                 case 'setPipeline':
-                    out.pipeline = encoded[0]?.i ?? null;
+                    out.pipeline = idOf(encoded[0]) ?? null;
                     break;
 
                 case 'setBindGroup':
-                    if (encoded[1] && typeof encoded[1].i === 'number')
+                    if (idOf(encoded[1]) !== undefined)
                     {
-                        out.groups.set(Number(encoded[0]) || 0, { id: encoded[1].i, offsets: encoded.slice(2).map((value: Json) => this.decode(value)) });
+                        out.groups.set(Number(encoded[0]) || 0, { id: idOf(encoded[1])!, offsets: this.live(setting).slice(2) });
                     }
                     else
                     {
@@ -1127,9 +1210,9 @@ export class GpuRun
                     break;
 
                 case 'setVertexBuffer':
-                    if (encoded[1] && typeof encoded[1].i === 'number')
+                    if (idOf(encoded[1]) !== undefined)
                     {
-                        out.vertex.set(Number(encoded[0]) || 0, { id: encoded[1].i, offset: given(encoded[2]) ?? 0, size: given(encoded[3]) ?? null });
+                        out.vertex.set(Number(encoded[0]) || 0, { id: idOf(encoded[1])!, offset: given(encoded[2]) ?? 0, size: given(encoded[3]) ?? null });
                     }
                     else
                     {
@@ -1138,7 +1221,7 @@ export class GpuRun
                     break;
 
                 case 'setIndexBuffer':
-                    out.index = encoded[0] && typeof encoded[0].i === 'number' ? { id: encoded[0].i, format: String(encoded[1]), offset: given(encoded[2]) ?? 0, size: given(encoded[3]) ?? null } : null;
+                    out.index = idOf(encoded[0]) !== undefined ? { id: idOf(encoded[0])!, format: String(encoded[1]), offset: given(encoded[2]) ?? 0, size: given(encoded[3]) ?? null } : null;
                     break;
 
                 case 'setViewport':
@@ -1157,14 +1240,11 @@ export class GpuRun
     // Sets on another pass what the open pass has set, leaving out the calls named.
     apply (pass: any, without: string[] = []): void
     {
-        for (const index of this.open?.state ?? [])
+        for (const setting of this.open?.state ?? [])
         {
-            const [, encoded] = this.data.commands[index];
-            const [, name] = this.name(index);
-
-            if (!without.includes(name) && typeof pass[name] === 'function')
+            if (!without.includes(setting.name) && typeof pass[setting.name] === 'function')
             {
-                pass[name](...encoded.map((value: Json) => this.decode(value)));
+                pass[setting.name](...this.live(setting));
             }
         }
     }

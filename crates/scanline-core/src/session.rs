@@ -44,6 +44,7 @@ pub const OBJECT_KINDS: &[(&str, &str)] = &[
     ("vertex_array", "vao"),
     ("layout", "lay"),
     ("query", "qry"),
+    ("bundle", "bnd"),
 ];
 
 /// A live object an agent has been shown: which probe holds it, and its ID there.

@@ -397,7 +397,9 @@ pub async fn pixel_history(host: &Arc<Host>, params: &Value) -> Result<Value> {
             .rows
             .first()
             .map(|event| {
-                if event[0] == "draw" {
+                if event[0] == "draw" && event[1] == "bundles" {
+                    format!("{} draws in render bundles", event[2])
+                } else if event[0] == "draw" {
                     format!(
                         "{} ×{} with {}{}",
                         event[1].as_str().unwrap_or(""),

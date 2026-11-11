@@ -52,7 +52,7 @@ Every milestone of the build plan up to 1.0 has been worked through on macOS (Ap
 
 **Not built**
 
-- For WebGPU captures: render bundles built before the frame, external textures, and analysis of what a render bundle draws.
+- For WebGPU captures: external (video) textures; geometry and "which test rejected it" for a draw inside a render bundle.
 - Overdraw and the like on the live page. Adapters for Babylon.js and PlayCanvas.
 - A Debug hotkey that works when another application has the keyboard.
 - Readback of compressed and depth textures in the live page.
