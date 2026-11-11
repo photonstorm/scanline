@@ -56,7 +56,7 @@ Every milestone of the build plan up to 1.0 has been worked through on macOS (Ap
 - An adapter for PlayCanvas (installing it was not allowed where this was built).
 - A Debug hotkey that works when another application has the keyboard.
 - Readback of compressed and depth textures in the live page.
-- The fast binary channel for bulk data, and MCP over loopback HTTP (stdio only).
+- The fast binary channel for bulk data.
 - Windows and Linux.
 - Signed and notarised installers, and updates: these need the maintainer's Apple Developer identity and somewhere to publish releases. The packaging script has the steps and they have not been run.
 - A runner that starts the evaluation's agents by itself (the bugs, prompts and scorer exist: see `evals/`).

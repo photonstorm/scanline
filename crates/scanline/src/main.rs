@@ -1,6 +1,7 @@
 //! One binary, several modes (02-ARCHITECTURE.md, section 9.1):
 //!
 //!   scanline serve            the host: holds the browsers, serves the control API
+//!   scanline serve --http     the same, and MCP over loopback HTTP with a token
 //!   scanline mcp              an MCP server on stdio that relays to the host
 //!   scanline <command> …      the same commands from a shell, relayed the same way
 //!   scanline stop             stop the host and close its browsers
@@ -9,6 +10,7 @@
 
 mod cli;
 mod control;
+mod http;
 
 use std::process::ExitCode;
 
@@ -40,7 +42,21 @@ async fn run(args: Vec<String>) -> Result<ExitCode> {
         }
 
         Some("serve") => {
-            control::serve().await?;
+            // --http adds MCP over loopback HTTP, on the port given or on one the system picks.
+            let http = match args.iter().position(|arg| arg == "--http" || arg.starts_with("--http=")) {
+                Some(at) => {
+                    let given =
+                        args[at].strip_prefix("--http=").map(str::to_string).or_else(|| args.get(at + 1).filter(|next| !next.starts_with('-')).cloned());
+
+                    Some(match given {
+                        Some(text) => text.parse::<u16>().map_err(|_| anyhow::anyhow!("--http takes a port number, not \"{text}\"."))?,
+                        None => 0,
+                    })
+                }
+                None => None,
+            };
+
+            control::serve(http).await?;
             Ok(ExitCode::SUCCESS)
         }
 

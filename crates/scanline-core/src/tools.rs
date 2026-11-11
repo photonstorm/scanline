@@ -859,8 +859,11 @@ the host starts:
 What the boundaries are
   - The browser runs with a profile made for the session and thrown away after it: no
     cookies, logins or saved passwords of the person's are in it.
-  - The host listens on no network port. Clients reach it through a socket in the
-    person's own directory that only they can open.
+  - The host listens on no network port unless it is started with `scanline serve --http`.
+    Clients reach it through a socket in the person's own directory that only they can
+    open. With --http it also serves MCP on 127.0.0.1, to requests that carry the token of
+    that run (a file only the person can read), name this machine in Host, and have no
+    Origin: a web page, the game included, is refused.
   - Files Scanline writes go in its artefact directory, except an export, which goes where
     it is told, must be named *.scanline, and never replaces a file of another kind.
   - The tiers limit a client that speaks only this API. They are not a defence against a
@@ -905,8 +908,8 @@ Not built:
     (in draw and in pixel_history). The bundle is one event; draw lists what it draws, and
     the views, profile and live patches reach inside it.
   - The wireframe and depth views on a running WebGPU page (view on a capture has both).
-  - An adapter for PlayCanvas. Windows and Linux. A loopback HTTP transport
-    for MCP (stdio only). Signed installers and updates: a release is an archive holding
+  - An adapter for PlayCanvas. Windows and Linux. Signed installers and updates: a release
+    is an archive holding
     the one binary.
 
 Known limits

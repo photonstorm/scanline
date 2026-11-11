@@ -65,7 +65,7 @@ fn blocked(error: &std::io::Error) -> String {
 }
 
 #[cfg(unix)]
-pub async fn serve() -> Result<()> {
+pub async fn serve(http: Option<u16>) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
 
     let home = home();
@@ -111,8 +111,23 @@ pub async fn serve() -> Result<()> {
 
     std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).with_context(|| format!("making {} private to you", socket.display()))?;
 
-    std::fs::write(runtime_path(), json!({ "socket": socket, "pid": std::process::id(), "version": env!("CARGO_PKG_VERSION") }).to_string())
-        .with_context(|| format!("writing {}", runtime_path().display()))?;
+    // MCP over loopback HTTP, only when asked for: the one network port Scanline opens.
+    let mut web = None;
+
+    if let Some(port) = http {
+        let (listener, port, token) = crate::http::bind(&home, port).await?;
+
+        eprintln!("MCP over HTTP at http://127.0.0.1:{port}/mcp. The token is in {}.", crate::http::token_path(&home).display());
+        tokio::spawn(crate::http::serve(listener, port, token, host.clone()));
+        web = Some(port);
+    }
+
+    std::fs::write(
+        runtime_path(),
+        json!({ "socket": socket, "pid": std::process::id(), "version": env!("CARGO_PKG_VERSION"), "http": web.map(|port| json!({ "port": port, "url": format!("http://127.0.0.1:{port}/mcp") })) })
+            .to_string(),
+    )
+    .with_context(|| format!("writing {}", runtime_path().display()))?;
 
     let stop = Arc::new(tokio::sync::Notify::new());
 
@@ -141,6 +156,7 @@ pub async fn serve() -> Result<()> {
     if recorded_pid() == Some(std::process::id() as i32) {
         let _ = std::fs::remove_file(&socket);
         let _ = std::fs::remove_file(runtime_path());
+        let _ = std::fs::remove_file(crate::http::token_path(&home));
     }
 
     Ok(())
@@ -188,7 +204,7 @@ async fn connection(stream: tokio::net::UnixStream, host: Arc<Host>, stop: Arc<t
 }
 
 #[cfg(not(unix))]
-pub async fn serve() -> Result<()> {
+pub async fn serve(_http: Option<u16>) -> Result<()> {
     bail!("The Scanline host does not run on this platform yet. macOS only for now.")
 }
 

@@ -291,7 +291,7 @@ The build plan gives milestone 7 a list and no exit sentence: "Capture viewer an
 | Documentation | The README, `docs/SECURITY.md`, `docs/BY-HAND.md`, this file, the help topics in the binary and the skills. There is no documentation site. |
 | Capability tiers | Built (AGT-8): control, patch and evaluate, files and navigation, fixed when the host starts by `SCANLINE_DENY` and `SCANLINE_ALLOW`. Patching and `eval` are off for pages not served from this machine, and `navigate` keeps to the launch origin, unless allowed. `tests/security.test.mjs` runs a host of each kind. |
 | Security review | Done, and written up in `docs/SECURITY.md`. It changed four things: a page could queue events that read as the host's or the person's through the probe's channel (now only the probe's own kinds are accepted, and a mark never carries words); the control socket was made private a moment after it was created (now it is created private, and the host refuses to start if it cannot be); an export could have been pointed at any file (now only `*.scanline`, and it replaces only another capture file); and an expression given to `run_until` or `capture(when)` was `eval` outside the patch tier (now inside it). |
-| Loopback HTTP hardening | Nothing to harden: there is no HTTP transport. The host listens on one Unix socket. MCP is stdio only. |
+| Loopback HTTP hardening | Built after the milestone, with the transport: `scanline serve --http [port]` serves MCP at `http://127.0.0.1:<port>/mcp`, bound to 127.0.0.1, to requests that carry the run's token (`http-token` in the home directory, mode 600), name this machine and port in `Host`, and have no `Origin`. `tests/security.test.mjs` tries each refusal. Without `--http` no port is opened. |
 | Evaluation targets (PRD section 10) | See the table below. |
 
 | PRD section 10 | Target | Standing |
@@ -316,7 +316,7 @@ Two things the new Babylon.js page (`fixtures/engines/babylon-shadows.html`) fou
 | An origin allow-list is offered as a convenience. | Not built. "Served from this machine" is the only origin test. | The tiers answer the need; a list is one more thing to keep. |
 | Import and export are in the files-and-navigation tier. | With the tier on (the default) they work anywhere on disk; with it off they keep to the artefact directory. Whatever the tier, an export is always a `.scanline` file and never replaces a file of another kind. | The second rule is what stops a page's text reaching a file that something will later execute. |
 | The plugin "puts the CLI on the path". | The plugin expects `scanline` to be on the `PATH` already (the install script puts it there). | A plugin's files are data; it cannot install a binary. |
-| `scanline serve --http` adds MCP over loopback HTTP with a token. | Not built. | No client in use here needed it, and it would be the only listening port. |
+| `scanline serve --http` adds MCP over loopback HTTP with a token. | Built, after milestone 7. It is the plain part of MCP's streamable HTTP: one JSON-RPC message in a POST to `/mcp`, one JSON answer; a notification gets 202. No server-sent stream (GET is refused with 405), and no session ID. | The server never speaks first, so a stream would carry nothing. The HTTP is hand-written on tokio, as the stdio server is: a request line, headers and a `Content-Length` body. |
 
 ## WebGPU capture: what it does not do
 

@@ -8,7 +8,7 @@ Every milestone of the build plan up to 1.0 has been worked through on macOS. Wh
 
 1. **Things to look at.** The sections below. Start with the viewer and the control strip, which nobody has yet seen on a screen with their own eyes.
 2. **Things to decide or supply.** "Yours to decide" near the end: a licence, the name, where releases live, and the Apple Developer identity that signing needs. The pinned browser download and the Claude Code plugin are written and waiting on a first run by you.
-3. **Things not built, that need no one.** Listed in [DEPARTURES.md](DEPARTURES.md) under each milestone and in `scanline help limits`. The largest: Windows; MCP over loopback HTTP.
+3. **Things not built, that need no one.** Listed in [DEPARTURES.md](DEPARTURES.md) under each milestone and in `scanline help limits`. The largest: Windows and Linux.
 
 Set-up, from the repository:
 

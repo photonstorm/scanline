@@ -5,10 +5,11 @@
 //   npm run build && cargo build && npm run test:security
 
 import assert from 'node:assert/strict';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { request as httpRequest } from 'node:http';
 import { after, before, describe, test } from 'node:test';
 import { repoRoot, serve } from '../spikes/lib/serve.mjs';
 
@@ -391,5 +392,140 @@ describe('tiers: widened, and misspelt', () =>
         assert.notEqual(launched.code, 0);
         assert.match(launched.out, /SCANLINE_DENY holds "pach", which is not a tier\. It takes control, patch and files/);
         assert.equal(existsSync(join(wrong.home, 'control.sock')), false, 'no host was started');
+    });
+});
+
+describe('MCP over loopback HTTP', () =>
+{
+    const home = mkdtempSync(join(tmpdir(), 'scanline-http-'));
+    const env = { ...process.env, SCANLINE_HOME: home };
+
+    let child;
+    let port;
+    let token;
+
+    // One request, with whatever headers: node's own client, so that Host can be anything.
+    const post = (headers, body, method = 'POST', path = '/mcp') => new Promise((resolve, reject) =>
+    {
+        const request = httpRequest({ host: '127.0.0.1', port, path, method, headers: { 'Content-Type': 'application/json', ...headers } }, (response) =>
+        {
+            let text = '';
+
+            response.on('data', (chunk) => { text += chunk; });
+            response.on('end', () =>
+            {
+                let json = null;
+
+                try { json = JSON.parse(text); } catch { /* words, not JSON */ }
+
+                resolve({ status: response.statusCode, text, json, headers: response.headers });
+            });
+        });
+
+        request.on('error', reject);
+        request.end(body === undefined ? undefined : (typeof body === 'string' ? body : JSON.stringify(body)));
+    });
+
+    before(async () =>
+    {
+        child = spawn(binary, ['serve', '--http'], { env, stdio: 'ignore' });
+
+        for (let i = 0; i < 100 && !existsSync(join(home, 'runtime.json')); i++)
+        {
+            await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+
+        port = JSON.parse(readFileSync(join(home, 'runtime.json'), 'utf8')).http.port;
+        token = readFileSync(join(home, 'http-token'), 'utf8');
+    });
+
+    after(async () =>
+    {
+        await new Promise((resolve) => execFile(binary, ['stop'], { env }, resolve));
+        child.kill();
+        rmSync(home, { recursive: true, force: true });
+    });
+
+    test('the token is a file only its owner can read, and the port is on this machine alone', () =>
+    {
+        assert.equal(statSync(join(home, 'http-token')).mode & 0o777, 0o600);
+        assert.match(token, /^[0-9a-f]{64}$/);
+        assert.equal(JSON.parse(readFileSync(join(home, 'runtime.json'), 'utf8')).http.url, `http://127.0.0.1:${port}/mcp`);
+    });
+
+    test('a client with the token speaks MCP: initialize, tools, a call', async () =>
+    {
+        const auth = { Authorization: `Bearer ${token}` };
+        const hello = await post(auth, { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'test', version: '0' } } });
+
+        assert.equal(hello.status, 200);
+        assert.equal(hello.headers['content-type'], 'application/json');
+        assert.equal(hello.json.result.serverInfo.name, 'scanline');
+        assert.equal(hello.json.result.protocolVersion, '2025-11-25');
+
+        // A notification has no answer.
+        assert.equal((await post(auth, { jsonrpc: '2.0', method: 'notifications/initialized' })).status, 202);
+
+        const tools = await post(auth, { jsonrpc: '2.0', id: 2, method: 'tools/list' });
+
+        assert.ok(tools.json.result.tools.some((tool) => tool.name === 'gfx_launch'));
+
+        const called = await post(auth, { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'gfx_sessions', arguments: {} } });
+
+        assert.equal(called.json.result.isError, false);
+        assert.match(called.json.result.content[0].text, /No sessions are open/);
+
+        // The same host answers the CLI: there is one host, with two doors.
+        const launched = await post(auth, { jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'gfx_launch', arguments: { url: server.url('fixtures/bugs/b00.html'), headless: true, paused: true } } });
+
+        assert.match(launched.json.result.content[0].text, /Launched ses_1/);
+
+        const listed = await new Promise((resolve) => execFile(binary, ['sessions'], { env }, (_error, stdout) => resolve(stdout)));
+
+        assert.match(listed, /ses_1/);
+        assert.match((await post({ ...auth, Host: `localhost:${port}` }, { jsonrpc: '2.0', id: 5, method: 'ping' })).text, /"result":\{\}/);
+    });
+
+    test('no token, a web page, or another name for this machine: refused', async () =>
+    {
+        const auth = { Authorization: `Bearer ${token}` };
+        const ping = { jsonrpc: '2.0', id: 1, method: 'ping' };
+
+        const bare = await post({}, ping);
+
+        assert.equal(bare.status, 401);
+        assert.equal(bare.headers['www-authenticate'], 'Bearer');
+        assert.equal((await post({ Authorization: `Bearer ${token.slice(0, -1)}0` }, ping)).status, 401);
+
+        // A page in a browser says where it is from. Even with the token, even from this machine.
+        const page = await post({ ...auth, Origin: 'http://localhost:5173' }, ping);
+
+        assert.equal(page.status, 403);
+        assert.match(page.text, /Requests from web pages are refused/);
+        assert.equal(page.headers['access-control-allow-origin'], undefined, 'nothing tells a browser the answer may be read');
+
+        // DNS rebinding: a name the attacker controls, resolving to 127.0.0.1.
+        assert.equal((await post({ ...auth, Host: `evil.example:${port}` }, ping)).status, 403);
+        assert.equal((await post({ ...auth, Host: '127.0.0.1' }, ping)).status, 403);
+
+        assert.equal((await post(auth, undefined, 'GET')).status, 405);
+        assert.equal((await post(auth, undefined, 'OPTIONS')).status, 405);
+        assert.equal((await post(auth, ping, 'POST', '/')).status, 404);
+        // What is not JSON is answered as JSON-RPC says to.
+        const garbled = await post(auth, 'not json at all {');
+
+        assert.equal(garbled.status, 200);
+        assert.equal(garbled.json.error.code, -32700);
+    });
+
+    test('a host started without --http opens no port', async () =>
+    {
+        const quiet = host();
+
+        await quiet.scanline('sessions');
+
+        assert.equal(JSON.parse(readFileSync(join(quiet.home, 'runtime.json'), 'utf8')).http, null);
+        assert.equal(existsSync(join(quiet.home, 'http-token')), false);
+        await quiet.end();
     });
 });

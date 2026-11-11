@@ -24,7 +24,8 @@ These hold whatever the agent is told.
 |---|---|---|
 | A browser profile made for each session and deleted when it closes | The page, and anything run in it, reaching the person's cookies, logins, history or extensions | `scanline-browser`: `--user-data-dir` under the session's directory, removed on close; extensions and sync off |
 | The browser is driven over a pipe, not a port | Other programs, and web pages, attaching to the browser's debugging interface | `--remote-debugging-pipe`; no `--remote-debugging-port` |
-| No listening network port | Web pages (the game included) and other machines reaching the host. There is no loopback HTTP server in this version, so there is nothing to protect from DNS rebinding | `scanline serve` listens on one Unix socket and nothing else |
+| No listening network port, unless asked for | Web pages (the game included) and other machines reaching the host | `scanline serve` listens on one Unix socket and nothing else |
+| With `scanline serve --http`: loopback only, a token, and `Host` and `Origin` checks | Another machine reaching the port (it is bound to 127.0.0.1). Another program guessing it (every request needs the token of that run, 32 random bytes in `http-token`, mode 600, made private as it is created and removed when the host stops). A web page reaching it through a name it controls that resolves to this machine, which is DNS rebinding (`Host` must be `127.0.0.1` or `localhost` with this port). A web page reaching it at all (a request with an `Origin` header is refused, and no response says a browser may read it) | `crates/scanline/src/http.rs`; `tests/security.test.mjs` |
 | The control socket is in a directory only the person can enter, and only they can open it | Other users of the machine | The home directory is set to mode 700 and the socket to 600 before anything is served. The socket is made with a mask so that it is never, even briefly, open wider. If either cannot be set, the host does not start |
 | The viewer and the control strip are pages of their own | The game page pressing their buttons. Each calls the host through a binding that exists only in its own page, and the host checks which page a call came from | `session.rs`: `scanlineViewer` and `scanlineStrip` are answered only from the target they were added to |
 | The page cannot forge the host's events | A page announcing `capture_ready`, `owner_changed` or a note "from the person". The probe's channel to the host is in the page's world, so a page that finds it can call it; the host accepts only the kinds of event the probe sends, and a mark on the picture carries a place and never words. Typed notes come only from the control strip | `session.rs`, `handle` |
@@ -99,9 +100,10 @@ your GPU inside the disposable browser, the same as visiting a page that used th
 
 - **Windows is not built**, so the named-pipe side of the control channel has not been
   written or reviewed.
-- **No loopback HTTP transport.** The specification describes one (token, `Origin` and
-  `Host` checks). It was not built, so there is nothing to harden; if it is added, those
-  checks come with it.
+- **MCP over HTTP is plain HTTP.** It never leaves the machine, but another program
+  running as you could read the token file, as it could read the socket. It is no weaker
+  than the socket and no stronger. The server speaks only when spoken to: there is no
+  stream for it to push on, so events are read with `events` and `wait` as over stdio.
 - **The probe's binding can be found by the page.** Its name is random per session, but it
   is a property of the page's global. A page that calls it can send false inventory events
   (a context that does not exist) or ask for a Debug freeze. It cannot send commands: the
