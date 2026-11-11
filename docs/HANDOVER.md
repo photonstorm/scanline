@@ -9,7 +9,7 @@ Read this first, then [DEPARTURES.md](DEPARTURES.md) (what was built and how it 
 - Everything is on `main` at github.com/photonstorm/scanline.
 - It builds and runs on two machines: the Mac (Apple silicon, Chrome 157, Metal) and the PC (Windows 11, x64, an NVIDIA RTX 3080 Ti, Chrome 157, Direct3D).
 - On the PC every group of the suite passed on the last build: 265 tests in ten groups and 40 Rust unit tests, none failing. They were run a group at a time, some before the last push and the rest straight after it, and not as one `npm test`. Both slow-frame journeys passed with their timing comparison reported and not asserted: see "Things learned the hard way".
-- **On the Mac the suite has not been run since the Windows build**, and the shared code changed: see section 1.
+- On the Mac the whole suite passed after the Windows build and the PlayCanvas adapter: `npm test` as one command, 265 tests in ten groups and 40 Rust unit tests, none failing, with the slow-frame journeys' timing asserted (section 1).
 - Every milestone of the build plan up to 1.0 is worked through, and from the list for after 1.0: the Babylon.js and PlayCanvas adapters, the native-capture profile, assertions for a test run, a recording as a video, and "Send to agent".
 - **Nothing has been compiled or run on Linux.**
 - The specification is not in this repository. It is in the `render-debugger/` folder of the `render-debugger-spec` branch of the `v3-gameblocks` repository, which is pushed. Read it there. Do not edit it and do not copy it here.
@@ -50,46 +50,17 @@ npm ci --os=win32
 - An agent's shell tool there halves doubled backslashes in a here-document, and turns `\t` and `\b` into control characters. Edit any file that holds backslashes (Windows paths, regular expressions) with the editing tool, and look at what was written.
 - Every text file is LF on every machine (`.gitattributes`). The install script for Windows is given CRLF when a release is packed, not in the repository.
 
-## 1. Back on the Mac: run the whole suite
+## 1. Back on the Mac: the whole suite, run
 
-**Do this first.** Two things make it due.
+Done on 11 November 2026, on `0e7a578`, after `npm install` brought PlayCanvas 2.24.0 in. `npm test` passed as one command: the Rust unit tests (40), the type check, `test:wgsl` (10), `test:probe` (52), `test:bugs` (33), `test:e2e` (51), `test:findings` (54), `test:webgpu` (27), `test:journeys` (2), `test:protocol` (16), `test:security` (15) and `test:package` (5). About seven minutes of tests, and nothing needed changing.
 
-The last two pieces of work on the PC (`experiment` measuring turn about, and the PlayCanvas adapter with the three fixes to capture it turned up: mapped buffers on WebGPU, the texture unit a texture is read through on WebGL, integer textures in the WebGL 2 replay) have been run on the PC only. Those fixes are in the probe and the replay page, which every group uses. On the Mac, PlayCanvas arrives with `npm install` (it is in `package.json` now).
+That was the first run on the Mac of everything the Windows build changed on both platforms: the control channel's Unix form in `crates/scanline/src/control.rs`, the probe's timing and its wait for the WebGPU queue, the longer wait in `launch`, `experiment` measuring turn about, the tests that take either of two pixel values, and the PlayCanvas adapter with the three capture fixes it turned up. All of it holds here.
 
-And the Windows build changed code both platforms share, none of which has been run on the Mac at all:
+Both slow-frame journeys asserted their timing: the line "GPU time was not steady on this machine, so it was not compared" did not appear, as it should not on this machine.
 
-- `crates/scanline/src/control.rs` was rewritten round a `channel` module with a Unix form and a Windows form. The Unix form is the old code moved, but it has only been read, not run.
-- `crates/scanline/src/http.rs` (`bind` and `new_token`), `crates/scanline/src/hotkey.rs` (its usage text became a constant) and `crates/scanline-browser/src/lib.rs` (`process_memory_measure`) have small changes on the Unix side.
-- The probe changed in four places that are not about Windows: a WebGPU pass whose two timestamps are equal now counts as zero and not as missing (`probe/src/timing.ts`); `status` says how far the page has got towards WebGPU (`webgpuStarting` in `probe/src/contexts.ts`); a texture view's record keeps its texture's handle (`probe/src/gpu/tracker.ts`); and `step` and `run_until` wait for the WebGPU queue before they answer (`gpuWorkDone` in `probe/src/timing.ts`), which adds a little to every step of a WebGPU page.
-- `launch` waits differently (`crates/scanline-core/src/commands.rs`): only a WebGL or WebGPU context ends the wait early, where any context did, and a page that has asked for a WebGPU adapter is waited on for up to 4 s. On the Mac this should cost nothing for a page that draws, and a page with only a 2D canvas now takes the full 1.2 s to launch.
-- `experiment` measures three times each way, turn about (`crates/scanline-core/src/patch.rs`), so it steps more frames for small counts: 20 asked for is 30 each way.
-- The command line reads `"{'draws': [6, 8]}"` as JSON (`value` in `crates/scanline/src/cli.rs`).
-- The tests take either of two values where Metal and Direct3D round apart. The values for Metal are the ones the tests had; check none was mistyped.
-- The slow-frame journeys take seven GPU readings where they took three (`turnAbout` in `tests/journeys.test.mjs`), so they run longer.
+So both machines now pass the same suite on the same commit. On the PC it has still not been run as one `npm test` since the PlayCanvas adapter, only a group at a time.
 
-So, on the Mac:
-
-```bash
-git pull
-```
-
-```bash
-npm install
-```
-
-```bash
-npm test
-```
-
-Expect it to pass. If `stats` on a WebGPU page now reports a lower GPU time than before, that is the timing change, and it is the truer figure: `DEPARTURES.md`, "Windows", says why.
-
-If a group fails on the Mac, the likeliest places are the ones nobody has run there: the Unix half of `control.rs`, the PlayCanvas tests (the adapter's tests name passes and count events as the PC drew them), and the tests that now take either of two pixel values.
-
-### What was run last
-
-On the PC on 11 November 2026, on the build that was pushed last, every group passed: the Rust unit tests (40), the type check, `test:wgsl` (10), `test:probe` (52, PlayCanvas among the engines), `test:bugs` (33), `test:e2e` (51), `test:findings` (54), `test:webgpu` (27), `test:journeys` (2), `test:protocol` (16, PlayCanvas on both devices), `test:security` (15) and `test:package` (5). The probe, protocol and package groups were run before the push and the rest after it, each on its own; `npm test` as one command has not been run since the PlayCanvas adapter.
-
-On the Mac nothing has been run since before the Windows build.
+On the Mac, `npm install` cannot write to the usual npm cache from inside an agent's sandbox, and says the cache has root-owned files. Give it a cache it can write to: `npm install --cache "$TMPDIR/npm-cache"`.
 
 ## 2. What the Windows build left
 
