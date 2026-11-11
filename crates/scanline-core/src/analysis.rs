@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 
 use scanline_store::Sql;
 
-use crate::capture::{LONG, about, describe_event, draw_state, flatten, load_into, rows_as_objects, runs, target_of, the_capture};
+use crate::capture::{LONG, about, describe_event, draw_state, flatten, load_into, plural, rows_as_objects, runs, target_of, the_capture};
 use crate::commands::page_text;
 use crate::inventory::{gl_name, list};
 use crate::{Host, result};
@@ -531,6 +531,260 @@ pub async fn pixel_history(host: &Arc<Host>, params: &Value) -> Result<Value> {
         lines.join("\n"),
         json!({ "capture": handle, "x": x, "y": y, "target": target_name, "history": out, "not_reaching": missed, "discarded": discarded, "provenance": "gpu-measured", "ms": reply["ms"] }),
     ))
+}
+
+// ---- Geometry ----
+
+fn glsl_type(code: &Value) -> &'static str {
+    match code.as_u64().unwrap_or(0) {
+        0x1406 => "float",
+        0x8B50 => "vec2",
+        0x8B51 => "vec3",
+        0x8B52 => "vec4",
+        0x1404 => "int",
+        0x8B53 => "ivec2",
+        0x8B54 => "ivec3",
+        0x8B55 => "ivec4",
+        0x1405 => "uint",
+        0x8DC6 => "uvec2",
+        0x8DC7 => "uvec3",
+        0x8DC8 => "uvec4",
+        0x8B5A => "mat2",
+        0x8B5B => "mat3",
+        0x8B5C => "mat4",
+        _ => "value",
+    }
+}
+
+fn numbers(values: &Value) -> String {
+    values
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|value| match value.as_f64() {
+            Some(number) if number.fract() == 0.0 && number.abs() < 1e9 => format!("{number:.0}"),
+            Some(number) => format!("{}", (number * 1e4).round() / 1e4),
+            None => "NaN".to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// What one draw is given (its vertex attributes) and what its vertex shader makes of
+/// that (where the vertices land), with how many primitives would be rasterised at all.
+pub async fn geometry(host: &Arc<Host>, params: &Value) -> Result<Value> {
+    let (handle, meta) = the_capture(host, params)?;
+    let index =
+        params["draw"].as_i64().ok_or_else(|| anyhow!("geometry needs draw: the event's number in the capture, from 0. Call draw_list to see them."))?;
+    let session = host.replayer(params)?;
+    let tag = meta["instance_tag"].as_u64().unwrap_or(0);
+
+    load_into(host, &session, &handle).await?;
+
+    let reply = session.replay("geometry", &json!({ "key": handle, "draw": index, "vertices": params["vertices"] }), LONG).await?;
+
+    match reply["unsupported"].as_str() {
+        Some("webgpu") => bail!("geometry is built for WebGL captures. For a WebGPU capture, draw(capture, draw) lists the vertex buffers and their layouts."),
+        Some("not-a-draw") => {
+            bail!("Event {index} is a {}, which has no geometry. draw_list shows which events are draws.", reply["kind"].as_str().unwrap_or("clear"))
+        }
+        Some(_) => bail!("No program was in use at event {index}, so it drew nothing and has no vertex shader to run."),
+        None => {}
+    }
+
+    let primitive = |per: u64, count: u64| match per {
+        3 => plural(count as i64, "triangle"),
+        2 => plural(count as i64, "line"),
+        _ => plural(count as i64, "point"),
+    };
+    let mut lines = vec![format!(
+        "{} event {index}: {} × {}{}{}.",
+        about(host, params, &handle, &meta),
+        crate::capture::mode_name(&reply["mode"]).unwrap_or_else(|| reply["mode"].to_string()),
+        reply["count"],
+        if reply["indexed"] == true { ", indexed" } else { "" },
+        if reply["instances"].as_u64().unwrap_or(1) != 1 { format!(", {} instances (what follows is the first)", reply["instances"]) } else { String::new() }
+    )];
+
+    if let Some(indices) = reply["indices"].as_object() {
+        lines.push(format!("  Indices run from {} to {}; the first are {}.", indices["lowest"], indices["highest"], numbers(&indices["first"])));
+    }
+
+    // What it is given.
+    lines.push("Vertex attributes, as the buffers hold them at this draw:".into());
+
+    for attribute in reply["attributes"].as_array().into_iter().flatten() {
+        let name = attribute["name"].as_str().unwrap_or("?");
+        let kind = glsl_type(&attribute["glslType"]);
+
+        if !attribute["constant"].is_null() {
+            lines.push(format!(
+                "  {name} ({kind}, location {}): NOT AN ARRAY. Every vertex gets the one value ({}).",
+                attribute["location"],
+                numbers(&attribute["constant"])
+            ));
+            continue;
+        }
+
+        let buffer = crate::capture::handle_text("buffer", &attribute["buffer"], tag);
+
+        lines.push(format!(
+            "  {name} ({kind}, location {}): {} × {}{} from {buffer}, stride {}, offset {}{}",
+            attribute["location"],
+            attribute["size"],
+            gl_name(&attribute["type"]),
+            if attribute["normalized"] == true { " normalised" } else { "" },
+            attribute["stride"],
+            attribute["offset"],
+            match attribute["divisor"].as_u64().unwrap_or(0) {
+                0 => String::new(),
+                divisor => format!(", one value per {}", if divisor == 1 { "instance".to_string() } else { format!("{divisor} instances") }),
+            }
+        ));
+
+        if let Some(why) = attribute["missing"].as_str() {
+            lines.push(format!("    {why}."));
+            continue;
+        }
+
+        let values: Vec<String> = attribute["values"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|value| if value.is_null() { "(past the end of the buffer)".to_string() } else { format!("({})", numbers(value)) })
+            .collect();
+
+        lines.push(format!("    {}", values.join("  ")));
+
+        if attribute["overrun"].as_u64().unwrap_or(0) > 0 {
+            lines.push(format!(
+                "    READS PAST THE END: the draw reaches {} bytes beyond this buffer's {} bytes. The browser rejects such a draw.",
+                attribute["overrun"], attribute["bufferBytes"]
+            ));
+        }
+    }
+
+    // What the vertex shader makes of it.
+    let output = &reply["output"];
+
+    if output.is_object() {
+        let per = output["per"].as_u64().unwrap_or(3);
+        let count = |key: &str| output[key].as_u64().unwrap_or(0);
+        let total = count("total");
+
+        lines.push(format!(
+            "Vertex shader output (clip-space positions, read with transform feedback): {}{}.",
+            primitive(per, total),
+            if reply["capped"].is_null() { String::new() } else { format!(" (the first {} vertices of the draw)", reply["capped"]) }
+        ));
+
+        let first: Vec<String> = output["first"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|position| if position.is_null() { "(not read)".to_string() } else { format!("({})", numbers(position)) })
+            .collect();
+
+        lines.push(format!("  First positions (x, y, z, w): {}", first.join("  ")));
+
+        let reach = count("reach");
+
+        lines.push(format!("  {} of {} would reach the rasteriser.", reach, primitive(per, total)));
+
+        if count("unread") > 0 {
+            lines.push(format!("  {} name vertices beyond the first {} the replay ran, and are not counted.", count("unread"), 60000));
+        }
+
+        if count("nan") > 0 {
+            lines.push(format!("  {} have a position that is NaN or infinite: a division by zero or a normalised zero vector in the vertex shader, or bad input. They draw nothing.", count("nan")));
+        }
+
+        if count("behind") > 0 {
+            lines.push(format!(
+                "  {} have every vertex at w ≤ 0: behind the eye, or a projection matrix that was never set (all zeros gives w = 0).",
+                count("behind")
+            ));
+        }
+
+        if count("outside") > 0 {
+            let sides: Vec<String> = output["planes"]
+                .as_object()
+                .into_iter()
+                .flatten()
+                .filter(|(_, n)| n.as_u64().unwrap_or(0) > 0)
+                .map(|(side, n)| format!("{n} beyond the {side}"))
+                .collect();
+
+            lines.push(format!("  {} lie wholly outside the view volume and are clipped away: {}.", count("outside"), sides.join(", ")));
+        }
+
+        if count("flat") > 0 {
+            lines.push(format!(
+                "  {} have no area: their three vertices are in a line or at one point (a scale of zero, or the same position three times).",
+                count("flat")
+            ));
+        }
+
+        if per == 3 && reach > 0 {
+            let facing = format!("{} face the front, {} the back (front is {})", count("front"), count("back"), gl_name(&reply["frontFace"]));
+
+            lines.push(match reply["cull"].as_u64() {
+                Some(cull) => {
+                    let culled = match cull {
+                        0x0404 => count("front"),
+                        0x0405 => count("back"),
+                        _ => reach,
+                    };
+
+                    format!(
+                        "  Of those, {facing}. Culling is {}, so {culled} of them are culled{}.",
+                        gl_name(&reply["cull"]),
+                        if culled == reach { ": NOTHING IS LEFT TO DRAW" } else { "" }
+                    )
+                }
+                None => format!("  Of those, {facing}. Culling is off."),
+            });
+        }
+
+        if let Some(bounds) = output["bounds"].as_object() {
+            let viewport: Vec<f64> = reply["viewport"].as_array().into_iter().flatten().filter_map(Value::as_f64).collect();
+            let ndc = |key: &str, axis: usize| bounds[key][axis].as_f64().unwrap_or(0.0);
+
+            lines.push(format!(
+                "  They span x {:.3} to {:.3}, y {:.3} to {:.3}, depth {:.3} to {:.3} in normalised device coordinates (−1 to 1 is in view).",
+                ndc("min", 0),
+                ndc("max", 0),
+                ndc("min", 1),
+                ndc("max", 1),
+                ndc("min", 2),
+                ndc("max", 2)
+            ));
+
+            if viewport.len() == 4 {
+                let px = |value: f64, origin: f64, extent: f64| origin + (value.clamp(-1.0, 1.0) + 1.0) / 2.0 * extent;
+                let (left, right) = (px(ndc("min", 0), viewport[0], viewport[2]), px(ndc("max", 0), viewport[0], viewport[2]));
+                let (bottom, top) = (px(ndc("min", 1), viewport[1], viewport[3]), px(ndc("max", 1), viewport[1], viewport[3]));
+
+                lines.push(format!(
+                    "  In the viewport ({}) that is about {:.0}×{:.0} pixels, from x {:.0}, y {:.0} up from the bottom.{}",
+                    numbers(&reply["viewport"]),
+                    right - left,
+                    top - bottom,
+                    left,
+                    bottom,
+                    if (right - left) < 1.0 || (top - bottom) < 1.0 { " LESS THAN A PIXEL: it may cover no pixel centre at all." } else { "" }
+                ));
+            }
+        } else if total > 0 {
+            lines.push("  NOTHING REACHES THE RASTERISER: this draw cannot change a pixel whatever its state and its fragment shader.".into());
+        }
+    } else if let Some(why) = reply["outputMissing"].as_str() {
+        lines.push(format!("Vertex shader output: not read. {why}"));
+    }
+
+    lines.push("Positions are before the divide by w. A vertex is in view when −w ≤ x, y, z ≤ w.".into());
+
+    Ok(result(lines.join("\n"), json!({ "capture": handle, "draw": index, "geometry": reply, "provenance": "gpu-measured" })))
 }
 
 // ---- Reading a shader ----
@@ -1204,7 +1458,7 @@ fn heat(count: u8) -> [u8; 4] {
 /// triangles as outlines (wireframe).
 pub async fn view(host: &Arc<Host>, params: &Value) -> Result<Value> {
     let (handle, meta) = the_capture(host, params)?;
-    let which = params["view"].as_str().ok_or_else(|| anyhow!("view needs view: \"overdraw\" or \"wireframe\"."))?;
+    let which = params["view"].as_str().ok_or_else(|| anyhow!("view needs view: overdraw, wireframe, draw_id, depth or nan."))?;
     let session = host.replayer(params)?;
 
     load_into(host, &session, &handle).await?;
@@ -1217,6 +1471,9 @@ pub async fn view(host: &Arc<Host>, params: &Value) -> Result<Value> {
             }
             Some("no-stencil") => bail!("The browser would not give the replay a stencil buffer, which overdraw is counted in."),
             Some("no-polygon-mode") => bail!("This browser lacks WEBGL_polygon_mode, which the wireframe view draws with."),
+            Some("float-target") => bail!("The draw_id view writes event numbers as 8-bit colours, and that target holds floats."),
+            Some("webgl1") => bail!("The depth view needs WebGL 2 (it copies the depth buffer with a blit), and {handle} is a WebGL 1 capture."),
+            Some("no-depth") => bail!("That target has no depth buffer the replay could copy: none is attached, or its format is not one a texture can take."),
             Some(other) => bail!("The {which} view cannot be made of this capture ({other})."),
             None => Ok(()),
         }
@@ -1329,8 +1586,316 @@ pub async fn view(host: &Arc<Host>, params: &Value) -> Result<Value> {
 
             Ok(value)
         }
-        other => bail!("There is no \"{other}\" view. Views are overdraw and wireframe."),
+        "draw_id" => {
+            let (target, target_name) = target_of(host, &handle, params)?;
+            let reply = session.replay("drawId", &json!({ "key": handle, "target": target }), LONG).await?;
+
+            refuse(&reply)?;
+
+            let (width, height) = (reply["width"].as_u64().unwrap_or(0) as u32, reply["height"].as_u64().unwrap_or(0) as u32);
+            let ids = crate::capture::unpack(reply["data"].as_str().unwrap_or(""))?;
+
+            // Who owns each pixel, and the box each owner's pixels lie in.
+            let mut owners: BTreeMap<i64, (u64, u32, u32, u32, u32)> = BTreeMap::new();
+            let mut colours = Vec::with_capacity(ids.len());
+
+            for (index, pixel) in ids.chunks_exact(4).enumerate() {
+                let id = pixel[0] as i64 | (pixel[1] as i64) << 8 | (pixel[2] as i64) << 16;
+                let (x, y) = (index as u32 % width, index as u32 / width);
+                let entry = owners.entry(id - 1).or_insert((0, x, y, x, y));
+
+                entry.0 += 1;
+                entry.1 = entry.1.min(x);
+                entry.2 = entry.2.min(y);
+                entry.3 = entry.3.max(x);
+                entry.4 = entry.4.max(y);
+                colours.extend_from_slice(&id_colour(id));
+            }
+
+            let picture = Image::new(width, height, colours)?;
+            let path = host.store.capture_dir(&handle).join("draw-id.png");
+
+            std::fs::write(&path, picture.to_png()?).with_context(|| format!("writing {}", path.display()))?;
+
+            let nobody = owners.remove(&-1).map(|entry| entry.0).unwrap_or(0);
+            let mut ranked: Vec<(i64, (u64, u32, u32, u32, u32))> = owners.into_iter().collect();
+
+            ranked.sort_by(|a, b| b.1.0.cmp(&a.1.0));
+
+            let events = events(host, &handle)?;
+            let mut lines = vec![format!(
+                "{}: which draw owns each pixel of {target_name} at the end of the frame. {} draws own at least one. gpu-measured. {}",
+                about(host, params, &handle, &meta),
+                ranked.len(),
+                path.display()
+            )];
+
+            for (event, (pixels, left, top, right, bottom)) in ranked.iter().take(20) {
+                lines.push(format!(
+                    "  event {event:>4}  {pixels:>8} px within x {left} y {top} {}×{}   {}",
+                    right - left + 1,
+                    bottom - top + 1,
+                    page_text(&events.get(*event as usize).map(brief).unwrap_or_default(), 110)
+                ));
+            }
+
+            if ranked.len() > 20 {
+                lines.push(format!("  … and {} more draws with fewer pixels.", ranked.len() - 20));
+            }
+
+            if nobody > 0 {
+                lines.push(format!("  {nobody} px belong to no draw: only a clear reached them."));
+            }
+
+            let hidden: Vec<String> = events
+                .iter()
+                .enumerate()
+                .filter(|(index, row)| {
+                    row.get("kind").is_some_and(|kind| kind == "draw")
+                        && row.get("target").and_then(Value::as_str) == Some(target_name.trim_start_matches("the "))
+                        && !ranked.iter().any(|(event, _)| *event == *index as i64)
+                })
+                .map(|(index, _)| index.to_string())
+                .collect();
+
+            if !hidden.is_empty() {
+                lines.push(format!(
+                    "  Draws on this target that own no pixel at the end (covered by later ones, rejected, or off the target): events {}.",
+                    hidden.join(", ")
+                ));
+            }
+
+            lines.push("A pixel belongs to the last draw whose triangles covered it and passed the depth, stencil and scissor tests. Blending is ignored (a translucent draw owns what it covers), and so is what the page's fragment shaders do: a discard, or a depth the shader writes itself. In the picture each draw has its own colour; black is no draw.".into());
+
+            if reply["skipped"].as_u64().unwrap_or(0) > 0 {
+                lines.push(format!("{} draws could not be given a stand-in shader and were left out.", reply["skipped"]));
+            }
+
+            let mut value = result(
+                lines.join("\n"),
+                json!({
+                    "capture": handle,
+                    "view": "draw_id",
+                    "owners": ranked.iter().map(|(event, entry)| json!({ "draw": event, "pixels": entry.0, "box": { "x": entry.1, "y": entry.2, "w": entry.3 - entry.1 + 1, "h": entry.4 - entry.2 + 1 } })).collect::<Vec<_>>(),
+                    "no_draw_pixels": nobody,
+                    "hidden": hidden,
+                    "provenance": "gpu-measured",
+                }),
+            );
+
+            value["images"] = json!([{ "view": path, "original": path, "width": width, "height": height, "scale": 1.0, "space": "canvas_px" }]);
+
+            Ok(value)
+        }
+        "depth" => {
+            let (target, target_name) = target_of(host, &handle, params)?;
+            let reply = session.replay("depth", &json!({ "key": handle, "draw": params["at_draw"], "target": target }), LONG).await?;
+
+            refuse(&reply)?;
+
+            let (width, height) = (reply["width"].as_u64().unwrap_or(0) as u32, reply["height"].as_u64().unwrap_or(0) as u32);
+            let bytes = crate::capture::unpack(reply["data"].as_str().unwrap_or(""))?;
+            let depths: Vec<f64> =
+                bytes.chunks_exact(4).map(|pixel| (pixel[0] as u32 | (pixel[1] as u32) << 8 | (pixel[2] as u32) << 16) as f64 / 16_777_215.0).collect();
+
+            if depths.is_empty() {
+                bail!("The replay returned no depth values.");
+            }
+
+            // The far value, 1, is usually what the buffer was cleared to: left out of the range.
+            let drawn: Vec<f64> = depths.iter().copied().filter(|depth| *depth < 1.0).collect();
+            let (near, far) = drawn.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(low, high), depth| (low.min(*depth), high.max(*depth)));
+            let at_far = depths.len() - drawn.len();
+            let span = if far > near { far - near } else { 1.0 };
+
+            let picture = Image::new(
+                width,
+                height,
+                depths
+                    .iter()
+                    .flat_map(|depth| {
+                        if *depth >= 1.0 {
+                            [16, 24, 64, 255]
+                        } else {
+                            let grey = (255.0 - ((depth - near) / span).clamp(0.0, 1.0) * 215.0) as u8;
+
+                            [grey, grey, grey, 255]
+                        }
+                    })
+                    .collect(),
+            )?;
+            let name = match params["at_draw"].as_i64() {
+                Some(draw) => format!("depth-draw{draw}.png"),
+                None => "depth.png".to_string(),
+            };
+            let path = host.store.capture_dir(&handle).join(name);
+
+            std::fs::write(&path, picture.to_png()?).with_context(|| format!("writing {}", path.display()))?;
+
+            let mut lines = vec![format!(
+                "{}: the depth buffer of {target_name}{}. gpu-measured. {}",
+                about(host, params, &handle, &meta),
+                match params["at_draw"].as_i64() {
+                    Some(draw) => format!(" after event {draw}"),
+                    None => " at the end of the frame".to_string(),
+                },
+                path.display()
+            )];
+
+            lines.push(if drawn.is_empty() {
+                "Every pixel is at depth 1: nothing has written depth since it was cleared (or it was cleared to 1 last).".to_string()
+            } else {
+                format!(
+                    "Depths written run from {near:.6} (nearest) to {far:.6}. {:.1}% of pixels are at 1, the far value a clear usually leaves.{}",
+                    at_far as f64 * 100.0 / depths.len() as f64,
+                    if far - near < 1e-4 && drawn.len() > 1 {
+                        " The whole range is narrower than 0.0001: everything drawn is at almost one depth, which is where z-fighting comes from."
+                    } else {
+                        ""
+                    }
+                )
+            });
+
+            let mut data = json!({ "capture": handle, "view": "depth", "at_draw": params["at_draw"], "nearest": near, "farthest": far, "at_far": at_far, "pixels": depths.len(), "provenance": "gpu-measured" });
+
+            // One pixel's depth, exactly.
+            if let (Some(x), Some(y)) = (params["x"].as_u64(), params["y"].as_u64()) {
+                if x >= width as u64 || y >= height as u64 {
+                    bail!("({x}, {y}) is outside the target, which is {width}×{height}.");
+                }
+
+                let depth = depths[(y * width as u64 + x) as usize];
+
+                lines.push(format!("Depth at ({x}, {y}): {depth:.7}."));
+                data["depth_at"] = json!({ "x": x, "y": y, "depth": depth });
+            } else {
+                lines.push("Pass x and y for the depth at one pixel.".into());
+            }
+
+            lines.push("In the picture nearer is lighter, and dark blue is the far value. Values are read to 24 bits.".into());
+
+            let mut value = result(lines.join("\n"), data);
+
+            value["images"] = json!([{ "view": path, "original": path, "width": width, "height": height, "scale": 1.0, "space": "canvas_px" }]);
+
+            Ok(value)
+        }
+        "nan" => {
+            let (target, target_name) = target_of(host, &handle, params)?;
+            let reply = session.replay("nan", &json!({ "key": handle, "draw": params["at_draw"], "target": target }), LONG).await?;
+
+            refuse(&reply)?;
+
+            if reply["notFloat"] == true {
+                let floats = host.store.query(
+                    &handle,
+                    "SELECT DISTINCT d.target FROM draws d JOIN objects o ON o.handle = d.target WHERE o.kind = 'texture' AND (o.what LIKE '%16F%' OR o.what LIKE '%32F%' OR o.what LIKE '%FLOAT%')",
+                    &[],
+                    20,
+                )?;
+                let names: Vec<&str> = floats.rows.iter().filter_map(|row| row[0].as_str()).collect();
+
+                return Ok(result(
+                    format!(
+                        "{target_name} holds 8-bit values, which cannot be NaN or infinite: a NaN written to it has already become some colour (usually black). {}",
+                        if names.is_empty() {
+                            "The frame draws to no float target.".to_string()
+                        } else {
+                            format!("Float targets the frame draws to: {}. Pass one as target.", names.join(", "))
+                        }
+                    ),
+                    json!({ "capture": handle, "view": "nan", "float": false, "float_targets": names }),
+                ));
+            }
+
+            let (width, height) = (reply["width"].as_u64().unwrap_or(0) as u32, reply["height"].as_u64().unwrap_or(0) as u32);
+            let marks = crate::capture::unpack(reply["marks"].as_str().unwrap_or(""))?;
+            let (nan, infinite) = (reply["nan"].as_u64().unwrap_or(0), reply["infinite"].as_u64().unwrap_or(0));
+            let mut lines = vec![format!(
+                "{}: {target_name}{} has {nan} pixel{} holding NaN and {infinite} holding an infinity, of {}. gpu-measured.",
+                about(host, params, &handle, &meta),
+                match params["at_draw"].as_i64() {
+                    Some(draw) => format!(" after event {draw}"),
+                    None => " at the end of the frame".to_string(),
+                },
+                if nan == 1 { "" } else { "s" },
+                marks.len()
+            )];
+            let mut data = json!({ "capture": handle, "view": "nan", "float": true, "nan": nan, "infinite": infinite, "pixels": marks.len(), "provenance": "gpu-measured" });
+            let mut images = json!([]);
+
+            if nan + infinite > 0 {
+                let (mut left, mut right, mut up, mut down) = (width, 0u32, height, 0u32);
+
+                for (index, mark) in marks.iter().enumerate() {
+                    if *mark > 0 {
+                        let (x, y) = (index as u32 % width, index as u32 / width);
+
+                        left = left.min(x);
+                        right = right.max(x);
+                        up = up.min(y);
+                        down = down.max(y);
+                    }
+                }
+
+                let picture = Image::new(
+                    width,
+                    height,
+                    marks
+                        .iter()
+                        .flat_map(|mark| match mark {
+                            1 => [255, 0, 255, 255],
+                            2 => [255, 255, 0, 255],
+                            _ => [24, 24, 24, 255],
+                        })
+                        .collect(),
+                )?;
+                let path = host.store.capture_dir(&handle).join("nan.png");
+
+                std::fs::write(&path, picture.to_png()?).with_context(|| format!("writing {}", path.display()))?;
+                lines.push(format!(
+                    "They lie within x {left} y {up} {}×{}. In the picture NaN is magenta and infinity yellow: {}",
+                    right - left + 1,
+                    down - up + 1,
+                    path.display()
+                ));
+                lines.push(format!("pixel_history(capture: \"{handle}\", x: {left}, y: {up}, target) finds the draw that wrote the first of them. The usual causes: normalising a zero vector, dividing by zero, a square root or logarithm of a negative number, pow with a negative base."));
+                data["box"] = json!({ "x": left, "y": up, "w": right - left + 1, "h": down - up + 1 });
+                images = json!([{ "view": path, "original": path, "width": width, "height": height, "scale": 1.0, "space": "canvas_px" }]);
+            }
+
+            let mut value = result(lines.join("\n"), data);
+
+            value["images"] = images;
+
+            Ok(value)
+        }
+        other => bail!("There is no \"{other}\" view. Views are overdraw, wireframe, draw_id, depth and nan."),
     }
+}
+
+/// A colour for an event's number that differs from its neighbours': black for none.
+fn id_colour(id: i64) -> [u8; 4] {
+    if id <= 0 {
+        return [0, 0, 0, 255];
+    }
+
+    // The golden angle round the hue circle, so consecutive draws are far apart.
+    let hue = (id as f64 * 137.508) % 360.0;
+    let (saturation, value) = (0.55 + 0.4 * ((id % 3) as f64 / 2.0), 0.95 - 0.3 * ((id / 3 % 3) as f64 / 2.0));
+    let chroma = value * saturation;
+    let x = chroma * (1.0 - ((hue / 60.0) % 2.0 - 1.0).abs());
+    let (r, g, b) = match (hue / 60.0) as u32 {
+        0 => (chroma, x, 0.0),
+        1 => (x, chroma, 0.0),
+        2 => (0.0, chroma, x),
+        3 => (0.0, x, chroma),
+        4 => (x, 0.0, chroma),
+        _ => (chroma, 0.0, x),
+    };
+    let lift = value - chroma;
+
+    [((r + lift) * 255.0) as u8, ((g + lift) * 255.0) as u8, ((b + lift) * 255.0) as u8, 255]
 }
 
 #[cfg(test)]

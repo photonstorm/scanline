@@ -57,6 +57,8 @@ The depth test is `LESS` throughout. So:
 | (220, 180), the ramp's right | cleared, grey; event 3 fails the depth test: the shader wrote 0.875 |
 | (260, 180), the blue quad | cleared, grey; event 4 fails the depth test |
 
+`history/nan.html` draws to a 160×120 RGBA16F texture and shows it on the canvas. Columns 0 to 39 of the texture hold NaN (`normalize(vec3(0))`), columns 40 to 79 hold infinity (`1.0 / 0.0`), the rest ordinary values.
+
 ## The page protocol (`protocol/`)
 
 `protocol/webgl2.html` is an orchard: sky, ground and five trees, in raw WebGL 2, written the way the `scanline-debuggable-rendering` skill asks. Every object is labelled, every draw is in a group (`sky`, `ground`, `trees / tree-N`, and `debug` when the bounds view is on), each tree declares itself as an entity, and the page provides its state, three controls (`sun.height`, `wind`, `season`), one view (`bounds`), marks (`assets loaded`, `first frame`, `second passed` once a second), its own time control and a checkpoint. A frame is 11 draws, or 31 with the view on.

@@ -1,0 +1,83 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Not a number</title>
+<style>body { margin: 0; background: #111; } canvas { display: block; }</style>
+<canvas id="scene" width="160" height="120"></canvas>
+<script type="module">
+// A float render target with numbers in it that are not numbers, for the nan view.
+// Raw WebGL 2. The scene is drawn to a 160×120 RGBA16F texture and then shown on the canvas.
+//
+//   x 0 to 39     normalize(vec3(0)): NaN
+//   x 40 to 79    1.0 / 0.0: infinity
+//   x 80 to 159   ordinary values
+const gl = document.getElementById('scene').getContext('webgl2', { antialias: false, alpha: false });
+
+gl.getExtension('EXT_color_buffer_float');
+
+function program (fragment)
+{
+    const made = gl.createProgram();
+
+    for (const [type, source] of [[gl.VERTEX_SHADER, `#version 300 es
+        void main () { gl_Position = vec4(float(gl_VertexID % 2) * 4.0 - 1.0, float(gl_VertexID / 2) * 4.0 - 1.0, 0.0, 1.0); }`], [gl.FRAGMENT_SHADER, fragment]])
+    {
+        const shader = gl.createShader(type);
+
+        gl.shaderSource(shader, source);
+        gl.compileShader(shader);
+        gl.attachShader(made, shader);
+    }
+
+    gl.linkProgram(made);
+
+    return made;
+}
+
+const lighting = program(`#version 300 es
+    precision highp float;
+    uniform vec3 nothing;
+    uniform float zero;
+    out vec4 result;
+    void main ()
+    {
+        float x = gl_FragCoord.x;
+        if (x < 40.0) { result = vec4(normalize(nothing), 1.0); }
+        else if (x < 80.0) { result = vec4(vec3(1.0 / zero), 1.0); }
+        else { result = vec4(0.25, 0.5, 0.75, 1.0); }
+    }`);
+
+const show = program(`#version 300 es
+    precision highp float;
+    uniform sampler2D scene;
+    out vec4 result;
+    void main () { result = vec4(texelFetch(scene, ivec2(gl_FragCoord.xy), 0).rgb, 1.0); }`);
+
+const texture = gl.createTexture();
+
+gl.bindTexture(gl.TEXTURE_2D, texture);
+gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA16F, 160, 120);
+
+const target = gl.createFramebuffer();
+
+gl.bindFramebuffer(gl.FRAMEBUFFER, target);
+gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
+
+function frame ()
+{
+    gl.viewport(0, 0, 160, 120);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, target);
+    gl.useProgram(lighting);
+    gl.uniform3f(gl.getUniformLocation(lighting, 'nothing'), 0, 0, 0);
+    gl.uniform1f(gl.getUniformLocation(lighting, 'zero'), 0);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.useProgram(show);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+    window.fixture = { name: 'nan', frames: (window.fixture?.frames ?? 0) + 1 };
+    requestAnimationFrame(frame);
+}
+
+requestAnimationFrame(frame);
+</script>

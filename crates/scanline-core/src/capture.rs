@@ -47,6 +47,11 @@ fn handle_for(kind: &str, id: &Value, tag: u64) -> Option<String> {
     Some(if tag == 0 { format!("{prefix}_{id}") } else { format!("{prefix}_{id}_w{tag}") })
 }
 
+/// An object's handle, or what to say when there is none.
+pub(crate) fn handle_text(kind: &str, id: &Value, tag: u64) -> String {
+    handle_for(kind, id, tag).unwrap_or_else(|| "no buffer".to_string())
+}
+
 fn text(value: Option<String>) -> Sql {
     value.map(Sql::Text).unwrap_or(Sql::Null)
 }
@@ -55,7 +60,7 @@ fn int(value: &Value) -> Sql {
     value.as_i64().map(Sql::Integer).unwrap_or(Sql::Null)
 }
 
-fn mode_name(mode: &Value) -> Option<String> {
+pub(crate) fn mode_name(mode: &Value) -> Option<String> {
     // A WebGPU topology is already a word.
     if let Some(topology) = mode.as_str() {
         return Some(topology.to_string());

@@ -284,6 +284,35 @@ fn pipe() -> Result<(i32, i32)> {
     Ok((ends[0], ends[1]))
 }
 
+/// The memory a process holds, as the operating system counts it: on macOS its physical
+/// footprint, which is the figure Activity Monitor shows and which includes the GPU
+/// allocations made on its behalf; on Linux its resident set. None where it cannot be read.
+pub fn process_memory(pid: i64) -> Option<u64> {
+    #[cfg(target_os = "macos")]
+    {
+        let mut usage: libc::rusage_info_v2 = unsafe { std::mem::zeroed() };
+        let found =
+            unsafe { libc::proc_pid_rusage(pid as libc::c_int, libc::RUSAGE_INFO_V2, &mut usage as *mut libc::rusage_info_v2 as *mut libc::rusage_info_t) };
+
+        if found == 0 { Some(usage.ri_phys_footprint) } else { None }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+        let line = status.lines().find(|line| line.starts_with("VmRSS:"))?;
+
+        line.split_whitespace().nth(1)?.parse::<u64>().ok().map(|kilobytes| kilobytes * 1024)
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        let _ = pid;
+
+        None
+    }
+}
+
 #[cfg(unix)]
 fn dup_above(fd: i32, minimum: i32) -> Result<i32> {
     let duplicate = unsafe { libc::fcntl(fd, libc::F_DUPFD, minimum) };

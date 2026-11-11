@@ -895,6 +895,12 @@ impl Session {
         info["processInfo"].as_array()?.iter().find(|process| process["type"] == "GPU")?["id"].as_i64()
     }
 
+    /// What the GPU process holds, by the operating system's count. It is the whole
+    /// process: every page's GPU objects, the compositor's, and the process's own.
+    pub async fn gpu_process_memory(&self) -> Option<u64> {
+        scanline_browser::process_memory(self.gpu_pid().await?)
+    }
+
     pub async fn close(&self) {
         self.browser.close().await;
     }

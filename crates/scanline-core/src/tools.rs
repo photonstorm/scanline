@@ -348,6 +348,18 @@ pub const TOOLS: &[Tool] = &[
         read_only: true,
     },
     Tool {
+        name: "geometry",
+        description: "What one draw of a capture is given and what its vertex shader makes of it: each vertex attribute with its first values, then where the vertices land in clip space and how many triangles would reach the rasteriser at all (not off screen, behind the eye, of no area, NaN or culled). For a draw that draws nothing, or the wrong shape. WebGL 2.",
+        schema: schema!(
+            r#"["capture", "draw"]"#,
+            session!(),
+            r#""capture": { "type": "string" }"#,
+            r#""draw": { "type": "integer", "description": "The event's number, as draw_list gives it." }"#,
+            r#""vertices": { "type": "integer", "description": "How many vertices to show values for. Default 8." }"#,
+        ),
+        read_only: true,
+    },
+    Tool {
         name: "pixel_history",
         description: "Everything that happened to one pixel of a capture: each event that covered it, in order, with the value before and after, and for a draw that covered it without changing it, why: outside the scissor box, culled, failed the depth or stencil test, masked, or blended to the same value. Use it when something should be at a pixel and is not. WebGL captures.",
         schema: schema!(
@@ -362,12 +374,15 @@ pub const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "view",
-        description: "A capture seen another way, by replay. overdraw: how many times each pixel of the canvas was drawn, as two heat maps (everything rasterised, and what passed the depth test) with the mean, the most, and where it is worst. wireframe: the frame with its triangles as outlines, optionally only up to an event. WebGL captures.",
+        description: "A capture seen another way, by replay. overdraw: how often each pixel was drawn. wireframe: triangles as outlines. draw_id: which draw owns each pixel, and which own none. depth: the depth buffer as a picture, with the exact depth at x, y. nan: where a float target holds NaN or infinity. WebGL captures.",
         schema: schema!(
             r#"["capture", "view"]"#,
             r#""capture": { "type": "string" }"#,
-            r#""view": { "type": "string", "enum": ["overdraw", "wireframe"] }"#,
-            r#""at_draw": { "type": "integer", "description": "wireframe: stop after this event." }"#,
+            r#""view": { "type": "string", "enum": ["overdraw", "wireframe", "draw_id", "depth", "nan"] }"#,
+            r#""at_draw": { "type": "integer", "description": "wireframe, depth, nan: as it stood after this event. Default: the end of the frame." }"#,
+            r#""target": { "type": "string", "description": "draw_id, depth, nan: a texture the frame drew to (tex_4) or a framebuffer (fbo_1). Default: the canvas." }"#,
+            r#""x": { "type": "integer", "description": "depth: with y, the exact depth at this pixel." }"#,
+            r#""y": { "type": "integer" }"#,
             session!(),
         ),
         read_only: true,
@@ -727,14 +742,14 @@ objects on three.js, PixiJS 8 and Phaser 4: see help(topic: \"page\").
 Not built yet (planned, in this order):
   - For WebGPU captures: which test rejected a draw; uniform values by name (needs WGSL
     reflection; the buffers and textures in each bind group are listed).
-  - The browser's real GPU memory; GPU time per pass on WebGL.
+  - GPU time per pass on WebGL.
   - Hand-off to a person, beyond what is built (request_human, the control strip, the Debug
     key, the flight recorder, runs, one owner of the input): a Debug hotkey that works when
     some other application has the keyboard, annotation by clicking on the frozen frame, a
     gamepad, and pointer lock.
   - Analysis, beyond what is built (pixel history, compare, lint, shader_analysis, the
-    overdraw and wireframe views, profile): depth, stencil, mip and NaN views, vertex data,
-    and all of these but compare, lint and shader_analysis for WebGPU.
+    overdraw, wireframe, draw_id, depth and nan views, profile, geometry): stencil and mip
+    views, and all of these but compare, lint and shader_analysis for WebGPU.
   - Live patching beyond what is built: debug views on the live page, a solid-colour mode
     for draws, substituting a texture from a file, patches that survive a reload; and for
     WebGPU, uniforms by name, filters by event number or texture, and draws in render bundles.
@@ -884,8 +899,15 @@ Going deeper into a capture
 
   pixel_history(capture, x, y)           everything that happened to one pixel: each event that
                                          covered it, the value before and after, and for a draw
-                                         that covered it and changed nothing, which test turned
-                                         it away (scissor, cull, depth, stencil, colour mask)
+                                         that covered it and changed nothing, what turned it
+                                         away (scissor, cull, depth, stencil, colour mask, or
+                                         its fragment shader discarding it). target: \"fbo_1\"
+                                         for a framebuffer whose colour is a renderbuffer
+  geometry(capture, draw: n)             what a draw is given and what its vertex shader makes
+                                         of it: each attribute's first values, where the
+                                         vertices land, and how many triangles would be
+                                         rasterised at all (not off screen, behind the eye, of
+                                         no area, NaN, or culled)
   compare(a, b)                          two captures: events only one has, events that moved in
                                          the order, state and uniforms that differ, and how the
                                          final pictures differ
@@ -893,6 +915,12 @@ Going deeper into a capture
                                          (all fragments, and those that passed the depth test)
                                          with the mean, the most and where it is worst
   view(capture, view: \"wireframe\")     the frame as outlines; at_draw stops it early
+  view(capture, view: \"draw_id\")       which draw owns each pixel at the end, how many pixels
+                                         each owns, and the draws that own none
+  view(capture, view: \"depth\", x, y)   the depth buffer as a picture (nearer is lighter), its
+                                         range, and the exact depth at a pixel; at_draw for how
+                                         it stood after an event
+  view(capture, view: \"nan\", target)   where a float target holds NaN or infinity
   profile(capture, by: \"shader\")       GPU time of the frame's draws, ranked by draw, by
                                          shader or by pass, measured by replaying each draw
                                          several times inside a timer query
@@ -904,13 +932,17 @@ Going deeper into a capture
 
 Which to reach for
   Something should be at a pixel and is not        pixel_history at that pixel
+  A draw draws nothing, or the wrong shape         geometry of that draw
+  Something is hidden behind something else        view draw_id, then view depth at the pixel
+  Surfaces flicker against each other              view depth: is the range of depths tiny?
+  Black or garbage after a lighting pass           view nan on the float target
   It is right in one frame and wrong in another    compare the two captures
   It was right before a change                     capture before and after, then compare
   A frame is slow                                  profile by shader, then shader_analysis of
                                                    the costliest; view overdraw if it is fill
 
-pixel_history is for WebGL captures (WebGL 2 for rejected fragments). A draw whose shader
-discards every fragment at the pixel cannot be told from one that never covered it.
+pixel_history and geometry are for WebGL captures (WebGL 2 for rejected fragments and for
+the vertex shader's output). geometry runs the first instance only.
 shader_analysis reads text: it says what a shader could cost, not what it did.";
 
 const PATCH: &str = "\

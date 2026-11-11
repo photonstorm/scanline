@@ -139,6 +139,25 @@ class Run
         }
     }
 
+    // The capture's number for one of the replay's own objects of a kind, or null.
+    idOf (object: any, kind = 'buffer'): number | null
+    {
+        if (!object)
+        {
+            return null;
+        }
+
+        for (const [key, made] of this.objects)
+        {
+            if (made === object && key.startsWith(`${kind}:`))
+            {
+                return Number(key.slice(kind.length + 1));
+            }
+        }
+
+        return null;
+    }
+
     object (kind: string, id: number | null): any
     {
         return id ? this.objects.get(`${kind}:${id}`) ?? null : null;
@@ -1277,7 +1296,7 @@ async function packed (image: { width: number; height: number; data: Uint8Array 
 // A program with another's vertex shader and a fragment shader that keeps every fragment
 // and writes nothing that matters. Attributes sit where the original's do. Null when it
 // cannot be made: the vertex shader's source is gone, or the pair will not link.
-function shapeProgram (gl: any, original: any): { program: any; uniforms: Array<{ name: string; type: number; size: number }>; blocks: string[] } | null
+function shapeProgram (gl: any, original: any, feedback?: string[]): { program: any; uniforms: Array<{ name: string; type: number; size: number }>; blocks: string[] } | null
 {
     try
     {
@@ -1293,8 +1312,8 @@ function shapeProgram (gl: any, original: any): { program: any; uniforms: Array<
         const fragment = gl.createShader(0x8B30);
 
         gl.shaderSource(fragment, modern
-            ? '#version 300 es\nprecision mediump float;\nout vec4 scanlineShape;\nvoid main () { scanlineShape = vec4(1.0); }'
-            : 'void main () { gl_FragColor = vec4(1.0); }');
+            ? '#version 300 es\nprecision highp float;\nuniform vec4 scanlineColour;\nout vec4 scanlineShape;\nvoid main () { scanlineShape = scanlineColour; }'
+            : 'precision mediump float;\nuniform vec4 scanlineColour;\nvoid main () { gl_FragColor = scanlineColour; }');
         gl.compileShader(fragment);
 
         const again = gl.createShader(0x8B31);
@@ -1318,6 +1337,12 @@ function shapeProgram (gl: any, original: any): { program: any; uniforms: Array<
             }
         }
 
+        if (feedback)
+        {
+            // Outputs of the vertex shader to be written to a buffer as it runs.
+            gl.transformFeedbackVaryings(program, feedback, 0x8C8C);
+        }
+
         gl.linkProgram(program);
         gl.deleteShader(again);
         gl.deleteShader(fragment);
@@ -1335,7 +1360,8 @@ function shapeProgram (gl: any, original: any): { program: any; uniforms: Array<
         {
             const active = gl.getActiveUniform(program, i);
 
-            if (active)
+            // The colour is the caller's to set, not the page's.
+            if (active && active.name !== 'scanlineColour')
             {
                 uniforms.push({ name: active.name, type: active.type, size: active.size });
             }
@@ -2050,6 +2076,710 @@ const api = {
             }
 
             return { rows, times, disjoint, notes: run.notes, ms: performance.now() - started };
+        }
+        finally
+        {
+            run.dispose();
+        }
+    },
+
+    // What one draw is given and what its vertex shader makes of it.
+    //
+    // Given: each attribute the program reads, with the values of the first few vertices,
+    // read from the buffers as they stand just before the draw.
+    //
+    // Made: the clip-space position of every vertex, taken with transform feedback from the
+    // program's own vertex shader (WebGL 2). From those, how many triangles would reach the
+    // rasteriser at all: not wholly outside the view volume, not behind the eye, not of no
+    // area, not NaN. This is the first instance only.
+    async geometry (args: { key: string; draw: number; vertices?: number }): Promise<Json>
+    {
+        const item = capture(args.key);
+
+        if (isGpu(item))
+        {
+            return { unsupported: 'webgpu' };
+        }
+
+        const row = item.data.draws[args.draw];
+
+        if (!row)
+        {
+            throw new Error(`The capture has ${item.data.draws.length} events, numbered from 0; there is no draw ${args.draw}.`);
+        }
+
+        if (row.kind !== 'draw')
+        {
+            return { unsupported: 'not-a-draw', kind: row.kind };
+        }
+
+        const run = new Run(item);
+        const gl = run.gl;
+        const show = Math.max(1, Math.min(args.vertices ?? 8, 64));
+        const CAP = 60000;
+
+        try
+        {
+            // Everything up to the draw, and not the draw itself.
+            run.play(row.command);
+
+            const program = gl.getParameter(0x8B8D);
+
+            if (!program)
+            {
+                return { unsupported: 'no-program' };
+            }
+
+            const indexed = row.indexType !== null && row.indexType !== undefined;
+            const count = Math.max(0, Math.min(row.count ?? 0, CAP));
+            const first = row.first ?? 0;
+            const arrayBuffer = gl.getParameter(0x8894);
+
+            // Which vertices the draw names, in order.
+            let indices: number[] | null = null;
+
+            if (indexed && run.gl2 && count > 0)
+            {
+                const Typed = row.indexType === 0x1401 ? Uint8Array : (row.indexType === 0x1405 ? Uint32Array : Uint16Array);
+                const data = new Typed(count);
+
+                try
+                {
+                    gl.getBufferSubData(0x8893, row.indexOffset ?? 0, data);
+                    indices = Array.from(data);
+                }
+                catch
+                {
+                    indices = null;
+                }
+            }
+
+            const named = indices ?? Array.from({ length: count }, (_, i) => first + i);
+            let lowest = Infinity;
+            let highest = -Infinity;
+
+            for (const index of named)
+            {
+                lowest = Math.min(lowest, index);
+                highest = Math.max(highest, index);
+            }
+
+            // ---- What it is given ----
+
+            const SIZES: Record<number, [any, number]> = {
+                0x1400: [Int8Array, 1], 0x1401: [Uint8Array, 1], 0x1402: [Int16Array, 2], 0x1403: [Uint16Array, 2],
+                0x1404: [Int32Array, 4], 0x1405: [Uint32Array, 4], 0x1406: [Float32Array, 4]
+            };
+
+            const attributes: Json[] = [];
+
+            for (let i = 0; i < gl.getProgramParameter(program, 0x8B89); i++)
+            {
+                const active = gl.getActiveAttrib(program, i);
+                const location = active ? gl.getAttribLocation(program, active.name) : -1;
+
+                if (!active || location < 0)
+                {
+                    continue;
+                }
+
+                const out: Json = { name: active.name, location, glslType: active.type };
+
+                if (!gl.getVertexAttrib(location, 0x8622))
+                {
+                    // Not an array: every vertex gets the one current value.
+                    out.constant = Array.from(gl.getVertexAttrib(location, 0x8626) as ArrayLike<number>);
+                    attributes.push(out);
+                    continue;
+                }
+
+                const size = gl.getVertexAttrib(location, 0x8623);
+                const type = gl.getVertexAttrib(location, 0x8625);
+                const [Typed, bytes] = SIZES[type] ?? [null, 0];
+                const stride = gl.getVertexAttrib(location, 0x8624) || size * bytes;
+                const offset = gl.getVertexAttribOffset(location, 0x8645);
+                const buffer = gl.getVertexAttrib(location, 0x889F);
+                const divisor = run.gl2 ? gl.getVertexAttrib(location, 0x88FE) : 0;
+
+                Object.assign(out, { size, type, normalized: gl.getVertexAttrib(location, 0x886A), stride, offset, divisor, buffer: run.idOf(buffer) });
+
+                if (!buffer || !Typed || !run.gl2)
+                {
+                    out.missing = !buffer ? 'no buffer is bound to it' : 'its values cannot be read here';
+                    attributes.push(out);
+                    continue;
+                }
+
+                gl.bindBuffer(0x8892, buffer);
+
+                const length = gl.getBufferParameter(0x8892, 0x8764);
+                const values: Array<number[] | null> = [];
+
+                // Per-instance attributes are shown for the first few instances; the rest
+                // for the first few vertices the draw names.
+                const which = divisor > 0 ? Array.from({ length: Math.min(show, row.instances ?? 1) }, (_, k) => k) : named.slice(0, show);
+
+                for (const index of which)
+                {
+                    const at = offset + index * stride;
+
+                    if (at < 0 || at + size * bytes > length)
+                    {
+                        values.push(null);
+                        continue;
+                    }
+
+                    const data = new Typed(size);
+
+                    gl.getBufferSubData(0x8892, at, data);
+                    values.push(Array.from(data as ArrayLike<number>));
+                }
+
+                out.values = values;
+                out.bufferBytes = length;
+
+                // The furthest the draw reaches into the buffer.
+                const reach = divisor > 0 ? offset + ((row.instances ?? 1) - 1) * stride + size * bytes : (named.length ? offset + highest * stride + size * bytes : 0);
+
+                out.overrun = reach > length ? reach - length : 0;
+                attributes.push(out);
+            }
+
+            gl.bindBuffer(0x8892, arrayBuffer);
+
+            // ---- What the vertex shader makes of it ----
+            //
+            // WebGL 2's transform feedback takes points, lines or triangles drawn with
+            // drawArrays and nothing else. So every vertex the draw names is run through the
+            // vertex shader once, as a point, and the primitives are put together here from
+            // the draw's mode and indices.
+
+            let positions: Float32Array | null = null;
+            let why: string | null = null;
+            const base = Number.isFinite(lowest) ? lowest : 0;
+            const span = Number.isFinite(highest) ? Math.min(highest - base + 1, CAP) : 0;
+
+            if (!run.gl2)
+            {
+                why = 'WebGL 1 has no transform feedback, so the vertex shader\'s output cannot be read.';
+            }
+            else if (span === 0)
+            {
+                why = 'The draw names no vertices.';
+            }
+            else if (gl.getParameter(0x8E24) || gl.getQuery(0x8C88, 0x8865))
+            {
+                why = 'The page has transform feedback of its own running at this draw.';
+            }
+            else
+            {
+                const shape = shapeProgram(gl, program, ['gl_Position']);
+
+                if (!shape)
+                {
+                    why = 'The vertex shader could not be linked on its own to read its output.';
+                }
+                else
+                {
+                    syncUniforms(gl, program, shape);
+
+                    const feedback = gl.createTransformFeedback();
+                    const into = gl.createBuffer();
+                    const bound = gl.getParameter(0x8E25);
+                    const discarding = gl.isEnabled(0x8C89);
+
+                    while (gl.getError()) { /* what came before is not this draw's */ }
+
+                    gl.bindBuffer(0x8892, into);
+                    gl.bufferData(0x8892, span * 16, 0x88E9);
+                    gl.bindBuffer(0x8892, arrayBuffer);
+
+                    gl.useProgram(shape.program);
+                    gl.bindTransformFeedback(0x8E22, feedback);
+                    gl.bindBufferBase(0x8C8E, 0, into);
+                    gl.enable(0x8C89);
+                    gl.beginTransformFeedback(0x0000);
+                    gl.drawArrays(0x0000, base, span);
+                    gl.endTransformFeedback();
+                    gl.bindBufferBase(0x8C8E, 0, null);
+                    gl.bindTransformFeedback(0x8E22, bound);
+
+                    if (!discarding)
+                    {
+                        gl.disable(0x8C89);
+                    }
+
+                    gl.useProgram(program);
+
+                    const error = gl.getError();
+
+                    if (error === 0)
+                    {
+                        positions = new Float32Array(span * 4);
+                        gl.bindBuffer(0x8892, into);
+                        gl.getBufferSubData(0x8892, 0, positions);
+                        gl.bindBuffer(0x8892, arrayBuffer);
+                    }
+                    else
+                    {
+                        why = `The browser rejected the draw that reads the vertex shader's output (error 0x${error.toString(16)}): an attribute may read past the end of its buffer.`;
+                    }
+
+                    gl.deleteBuffer(into);
+                    gl.deleteTransformFeedback(feedback);
+                    gl.deleteProgram(shape.program);
+                }
+            }
+
+            // ---- What would reach the rasteriser ----
+
+            let summary: Json = null;
+
+            if (positions)
+            {
+                const got = positions;
+                const at = (vertex: number): number[] | null =>
+                {
+                    const slot = vertex - base;
+
+                    return slot >= 0 && slot < span ? [got[slot * 4], got[slot * 4 + 1], got[slot * 4 + 2], got[slot * 4 + 3]] : null;
+                };
+
+                // The primitives, as lists of vertex numbers, in the winding the mode gives them.
+                const primitives: number[][] = [];
+                const n = named.length;
+
+                switch (row.mode)
+                {
+                    case 0x0000: for (let i = 0; i < n; i++) { primitives.push([named[i]]); } break;
+                    case 0x0001: for (let i = 0; i + 1 < n; i += 2) { primitives.push([named[i], named[i + 1]]); } break;
+                    case 0x0003: for (let i = 0; i + 1 < n; i++) { primitives.push([named[i], named[i + 1]]); } break;
+                    case 0x0002:
+                        for (let i = 0; i + 1 < n; i++) { primitives.push([named[i], named[i + 1]]); }
+                        if (n > 2) { primitives.push([named[n - 1], named[0]]); }
+                        break;
+                    case 0x0004: for (let i = 0; i + 2 < n; i += 3) { primitives.push([named[i], named[i + 1], named[i + 2]]); } break;
+                    case 0x0005: for (let i = 0; i + 2 < n; i++) { primitives.push(i % 2 ? [named[i + 1], named[i], named[i + 2]] : [named[i], named[i + 1], named[i + 2]]); } break;
+                    default: for (let i = 1; i + 1 < n; i++) { primitives.push([named[0], named[i], named[i + 1]]); } break;
+                }
+
+                const per = row.mode === 0x0000 ? 1 : (row.mode <= 0x0003 ? 2 : 3);
+                const tally = { total: primitives.length, unread: 0, nan: 0, behind: 0, outside: 0, flat: 0, reach: 0, front: 0, back: 0 };
+                const planes: Record<string, number> = { left: 0, right: 0, bottom: 0, top: 0, near: 0, far: 0 };
+                const bounds = { min: [Infinity, Infinity, Infinity], max: [-Infinity, -Infinity, -Infinity] };
+                const clockwise = gl.getParameter(0x0B46) === 0x0900;
+
+                const sides: Array<[string, (c: number[]) => boolean]> = [
+                    ['left', (c) => c[0] < -c[3]], ['right', (c) => c[0] > c[3]],
+                    ['bottom', (c) => c[1] < -c[3]], ['top', (c) => c[1] > c[3]],
+                    ['near', (c) => c[2] < -c[3]], ['far', (c) => c[2] > c[3]]
+                ];
+
+                for (const primitive of primitives)
+                {
+                    const found = primitive.map(at);
+
+                    if (found.some((vertex) => vertex === null))
+                    {
+                        tally.unread++;
+                        continue;
+                    }
+
+                    const v = found as number[][];
+
+                    if (v.some((vertex) => vertex.some((part) => !Number.isFinite(part))))
+                    {
+                        tally.nan++;
+                        continue;
+                    }
+
+                    if (v.every((vertex) => vertex[3] <= 0))
+                    {
+                        tally.behind++;
+                        continue;
+                    }
+
+                    // Wholly beyond one side of the view volume: clipped away entire.
+                    const beyond = sides.find(([, test]) => v.every(test));
+
+                    if (beyond)
+                    {
+                        tally.outside++;
+                        planes[beyond[0]]++;
+                        continue;
+                    }
+
+                    if (per === 3 && v.every((vertex) => vertex[3] > 0))
+                    {
+                        const [a, b, c] = v.map((vertex) => [vertex[0] / vertex[3], vertex[1] / vertex[3]]);
+                        const area = (b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1]);
+
+                        if (Math.abs(area) < 1e-12)
+                        {
+                            tally.flat++;
+                            continue;
+                        }
+
+                        // Counter-clockwise in window space is a positive area.
+                        if ((area > 0) !== clockwise) { tally.front++; } else { tally.back++; }
+                    }
+
+                    for (const vertex of v)
+                    {
+                        if (vertex[3] > 0)
+                        {
+                            for (let axis = 0; axis < 3; axis++)
+                            {
+                                const ndc = vertex[axis] / vertex[3];
+
+                                bounds.min[axis] = Math.min(bounds.min[axis], ndc);
+                                bounds.max[axis] = Math.max(bounds.max[axis], ndc);
+                            }
+                        }
+                    }
+
+                    tally.reach++;
+                }
+
+                summary = {
+                    ...tally,
+                    per,
+                    planes,
+                    bounds: tally.reach > 0 ? bounds : null,
+                    first: named.slice(0, show).map((vertex) => at(vertex))
+                };
+            }
+
+            return {
+                mode: row.mode,
+                count: row.count,
+                capped: (row.count ?? 0) > CAP ? CAP : null,
+                first,
+                indexed,
+                instances: row.instances ?? 1,
+                indices: indices ? { first: indices.slice(0, show * 3), lowest, highest } : null,
+                attributes,
+                output: summary,
+                outputMissing: why,
+                viewport: Array.from(gl.getParameter(0x0BA2) as ArrayLike<number>),
+                cull: gl.isEnabled(0x0B44) ? gl.getParameter(0x0B45) : null,
+                frontFace: gl.getParameter(0x0B46),
+                notes: run.notes
+            };
+        }
+        finally
+        {
+            run.dispose();
+        }
+    },
+
+    // Which event owns each pixel. Every draw is issued with its own vertex shader and a
+    // fragment shader that writes the event's number as a colour, with blending off; clears
+    // write nothing. What a pixel holds at the end is the last draw whose shape covered it
+    // and passed the tests. A fragment the page's shader would have discarded still counts.
+    async drawId (args: { key: string; target?: Json }): Promise<Json>
+    {
+        const item = capture(args.key);
+
+        if (isGpu(item))
+        {
+            return { unsupported: 'webgpu' };
+        }
+
+        const run = new Run(item);
+        const gl = run.gl;
+
+        try
+        {
+            const byCommand = new Map<number, number>();
+
+            item.data.draws.forEach((row, index) => byCommand.set(row.command, index));
+
+            const shapes = new Map<any, ReturnType<typeof shapeProgram>>();
+            let restore: (() => void) | null = null;
+            let skipped = 0;
+
+            run.play(item.data.commands.length, () =>
+            {
+                restore?.();
+                restore = null;
+            },
+            (index) =>
+            {
+                const draw = byCommand.get(index);
+
+                if (draw === undefined || !sameTarget(item.data.draws[draw], args.target ?? null))
+                {
+                    return;
+                }
+
+                const event = item.data.draws[draw];
+
+                if (event.kind === 'clear')
+                {
+                    // A clear leaves "nobody" behind, whatever colour the page clears to.
+                    const colour = gl.getParameter(0x0C22);
+
+                    gl.clearColor(0, 0, 0, 0);
+                    restore = () => gl.clearColor(colour[0], colour[1], colour[2], colour[3]);
+
+                    return;
+                }
+
+                if (event.kind !== 'draw')
+                {
+                    return;
+                }
+
+                const program = gl.getParameter(0x8B8D);
+
+                if (program && !shapes.has(program))
+                {
+                    shapes.set(program, shapeProgram(gl, program));
+                }
+
+                const shape = program ? shapes.get(program) : null;
+
+                if (!shape)
+                {
+                    skipped++;
+
+                    return;
+                }
+
+                const blend = gl.isEnabled(0x0BE2);
+                const mask = gl.getParameter(0x0C23);
+                const id = draw + 1;
+
+                syncUniforms(gl, program, shape);
+                gl.useProgram(shape.program);
+                gl.uniform4f(gl.getUniformLocation(shape.program, 'scanlineColour'), (id & 255) / 255, ((id >> 8) & 255) / 255, ((id >> 16) & 255) / 255, 1);
+                gl.disable(0x0BE2);
+                gl.colorMask(true, true, true, true);
+
+                restore = () =>
+                {
+                    gl.useProgram(program);
+                    gl.colorMask(mask[0], mask[1], mask[2], mask[3]);
+
+                    if (blend)
+                    {
+                        gl.enable(0x0BE2);
+                    }
+                };
+            });
+
+            const image = run.image(args.target ?? null);
+
+            if (image.float)
+            {
+                return { unsupported: 'float-target' };
+            }
+
+            return { ...(await packed(image)), skipped, notes: run.notes };
+        }
+        finally
+        {
+            run.dispose();
+        }
+    },
+
+    // The depth buffer behind a target, after an event or at the end of the frame. WebGL
+    // cannot read depth back, so it is copied by a blit into a depth texture, and a quad
+    // drawn from that texture writes each depth as a 24-bit number in a colour.
+    async depth (args: { key: string; draw?: number | null; target?: Json }): Promise<Json>
+    {
+        const item = capture(args.key);
+
+        if (isGpu(item))
+        {
+            return { unsupported: 'webgpu' };
+        }
+
+        const run = new Run(item);
+        const gl = run.gl;
+
+        try
+        {
+            if (!run.gl2)
+            {
+                return { unsupported: 'webgl1' };
+            }
+
+            run.play(endOf(item.data, args.draw));
+
+            const row = args.draw === null || args.draw === undefined ? null : item.data.draws[args.draw];
+            const target = args.target ?? (row ? targetOfRow(row) : null);
+            const [width, height] = sizeOfTarget(item.data, target);
+            // The framebuffer whose depth goes with the target: the one an event drew to it through.
+            const through = row && sameTarget(row, target) ? row : [...item.data.draws].reverse().find((event) => sameTarget(event, target));
+            const source = through?.framebuffer ? run.object('framebuffer', through.framebuffer) : null;
+
+            if (target && !source)
+            {
+                return { unsupported: 'no-depth' };
+            }
+
+            while (gl.getError()) { /* what the frame raised is not this view's */ }
+
+            // The depth format has to match the source's, which for the canvas is the
+            // browser's choice. Each likely one is tried until the blit is accepted.
+            const texture = gl.createTexture();
+            const copy = gl.createFramebuffer();
+            let format = 0;
+
+            gl.disable(0x0C11);
+
+            for (const [candidate, attachment] of [[0x88F0, 0x821A], [0x81A6, 0x8D00], [0x8CAD, 0x821A], [0x8CAC, 0x8D00], [0x81A5, 0x8D00]])
+            {
+                gl.activeTexture(0x84C0);
+                gl.bindTexture(TEXTURE_2D, texture);
+                gl.texImage2D(TEXTURE_2D, 0, candidate, width, height, 0, attachment === 0x821A ? 0x84F9 : 0x1902,
+                    candidate === 0x88F0 ? 0x84FA : (candidate === 0x8CAD ? 0x8DAD : (candidate === 0x8CAC ? 0x1406 : (candidate === 0x81A5 ? 0x1403 : 0x1405))), null);
+                gl.texParameteri(TEXTURE_2D, 0x2801, 0x2600);
+                gl.texParameteri(TEXTURE_2D, 0x2800, 0x2600);
+                gl.texParameteri(TEXTURE_2D, 0x884C, 0);
+                gl.bindFramebuffer(0x8CA9, copy);
+                gl.framebufferTexture2D(0x8CA9, 0x8D00, TEXTURE_2D, null, 0);
+                gl.framebufferTexture2D(0x8CA9, 0x821A, TEXTURE_2D, null, 0);
+                gl.framebufferTexture2D(0x8CA9, attachment, TEXTURE_2D, texture, 0);
+                gl.bindFramebuffer(0x8CA8, source);
+                gl.blitFramebuffer(0, 0, width, height, 0, 0, width, height, 0x0100, 0x2600);
+
+                if (gl.getError() === 0)
+                {
+                    format = candidate;
+                    break;
+                }
+            }
+
+            if (!format)
+            {
+                return { unsupported: 'no-depth' };
+            }
+
+            // Each depth, written as three bytes of colour.
+            const out = gl.createTexture();
+            const into = gl.createFramebuffer();
+
+            gl.activeTexture(0x84C1);
+            gl.bindTexture(TEXTURE_2D, out);
+            gl.texImage2D(TEXTURE_2D, 0, 0x8058, width, height, 0, 0x1908, 0x1401, null);
+            gl.bindFramebuffer(0x8CA9, into);
+            gl.framebufferTexture2D(0x8CA9, 0x8CE0, TEXTURE_2D, out, 0);
+
+            const program = gl.createProgram();
+
+            for (const [type, source] of [[0x8B31, '#version 300 es\nvoid main () { gl_Position = vec4(float(gl_VertexID % 2) * 4.0 - 1.0, float(gl_VertexID / 2) * 4.0 - 1.0, 0.0, 1.0); }'],
+                [0x8B30, '#version 300 es\nprecision highp float;\nprecision highp sampler2D;\nuniform sampler2D depth;\nout vec4 packed;\nvoid main () { float d = texelFetch(depth, ivec2(gl_FragCoord.xy), 0).r; highp uint n = min(uint(clamp(d, 0.0, 1.0) * 16777215.0 + 0.5), 16777215u); packed = vec4(float(n & 255u), float((n >> 8u) & 255u), float((n >> 16u) & 255u), 255.0) / 255.0; }']] as Array<[number, string]>)
+            {
+                const shader = gl.createShader(type);
+
+                gl.shaderSource(shader, source);
+                gl.compileShader(shader);
+                gl.attachShader(program, shader);
+            }
+
+            gl.linkProgram(program);
+            gl.useProgram(program);
+            gl.activeTexture(0x84C0);
+            gl.bindTexture(TEXTURE_2D, texture);
+            gl.uniform1i(gl.getUniformLocation(program, 'depth'), 0);
+            gl.bindVertexArray(null);
+            gl.viewport(0, 0, width, height);
+
+            for (const cap of [0x0BE2, 0x0B71, 0x0B90, 0x0B44, 0x0C11, 0x8C89, 0x809E, 0x8037])
+            {
+                gl.disable(cap);
+            }
+
+            gl.colorMask(true, true, true, true);
+            gl.drawArrays(0x0004, 0, 3);
+
+            const raw = new Uint8Array(width * height * 4);
+
+            gl.bindFramebuffer(0x8CA8, into);
+            gl.bindBuffer(0x88EB, null);
+            gl.pixelStorei(0x0D05, 1);
+            gl.readPixels(0, 0, width, height, 0x1908, 0x1401, raw);
+
+            // Rows from the top, as every other picture has them.
+            const data = new Uint8Array(raw.length);
+            const stride = width * 4;
+
+            for (let y = 0; y < height; y++)
+            {
+                data.set(raw.subarray((height - 1 - y) * stride, (height - y) * stride), y * stride);
+            }
+
+            return { ...(await packed({ width, height, data })), format, error: gl.getError(), notes: run.notes };
+        }
+        finally
+        {
+            run.dispose();
+        }
+    },
+
+    // Where a float target holds a number that is not one: NaN, or infinite.
+    async nan (args: { key: string; draw?: number | null; target?: Json }): Promise<Json>
+    {
+        const item = capture(args.key);
+
+        if (isGpu(item))
+        {
+            return { unsupported: 'webgpu' };
+        }
+
+        const run = new Run(item);
+
+        try
+        {
+            run.play(endOf(item.data, args.draw));
+
+            const row = args.draw === null || args.draw === undefined ? null : item.data.draws[args.draw];
+            const target = args.target ?? (row ? targetOfRow(row) : null);
+            const { width, height, data } = run.raw(target);
+
+            if (!(data instanceof Float32Array))
+            {
+                return { notFloat: true, width, height };
+            }
+
+            // One byte a pixel, rows from the top: 1 for NaN in any channel, 2 for infinite.
+            const marks = new Uint8Array(width * height);
+            let nan = 0;
+            let infinite = 0;
+
+            for (let y = 0; y < height; y++)
+            {
+                for (let x = 0; x < width; x++)
+                {
+                    const from = ((height - 1 - y) * width + x) * 4;
+                    let mark = 0;
+
+                    for (let channel = 0; channel < 4; channel++)
+                    {
+                        const value = data[from + channel];
+
+                        if (Number.isNaN(value))
+                        {
+                            mark = 1;
+                            break;
+                        }
+
+                        if (!Number.isFinite(value))
+                        {
+                            mark = 2;
+                        }
+                    }
+
+                    marks[y * width + x] = mark;
+                    nan += mark === 1 ? 1 : 0;
+                    infinite += mark === 2 ? 1 : 0;
+                }
+            }
+
+            return { width, height, nan, infinite, marks: toBase64(await gzip(marks)), notes: run.notes };
         }
         finally
         {

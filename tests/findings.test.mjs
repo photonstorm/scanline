@@ -227,9 +227,27 @@ describe('what a capture says about each planted bug', () =>
         assert.match(kinds.out, /texture +\d+ alive, [\d.]+ MB/);
         assert.match(kinds.out, /LIKELY LEAK: \d+ textures still alive \([\d.]+ MB\) were all created by one line, over frames \d+ to \d+ \(about 1 a frame\): makeMapTarget \(fixtures\/bugs\/scene\.js:\d+/);
 
-        const memory = await scanline('memory', '--session', session);
+        const memory = await scanline('memory', '--snapshot', 'before', '--session', session);
 
         assert.match(memory.out, /LIKELY LEAK: \d+ textures/);
+        assert.match(memory.out, /The browser's GPU process holds [\d.]+ [MG]B in all \(os-measured/);
+
+        // The memory journey (J4): two snapshots, what grew between them and where it was
+        // made, and the GPU process's own figure to say the growth is real.
+        await scanline('step', 400, '--session', session);
+
+        const diff = await scanline('memory', '--diff', '["before", "now"]', '--session', session, '--json');
+
+        assert.equal(diff.json.data.created, 400);
+        assert.match(diff.json.summary, /Possible leak: one call site created 400 identical textures between the snapshots and none were destroyed/);
+        assert.match(diff.json.summary, /\+[\d.]+ MB {2}400 textures {2}256×256 .* at makeMapTarget \(fixtures\/bugs\/scene\.js:\d+/);
+        assert.match(diff.json.summary, /The browser's GPU process held [\d.]+ [MG]B at "before" and holds [\d.]+ [MG]B at "now": \+[\d.]+ MB \(os-measured/);
+
+        // 400 textures of 256×256 RGBA8 are 100 MB. The process grew by a good part of that.
+        const process = diff.json.data.gpu_process;
+
+        assert.ok(process.after - process.before > 40 * 1024 * 1024, `the GPU process grew by ${(process.after - process.before) / 1048576} MB`);
+        assert.match(diff.json.summary, /That bears the estimate out|That is some of the estimated growth/);
     });
 
     test('b11: a program is compiled and linked every frame', async () =>
@@ -407,6 +425,57 @@ describe('lint and shader analysis', () =>
         });
     }
 
+    test('geometry gives a draw\'s vertices and where its vertex shader puts them', async () =>
+    {
+        // A crate of the correct scene: two triangles, both facing the front, 80×80 pixels.
+        const right = await captured('b00');
+        const crate = await scanline('geometry', right.capture, 6, '--session', right.session, '--json');
+
+        assert.equal(crate.code, 0, crate.out);
+        assert.match(crate.json.summary, /event 6: TRIANGLE_STRIP × 4\./);
+        assert.match(crate.json.summary, /corner \(vec2, location 0\): 2 × FLOAT from buf_1, stride 8, offset 0\n {4}\(0, 0\) {2}\(1, 0\) {2}\(0, 1\) {2}\(1, 1\)/);
+        assert.match(crate.json.summary, /2 of 2 triangles would reach the rasteriser/);
+        assert.match(crate.json.summary, /2 face the front, 0 the back \(front is CW\)\. Culling is BACK, so 0 of them are culled\./);
+        assert.match(crate.json.summary, /that is about 80×80 pixels, from x 60, y 100 up from the bottom/);
+        assert.deepEqual(crate.json.data.geometry.output.first[0].map((part) => Math.round(part * 1000) / 1000 + 0), [-0.75, 0, 0, 1]);
+
+        // The same crate mirrored (b01): the same place, the other winding, and all of it culled.
+        const wrong = await captured('b01');
+        const culled = await scanline('geometry', wrong.capture, 6, '--session', wrong.session);
+
+        assert.match(culled.out, /0 face the front, 2 the back \(front is CW\)\. Culling is BACK, so 2 of them are culled: NOTHING IS LEFT TO DRAW\./);
+
+        // A clear has none, and says so.
+        assert.match((await scanline('geometry', wrong.capture, 0, '--session', wrong.session)).out, /Event 0 is a clear, which has no geometry/);
+    });
+
+    test('geometry on an engine\'s draw: indices, an instanced attribute, and triangles facing away', async () =>
+    {
+        const launched = await scanline('launch', server.url('fixtures/adapters/three.html'), '--headless', '--paused');
+        const session = /Launched (ses_\d+)/.exec(launched.out)?.[1];
+
+        await scanline('step', 5, '--session', session);
+
+        const capture = /^(cap_\d+):/m.exec((await scanline('capture', '--session', session)).out)?.[1];
+
+        // The five pillars: one indexed, instanced draw of a twelve-sided cylinder.
+        const pillars = await scanline('geometry', capture, 7, '--session', session, '--json');
+
+        assert.equal(pillars.code, 0, pillars.out);
+        assert.match(pillars.json.summary, /event 7: TRIANGLES × 144, indexed, 5 instances \(what follows is the first\)/);
+        assert.match(pillars.json.summary, /Indices run from 0 to 75/);
+        assert.match(pillars.json.summary, /instanceMatrix \(mat4, location \d+\): 4 × FLOAT from buf_\d+, stride 64, offset 0, one value per instance/);
+        assert.match(pillars.json.summary, /position \(vec3, location 0\): 3 × FLOAT from buf_\d+, stride 12, offset 0/);
+
+        const output = pillars.json.data.geometry.output;
+
+        assert.equal(output.total, 48);
+        assert.equal(output.reach, 48);
+        assert.equal(output.front + output.back, 48, 'every triangle of a closed cylinder faces one way or the other');
+        assert.ok(output.front > 0 && output.back > 0);
+        assert.match(pillars.json.summary, /Culling is BACK, so \d+ of them are culled\./);
+    });
+
     test('lint gathers what is worth a look, for a capture and for a live session', async () =>
     {
         const { capture, session } = await captured('b10', 30);
@@ -531,6 +600,74 @@ describe('views of a capture', () =>
         assert.match(read.out, /1 inside a loop: up to 64 samples every time the shader runs/);
     });
 
+    test('the draw_id view says which draw owns each pixel, and the depth view what depth it holds', async () =>
+    {
+        // The hand-checked scene (fixtures/README.md, "Pixel history").
+        const launched = await scanline('launch', server.url('fixtures/history/webgl2.html'), '--headless', '--paused');
+        const session = /Launched (ses_\d+)/.exec(launched.out)?.[1];
+
+        await scanline('step', 3, '--session', session);
+
+        const capture = /^(cap_\d+):/m.exec((await scanline('capture', '--session', session)).out)?.[1];
+        const owners = await scanline('view', capture, 'draw_id', '--session', session, '--json');
+
+        assert.equal(owners.code, 0, owners.out);
+
+        // The floor owns the bottom half. The disc owns its whole quad: discard is the
+        // shader's doing, and this view is about shapes. The ramp and the blue quad own
+        // nothing: their triangles sit behind the floor.
+        assert.deepEqual(owners.json.data.owners, [
+            { draw: 1, pixels: 38400, box: { x: 0, y: 120, w: 320, h: 120 } },
+            { draw: 2, pixels: 6400, box: { x: 40, y: 20, w: 80, h: 80 } }
+        ]);
+        assert.equal(owners.json.data.no_draw_pixels, 32000);
+        assert.deepEqual(owners.json.data.hidden, ['3', '4']);
+        assert.deepEqual(readFileSync(owners.json.images[0].view).subarray(0, 4), PNG);
+
+        // Depth: the floor at 0.5, the disc at 0.4, the ramp at what its shader wrote, and
+        // the far value where only the clear reached.
+        const depthAt = async (x, y, ...more) => (await scanline('view', capture, 'depth', '--x', x, '--y', y, ...more, '--session', session, '--json')).json;
+        const close = (value, wanted) => Math.abs(value - wanted) < 1e-5;
+
+        const floor = await depthAt(220, 180);
+
+        assert.ok(close(floor.data.depth_at.depth, 0.5), floor.summary);
+        assert.ok(close((await depthAt(80, 60)).data.depth_at.depth, 0.4));
+        assert.ok(close((await depthAt(100, 180)).data.depth_at.depth, 20.5 / 160), 'the ramp wrote (x − 80) / 160 at the pixel\'s centre');
+        assert.equal((await depthAt(10, 10)).data.depth_at.depth, 1);
+        assert.ok(close(floor.data.farthest, 0.5));
+        assert.match(floor.summary, /4[0-9]\.\d% of pixels are at 1, the far value/);
+
+        // After the floor alone, the ramp's place still holds the floor's depth.
+        assert.ok(close((await depthAt(100, 180, '--at_draw', 1)).data.depth_at.depth, 0.5));
+    });
+
+    test('the nan view finds what is not a number in a float target', async () =>
+    {
+        const launched = await scanline('launch', server.url('fixtures/history/nan.html'), '--headless', '--paused');
+        const session = /Launched (ses_\d+)/.exec(launched.out)?.[1];
+
+        await scanline('step', 3, '--session', session);
+
+        const capture = /^(cap_\d+):/m.exec((await scanline('capture', '--session', session)).out)?.[1];
+
+        // The canvas cannot hold one, and the view says which target can.
+        const canvas = await scanline('view', capture, 'nan', '--session', session);
+
+        assert.match(canvas.out, /the canvas holds 8-bit values, which cannot be NaN or infinite/);
+        assert.match(canvas.out, /Float targets the frame draws to: tex_1\. Pass one as target\./);
+
+        // The left quarter is normalize(vec3(0)), the next 1.0 / 0.0.
+        const found = await scanline('view', capture, 'nan', '--target', 'tex_1', '--session', session, '--json');
+
+        assert.equal(found.json.data.nan, 4800);
+        assert.equal(found.json.data.infinite, 4800);
+        assert.deepEqual(found.json.data.box, { x: 0, y: 0, w: 80, h: 120 });
+        assert.deepEqual(readFileSync(found.json.images[0].view).subarray(0, 4), PNG);
+
+        assert.match((await scanline('view', capture, 'nope', '--session', session)).out, /Views are overdraw, wireframe, draw_id, depth and nan/);
+    });
+
     test('wireframe draws the frame as outlines', async () =>
     {
         const { capture, session } = await captured('b00');
@@ -551,7 +688,7 @@ describe('views of a capture', () =>
         const unknown = await scanline('view', capture, 'x-ray', '--session', session);
 
         assert.equal(unknown.code, 1);
-        assert.match(unknown.out, /There is no "x-ray" view\. Views are overdraw and wireframe\./);
+        assert.match(unknown.out, /There is no "x-ray" view\. Views are overdraw, wireframe, draw_id, depth and nan\./);
     });
 });
 

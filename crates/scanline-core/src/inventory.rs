@@ -861,7 +861,7 @@ async fn take_snapshot(session: &Arc<Session>) -> Result<Value> {
 
     let frame = session.probe(&session.top()?, "status", json!({}), SHORT).await.map(|status| status["frame"].clone()).unwrap_or(Value::Null);
 
-    Ok(json!({ "frame": frame, "objects": rows }))
+    Ok(json!({ "frame": frame, "objects": rows, "gpu_process_bytes": session.gpu_process_memory().await }))
 }
 
 fn snapshot_total(snapshot: &Value) -> (usize, f64) {
@@ -1019,13 +1019,43 @@ async fn memory_diff(session: &Arc<Session>, params: &Value) -> Result<Value> {
         ));
     }
 
-    lines.push("Sizes are estimated from dimensions and formats. The browser's real GPU memory is not measured yet.".into());
+    lines.push("Sizes are estimated from dimensions and formats.".into());
+
+    // The process's own figure, to set beside the estimate: does the growth show there?
+    let process = (before["gpu_process_bytes"].as_f64(), after["gpu_process_bytes"].as_f64());
+
+    if let (Some(was), Some(is)) = process {
+        let moved = is - was;
+        let estimated = after_bytes - before_bytes;
+        let megabyte = 1024.0 * 1024.0;
+
+        lines.push(format!(
+            "The browser's GPU process held {} at \"{}\" and holds {} at \"{}\": {}{} (os-measured: the whole process, which serves every page and the browser itself).",
+            size(was),
+            names[0],
+            size(is),
+            names[1],
+            if moved >= 0.0 { "+" } else { "−" },
+            size(moved.abs())
+        ));
+
+        if estimated > megabyte {
+            lines.push(if moved > estimated * 0.5 {
+                "That bears the estimate out: the growth is real memory, not an artefact of the sizes assumed.".to_string()
+            } else if moved < estimated * 0.2 {
+                "That is far less than the estimate. Either the objects have not been given storage yet (a texture never written to or drawn with costs little), or they are smaller on this GPU than their formats suggest.".to_string()
+            } else {
+                "That is some of the estimated growth, not all of it: part of what was created may not have storage yet.".to_string()
+            });
+        }
+    }
 
     Ok(result(
         lines.join("\n"),
         json!({
             "from": names[0],
             "to": names[1],
+            "gpu_process": { "before": process.0, "after": process.1, "provenance": "os-measured" },
             "bytes_before": before_bytes,
             "bytes_after": after_bytes,
             "created": created,
@@ -1185,7 +1215,17 @@ pub async fn memory(session: &Arc<Session>, params: &Value) -> Result<Value> {
         lines.push("To find growth: memory(snapshot: \"before\"), let the page run, then memory(diff: [\"before\", \"now\"]). resources(kind: \"texture\") lists the largest.".into());
     }
 
-    lines.push("The canvas figure assumes front and back buffers, plus depth and 4× multisample storage where the context asked for them. The browser's real GPU memory is not measured yet.".into());
+    lines.push("The canvas figure assumes front and back buffers, plus depth and 4× multisample storage where the context asked for them.".into());
+
+    // What the operating system says the GPU process holds: real, but not this page's alone.
+    if let Some(bytes) = session.gpu_process_memory().await {
+        lines.push(format!(
+            "The browser's GPU process holds {} in all (os-measured: its physical footprint, as the operating system counts it). That covers every page, the compositor and the process itself, so it is more than this page's; a diff of two snapshots shows how much it moved.",
+            size(bytes as f64)
+        ));
+
+        data["gpu_process_bytes"] = json!(bytes);
+    }
 
     Ok(result(lines.join("\n"), data))
 }

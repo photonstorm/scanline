@@ -168,6 +168,7 @@ impl Host {
             "query" => capture::query(self, &params),
             "compare" => analysis::compare(self, &params),
             "pixel_history" => analysis::pixel_history(self, &params).await,
+            "geometry" => analysis::geometry(self, &params).await,
             "shader_analysis" => analysis::shader_analysis(self, &params).await,
             "lint" => analysis::lint(self, &params).await,
             "view" => analysis::view(self, &params).await,
