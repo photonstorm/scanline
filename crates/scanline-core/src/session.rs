@@ -1147,6 +1147,17 @@ fn handle(session: &Arc<Session>, event: Event) {
                     session.state.lock().unwrap().actions.push_back("debug:key".into());
                     session.debug.notify_one();
                 }
+                // The browser refused the page the pointer lock. The words are the host's:
+                // a page that finds the binding can raise this, and no more than this.
+                "pointer-lock-refused" => {
+                    session.queue(
+                        "warning",
+                        json!({
+                            "frame": payload["frame"].as_i64(),
+                            "text": "The page asked for the pointer lock and the browser refused. Its own lock needs the browser's window in front and a real click. An agent should launch with pointer_lock: \"shim\", which grants the lock and takes relative moves."
+                        }),
+                    );
+                }
                 // What the probe reports, and nothing else. The binding is in the page's own
                 // world, so a page that finds it can call it: it must not be able to queue an
                 // event that reads as the host's (capture_ready, owner_changed) or the person's.

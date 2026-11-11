@@ -13,8 +13,8 @@ import { currentFrame } from './clock/gate';
 import { config } from './config';
 import { patch } from './masquerade';
 import { declare } from './mods';
-import { G, isWindow, nDefineProperty, nGetOwnPropertyDescriptor } from './natives';
-import { expose } from './transport';
+import { G, isWindow, nAddEventListener, nDefineProperty, nGetOwnPropertyDescriptor } from './natives';
+import { emit, expose } from './transport';
 
 export function installPointerLock (): void
 {
@@ -56,6 +56,18 @@ export function installPointerLock (): void
 
     if (!shim)
     {
+        // The browser's own lock, refused: said to whoever is driving, a few times at most.
+        // It is refused when the window is not in front, which an agent's often is not.
+        let told = 0;
+
+        nAddEventListener.call(G.document, 'pointerlockerror', () =>
+        {
+            if (told++ < 3)
+            {
+                emit('pointer-lock-refused', { frame: currentFrame() });
+            }
+        }, true);
+
         return;
     }
 

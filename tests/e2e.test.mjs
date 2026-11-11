@@ -1941,6 +1941,12 @@ describe('playing by rule, and by mouse-look', () =>
         assert.equal(refused.code, 1);
         assert.match(refused.out, /A relative move \(dx, dy\) needs the pointer-lock shim: launch with pointer_lock: "shim"/);
         assert.doesNotMatch((await scanline('status')).out, /requestPointerLock is granted/);
+
+        // The browser's own lock is refused a window that is not in front: said, with what to do.
+        await scanline('step', '2');
+        await scanline('input', '--events', '[{"pointer": "down", "x": 100, "y": 100}, {"pointer": "up", "x": 100, "y": 100}]');
+        await scanline('step', '2');
+        assert.match((await scanline('events')).out, /warning: .*The page asked for the pointer lock and the browser refused.*launch with pointer_lock: \\"shim\\"/);
     });
 });
 

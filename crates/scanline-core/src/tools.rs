@@ -960,7 +960,10 @@ Known limits
   - Code that busy-waits on performance.now() inside one frame spins forever while stepping.
   - A WebGPU canvas is read back only if it was configured after the probe loaded (always true
     for a fresh launch) and unmodified mode is off.
-  - Pointer lock and fullscreen have not been verified.
+  - The browser's own pointer lock and fullscreen are granted to a click you send only
+    while the browser's window is in front, which Scanline does not make it. When the
+    lock is refused a warning event says so. To play by mouse-look, launch with
+    pointer_lock: \"shim\".
   - Windows is not supported yet. macOS only.
   - Draw and triangle counts are per frame as issued. Triangle counts leave out indirect draws.
   - Texture readback: a compressed texture is read as the texels its blocks decode to, and
