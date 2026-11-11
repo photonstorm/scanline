@@ -119,6 +119,8 @@ pub struct State {
     pub next_request: u32,
     /// The context the flight recorder is running on, while it runs.
     pub recorder: Option<ContextRef>,
+    /// The browser's name for the probe script it runs in every new document of the page.
+    probe_script: Option<String>,
     worker_urls: HashMap<String, String>,
     /// Workers stopped at start, waiting for the instrumentation pause where the probe goes in.
     waiting_workers: HashSet<String>,
@@ -276,7 +278,9 @@ impl Session {
         // The probe opens a data channel and compiles run-until expressions; a page's
         // Content Security Policy must not stop it.
         client.send("Page.setBypassCSP", json!({ "enabled": true }), p).await?;
-        client.send("Page.addScriptToEvaluateOnNewDocument", json!({ "source": session.source }), p).await?;
+        let added = client.send("Page.addScriptToEvaluateOnNewDocument", json!({ "source": session.source }), p).await?;
+
+        session.state.lock().unwrap().probe_script = added["identifier"].as_str().map(str::to_string);
         client.send("Runtime.enable", json!({}), p).await?;
         client.send("Runtime.addBinding", json!({ "name": session.binding }), p).await?;
         client.send("Log.enable", json!({}), p).await?;
@@ -300,6 +304,33 @@ impl Session {
         session.navigate(&options.url).await?;
 
         Ok(session)
+    }
+
+    /// Loads the page again with its first frame held, whatever the session was launched
+    /// with: a run can only be replayed from a page that has not yet moved.
+    pub async fn reload_paused(&self) -> Result<()> {
+        let p = Some(self.page.as_str());
+        let held = self.source.replacen("\"startPaused\":false", "\"startPaused\":true", 1);
+        let usual = self.state.lock().unwrap().probe_script.take();
+
+        if let Some(identifier) = &usual {
+            self.client.send("Page.removeScriptToEvaluateOnNewDocument", json!({ "identifier": identifier }), p).await?;
+        }
+
+        let added = self.client.send("Page.addScriptToEvaluateOnNewDocument", json!({ "source": held }), p).await?;
+        let url = self.url();
+        let outcome = self.navigate(&url).await;
+
+        // Later loads start as the session was launched to.
+        if let Some(identifier) = added["identifier"].as_str() {
+            let _ = self.client.send("Page.removeScriptToEvaluateOnNewDocument", json!({ "identifier": identifier }), p).await;
+        }
+
+        let again = self.client.send("Page.addScriptToEvaluateOnNewDocument", json!({ "source": self.source }), p).await?;
+
+        self.state.lock().unwrap().probe_script = again["identifier"].as_str().map(str::to_string);
+
+        outcome
     }
 
     /// Loads a URL and waits for its load event (or 30 seconds, whichever is first).

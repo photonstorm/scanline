@@ -28,6 +28,7 @@ Early. The first three milestones of the build plan ("eyes and hands", "inventor
 - Leaks and churn: many live objects from one line of code, or objects made and destroyed every frame, are flagged by `resources` and `memory`.
 - Planted bugs: one scene with twelve known bugs (`fixtures/bugs/`), tests that pin down what Scanline says about each, and an evaluation in which agents diagnose them with nothing but Scanline (`evals/`).
 - Working with a person: the agent asks them to play and press Debug (F9 in the page) when the bug shows. The press freezes the page and captures the frame there and then, and the flight recorder has kept the frames before it (120 by default). A recording says which of its frames draw something different from the rest, gives a contact sheet of every frame, and any frame can be made a capture.
+- Runs: in a deterministic session (seeded random numbers, a fixed time step, a clock that starts from zero) the input a page has received can be saved and played again from a reload, on the same frames. A fingerprint of the frame every 30 frames is checked against the original, and the replay stops where they first differ. Stepping and replay can run without waiting for the display: two minutes of play replays in about six seconds.
 - Console, uncaught errors and browser GPU warnings, each with its frame.
 - The host survives the GPU process or the whole browser being killed, and says what happened.
 
@@ -37,7 +38,7 @@ Early. The first three milestones of the build plan ("eyes and hands", "inventor
 - A runner that starts the evaluation's agents by itself (the bugs, prompts and scorer exist: see `evals/`).
 - Full pixel history (rejected fragments, pixel by pixel), overdraw and other views, per-draw GPU time.
 - Live patching of shaders, uniforms and state.
-- The window: control strip, a Debug hotkey that works when another window has the keyboard, capture viewer. Recording and replaying the person's input. Keeping their input out while the agent has the game.
+- The window: control strip, a Debug hotkey that works when another window has the keyboard, capture viewer. Keeping the person's input out while the agent has the game. Recorded network responses and gamepad input for runs.
 - The browser's real GPU memory. WGSL reflection. Readback of compressed, depth and multisampled textures.
 - The fast binary channel for bulk data. Windows. Installers. A pinned browser download.
 

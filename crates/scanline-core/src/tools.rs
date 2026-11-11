@@ -88,6 +88,7 @@ pub const TOOLS: &[Tool] = &[
             "[]",
             session!(),
             r#""frames": { "type": "integer", "description": "Default 1." }"#,
+            r#""fast": { "type": "boolean", "description": "Do not wait for the display between frames: many times quicker for covering ground. The canvas is presented only now and then." }"#,
             r#""hold": { "type": "object", "description": "Keys held from now on: {\"keys_down\": [\"ArrowRight\"]}. An empty list releases everything.", "properties": { "keys_down": { "type": "array", "items": { "type": "string" } } } }"#,
             r#""events": { "type": "array", "description": "Input events, each with an optional \"at\" frame offset (default 0). See help(topic: \"input\").", "items": { "type": "object" } }"#,
             observe!(),
@@ -380,6 +381,23 @@ pub const TOOLS: &[Tool] = &[
         read_only: false,
     },
     Tool {
+        name: "save_run",
+        description: "Keep the input this page has received since it loaded, by frame, with a fingerprint of the frame every so often, as a run that can be played again. Use it once a bug has been reached, by you or by the person, so it can be reached again after every change. Replays exactly only in a session launched with deterministic: true.",
+        schema: schema!("[]", session!()),
+        read_only: true,
+    },
+    Tool {
+        name: "replay_run",
+        description: "Reload the page and give it a saved run's input again on the same frames, as fast as it will go, then pause. Compares frame fingerprints with the original as it goes and stops where they first differ. to_frame stops early: this is how to go back to an earlier frame.",
+        schema: schema!(
+            r#"["run"]"#,
+            session!(),
+            r#""run": { "type": "string", "description": "A handle such as run_1." }"#,
+            r#""to_frame": { "type": "integer", "description": "Stop, paused, at this frame. Default: the run's last." }"#,
+        ),
+        read_only: false,
+    },
+    Tool {
         name: "wait",
         description: "Wait up to 45 s for the next event of the given kinds, or for the Debug press that answers a request. Returns the event, or still_waiting with the exact call to make next.",
         schema: schema!(
@@ -440,6 +458,16 @@ Time
   pause / resume(time_scale) / step(frames) / run_until(until: {expr: \"…\"})
   A stepped frame is exactly 1/60 s of page time, whatever the real time taken.
   requestAnimationFrame, performance.now, Date and timers all read one clock.
+  step(frames: 600, fast: true) does not wait for the display: ten seconds of play in under one.
+
+Getting back to where the bug is
+  launch(url, deterministic: true)       seeded random numbers, a fixed step, a clock from zero
+  … play, by step or by the person …
+  save_run()                             the input so far, by frame: run_1
+  replay_run(run: \"run_1\")             reload and play it again, fast; pause where it ended
+  replay_run(run: \"run_1\", to_frame: n) the same, stopped earlier: this is how to go back
+  A replay checks a fingerprint of the frame every 30 frames against the original and stops
+  where they first differ, so after a code change you learn whether the page still gets there.
 
 Cannot reproduce it yourself? request_human(instruction) asks the person to play and press
 Debug when it happens; the frames before the press are kept. See help(topic: \"handoff\").
@@ -524,6 +552,12 @@ Known limits
     storage texture (a simulation stepped by a compute pass) is captured with their contents
     as the frame left them, so its replay is one step ahead. Render targets are read before
     the frame and do not have this problem. The replay check shows when it matters.
+  - A run replays exactly only in a deterministic session, and only if the page takes
+    nothing else from outside: network responses are not recorded, nor a gamepad. A
+    deterministic session reads the canvas back every 30th frame to fingerprint it.
+  - fast stepping and replay do not present the canvas after every frame. A page that
+    relies on the browser clearing its drawing buffer between frames, instead of clearing it
+    itself, draws over its last frame.
   - The flight recorder costs about 200 ns per graphics call on WebGL and 150 to 450 on
     WebGPU while it runs (measured; the aim is 100). It does not keep the contents of a
     texture or buffer the page deletes while it is recording.

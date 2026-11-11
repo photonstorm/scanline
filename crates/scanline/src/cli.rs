@@ -32,6 +32,7 @@ fn positional(command: &str) -> &'static [&'static str] {
         "resource" => &["handle"],
         "request_human" => &["instruction"],
         "recording" => &["recording"],
+        "replay_run" => &["run"],
         "diff" => &["a", "b"],
         "help" => &["topic"],
         _ => &[],
@@ -161,6 +162,8 @@ pub fn command_usage(name: &str) -> Option<String> {
         "wait" => "scanline wait --request req_1",
         "debug" => "scanline debug --x 412 --y 288 --note \"this corner\"",
         "recording" => "scanline recording rec_1",
+        "save_run" => "scanline save_run",
+        "replay_run" => "scanline replay_run run_1 --to-frame 900",
         _ => "",
     };
 
@@ -217,7 +220,7 @@ fn parse(args: Vec<String>) -> Result<Parsed> {
             };
 
             // An expression or a URL is text even when it happens to parse as JSON.
-            params[*place] = if matches!(*place, "url" | "expression" | "topic" | "kind" | "handle" | "capture" | "sql" | "instruction" | "recording")
+            params[*place] = if matches!(*place, "url" | "expression" | "topic" | "kind" | "handle" | "capture" | "sql" | "instruction" | "recording" | "run")
                 || (command == "diff" && matches!(*place, "a" | "b"))
             {
                 Value::String(arg.clone())

@@ -4,7 +4,7 @@
 import { installAudio } from './audio';
 import { installCapture } from './capture';
 import { installHandoff } from './handoff';
-import { clock, installClock } from './clock/clock';
+import { clock, startClockAtZero, installClock } from './clock/clock';
 import { frameAtWall, frameSamples, gateState, installGate, notePageEvent, onFrameEnd, pause, resume, runUntil, setFixedStep, step } from './clock/gate';
 import { installTimers } from './clock/timers';
 import { config, type Level } from './config';
@@ -128,7 +128,18 @@ function boot (): void
     if (config.deterministic)
     {
         installSeededRandom(config.deterministic.seed);
+
+        // Before the clock is first frozen, which is where it would otherwise take its origin.
+        startClockAtZero();
         setFixedStep({ fixed: true, dt: config.deterministic.fixedDt });
+
+        declare({
+            id: 'fixed-clock-origin',
+            what: 'Page time starts at 0 and the date at 1 January 2026, and both move by a fixed step per frame',
+            why: 'Deterministic session: every run reads the same times',
+            optional: false,
+            active: () => true
+        });
     }
 
     declare({

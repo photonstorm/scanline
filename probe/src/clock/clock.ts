@@ -41,6 +41,23 @@ function engage (): void
     dateOrigin = nativeDateNow() - now;
 }
 
+// A deterministic session's clock starts from fixed points instead of from whenever the
+// page happened to load, so every run reads the same times: page time from zero, and the
+// date from the first instant of 2026 (UTC).
+const DETERMINISTIC_EPOCH = 1767225600000;
+
+export function startClockAtZero (): void
+{
+    engaged = true;
+    realAnchor = nativeNow();
+    virtualAnchor = 0;
+    last = 0;
+    dateOrigin = DETERMINISTIC_EPOCH;
+
+    // A session that starts paused has frozen the clock already, at whatever the real time was.
+    frozenAt = 0;
+}
+
 export const clock = {
 
     get engaged (): boolean

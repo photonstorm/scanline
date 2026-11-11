@@ -99,11 +99,11 @@ Also true of what is built:
 | Criterion | Standing |
 |---|---|
 | The hand-off journey works end to end | Works on macOS, in tests, on the planted flicker (`fixtures/bugs/b13.html`): the agent asks, the page runs, Debug freezes it and captures the frame, the recording names the three frames that flicker, and each can be taken apart. Confirmed with a person at a visible window on 11 November 2026: a real F9 press froze the page, 128 frames were kept, and the recording named the four that flicker. The tests run it headless, with the press sent as a command or as a key event. No Windows. |
-| A recorded session replays to the same frame hashes | **Not started.** This is input recording and replay, which is not built. |
+| A recorded two-minute session of a deterministic fixture replays to the same frame hashes | Met on `fixtures/matrix/game.html`: 7,200 frames with 160 key presses and 103 clicks replay with all 240 fingerprints matching and every number the game holds identical to the last bit, in about six seconds. Also met for a session played live, not stepped. Tests cover a shorter one. |
 
-Built: `request_human`, `wait` on a request, `debug`, `recording`, `take_control`, the event queue, annotation passed with the press, the Debug key, the flight recorder for WebGL and WebGPU, and one owner of the input at a time as far as the agent's commands go.
+Built: `request_human`, `wait` on a request, `debug`, `recording`, `take_control`, the event queue, annotation passed with the press, the Debug key, the flight recorder for WebGL and WebGPU, one owner of the input at a time as far as the agent's commands go, runs (`save_run`, `replay_run`) with divergence detection, and stepping that does not wait for the display.
 
-Not built from the milestone's list: the window and its control strip; the gamepad shim and the pointer-lock route; recording and replaying the person's input; in-page policy scripts; recorded network for deterministic sessions; divergence detection; capture triggers; audio and worker time control beyond what milestone 1 has.
+Not built from the milestone's list: the window and its control strip; the gamepad shim and the pointer-lock route; in-page policy scripts; recorded network for deterministic sessions; capture triggers; audio and worker time control beyond what milestone 1 has.
 
 | The specification says | The code does | Why |
 |---|---|---|
@@ -114,6 +114,19 @@ Not built from the milestone's list: the window and its control strip; the gamep
 | Resources destroyed inside the window are kept alive until they leave it. | Not done. An object the page drops is held, but one it deletes is gone, and is empty in the replay. | WebGL would need the contents read at the moment of deletion, WebGPU the destroy deferred. |
 | The recording has thumbnails taken as the frames went by. | None are taken live. `recording` replays the frames once and reads each one's picture then. | Reading the canvas every frame stalls the page. Only the frozen frame has a picture from the page, so only it checks the replay. |
 | `record` is an overhead level. | The recorder is started and stopped by `request_human` and Debug at whatever level the session has. | It is on only while a person is hunting something. |
+
+About runs and deterministic sessions:
+
+| The specification says | The code does | Why |
+|---|---|---|
+| A deterministic session has a seeded random source and a fixed virtual timestep. | Also a fixed origin: page time starts at 0 and the date at 1 January 2026 (UTC). | The clock used to start from whenever the page happened to load, so two runs read times a few milliseconds apart. A game that used the time itself, not only the difference between frames, drew different frames. |
+| Divergence is found by comparing per-frame draw counts and thumbnail hashes. | A fingerprint (a hash of the canvas, the draw count, the call count) is taken every 30th frame of a deterministic session, and a replay is compared with them as it goes. | Reading the canvas every frame would stall the page. A replay stops within 30 frames of where it parted. |
+| Replay is unpaced. | `step` and `replay_run` have a fast mode that runs each frame as the next task instead of waiting for the display. | Stepped frames otherwise run at the display's rate, so replaying two minutes took two minutes. |
+| Network responses are recorded and replayed at the frame they first arrived. | Not built. | A page that loads something while it runs may part from its recording. The replay says so. |
+
+Fast frames are not presented one by one, so a page that depends on the browser clearing its drawing buffer between frames draws over its last frame in fast mode. Its fingerprints then differ from a run recorded at normal speed, and the replay reports that as a divergence.
+
+While adding fast mode a fault was found in frames the probe runs by hand (which it already did for a hidden window): each was stamped with the real time, which the browser coarsens to 100 µs, so two run back to back could be taken for one. They are now numbered.
 
 Measured cost of recording, with `node spikes/s9-overhead.mjs` (Apple M6, Chrome 157), against a budget of 100 ns per graphics call:
 

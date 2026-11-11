@@ -82,6 +82,10 @@ The press freezes the page and gives you two things: `cap_N`, the frozen frame, 
 
 While the person has the input you can look but not step, resume or send input. `gfx_take_control()` takes it back.
 
+## Getting back to the bug after a change
+
+Launch with `deterministic: true` when the bug takes play to reach. Random numbers are seeded, every frame is a fixed step of page time, and the clock starts from zero, so the same input gives the same frames. Once the bug is on screen (you played to it with `gfx_step`, or the person did), `gfx_save_run()` keeps the input as `run_1`. After changing the code, `gfx_replay_run(run: "run_1")` reloads and plays it again in a fraction of the time and pauses where it ended; `to_frame` stops it earlier. It checks fingerprints of the frames against the original and says where they first differ. If your fix changes what is drawn, a difference at that point is the fix showing, not a fault.
+
 ## Slow, or growing
 
 - `gfx_stats()` says whether frames are actually slow.

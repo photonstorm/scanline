@@ -8,6 +8,7 @@
 // Everything here is a GPU readback of what the page drew: provenance `gpu-measured`.
 
 import { currentFrame, isPaused, onFrameBegin, onFrameEnd, requestGrab } from './clock/gate';
+import { config } from './config';
 import { allContexts, contextById, type ContextInfo } from './contexts';
 import { natives } from './hooks/install';
 import { G, nSetTimeout } from './natives';
@@ -308,14 +309,144 @@ function clip (image: Kept, region: Region): { x: number; y: number; w: number; 
     return { x, y, w, h };
 }
 
+// ---- Frame fingerprints ----
+//
+// Every so many frames, what the frame drew is reduced to a few numbers: a hash of its
+// picture and how many draws and calls it issued. Two runs of a deterministic session that
+// were given the same input have the same fingerprints, frame for frame; where they first
+// differ is where the runs parted.
+
+interface Print { frame: number; hash: string | null; draws: number; calls: number }
+
+const PRINT_LIMIT = 20000;
+const prints: Print[] = [];
+
+let printEvery = 0;
+let printContext = 0;
+let lastDraws = 0;
+let lastCalls = 0;
+
+// The canvas whose picture stands for the page: the one asked for, or the largest.
+function printedContext (): ContextInfo | undefined
+{
+    const candidates = allContexts().filter((info) => (info.api === 'webgl' || info.api === 'webgl2' || info.api === 'webgpu') && !info.lost);
+
+    return candidates.find((info) => info.id === printContext)
+        ?? candidates.sort((a, b) => (b.canvas.width * b.canvas.height) - (a.canvas.width * a.canvas.height) || a.id - b.id)[0];
+}
+
+function hashOf (image: Kept): string | null
+{
+    const data = image.data;
+
+    if (data === null)
+    {
+        return null;
+    }
+
+    // Every pixel of a small canvas; of a large one, enough of them, evenly spread, that
+    // hashing does not hold the frame up.
+    const per = data.length / G.Math.max(1, image.width * image.height);
+    const step = G.Math.max(1, G.Math.ceil((image.width * image.height) / 262144)) * per;
+
+    let hash = 0x811C9DC5;
+
+    for (let i = 0; i < data.length; i += step)
+    {
+        for (let k = 0; k < per; k++)
+        {
+            hash = G.Math.imul(hash ^ data[i + k], 0x01000193);
+        }
+    }
+
+    return (hash >>> 0).toString(16).padStart(8, '0');
+}
+
+function takePrint (draws: number, calls: number): void
+{
+    const info = printedContext();
+    const frame = currentFrame();
+    const print: Print = { frame, hash: null, draws, calls };
+
+    prints.push(print);
+
+    if (prints.length > PRINT_LIMIT)
+    {
+        prints.shift();
+    }
+
+    const image = info ? kept.get(info.id) : undefined;
+
+    if (!image || image.frame !== frame)
+    {
+        return;
+    }
+
+    if (image.pending)
+    {
+        // A WebGPU copy is still on its way back.
+        void image.pending.then(() =>
+        {
+            const ready = kept.get(info!.id);
+
+            if (ready && ready.frame === frame)
+            {
+                print.hash = hashOf(ready);
+            }
+        });
+    }
+    else
+    {
+        print.hash = hashOf(image);
+    }
+}
+
 export function installImage (): void
 {
+    printEvery = config.deterministic ? (config.deterministic.printEvery ?? 30) : 0;
+
     onFrameEnd((keep) =>
     {
-        if (keep || grabWaiters.length)
+        const info = printEvery > 0 ? printedContext() : undefined;
+        const draws = info ? info.record.draws : 0;
+        const calls = info ? info.record.calls : 0;
+        const due = printEvery > 0 && currentFrame() % printEvery === 0;
+
+        if (keep || grabWaiters.length || due)
         {
             keepAll();
         }
+
+        if (due)
+        {
+            takePrint(draws - lastDraws, calls - lastCalls);
+        }
+
+        lastDraws = draws;
+        lastCalls = calls;
+    });
+
+    // Fingerprints of the frames so far, after a frame number.
+    expose('frames.prints', async (args: { after?: number }) =>
+    {
+        // Let any picture still being copied arrive.
+        const info = printedContext();
+        const pending = info ? kept.get(info.id)?.pending : null;
+
+        if (pending)
+        {
+            await pending;
+        }
+
+        return { every: printEvery, context: info?.id ?? null, prints: prints.filter((print) => print.frame > (args.after ?? 0)) };
+    });
+
+    expose('frames.printEvery', (args: { every: number; context?: number }) =>
+    {
+        printEvery = G.Math.max(0, args.every | 0);
+        printContext = args.context ?? 0;
+
+        return { every: printEvery };
     });
 
     // A canvas texture expires when its task ends. One left over from an earlier frame or

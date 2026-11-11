@@ -510,8 +510,24 @@ function nextSteppedFrame (): void
     {
         rearmHeld();
 
-        // If the window is hidden the browser fires no frames. Release this one by hand.
         const expected = frame;
+
+        if (fast)
+        {
+            // Not waiting for the display: the frame runs as the next task. The browser
+            // presents the canvas when it next gets round to it, not after every frame.
+            nextTask(() =>
+            {
+                if (paused && budget > 0 && frame === expected && !inFrame && !draining)
+                {
+                    manualFrame();
+                }
+            });
+
+            return;
+        }
+
+        // If the window is hidden the browser fires no frames. Release this one by hand.
 
         watchdog = nSetTimeout(() =>
         {
@@ -553,10 +569,15 @@ function nextSteppedFrame (): void
 }
 
 // Run the armed callbacks without waiting for the browser to produce a frame.
+// Each frame run by hand has a stamp of its own. The real clock will not do: the browser
+// coarsens it, and two frames run back to back would read the same instant and be taken
+// for one. Negative, so it can never equal a stamp the browser gives.
+let manualStamp = 0;
+
 function manualFrame (): void
 {
     const entries = [...armed];
-    const stamp = -nativeNow();
+    const stamp = --manualStamp;
 
     for (const entry of entries)
     {
@@ -730,7 +751,10 @@ export function resume (options: { scale?: number } = {}): { frame: number }
     return { frame };
 }
 
-export async function step (options: { frames?: number; dt?: number } = {}): Promise<StopInfo>
+// Set for the length of a step that asked not to wait for the display between frames.
+let fast = false;
+
+export async function step (options: { frames?: number; dt?: number; fast?: boolean } = {}): Promise<StopInfo>
 {
     if (!paused)
     {
@@ -751,10 +775,14 @@ export async function step (options: { frames?: number; dt?: number } = {}): Pro
     const count = G.Math.max(1, G.Math.floor(options.frames ?? 1));
     const settled = whenSettled();
 
+    fast = options.fast === true;
     budget = count;
     nextSteppedFrame();
 
-    return settled;
+    return settled.finally(() =>
+    {
+        fast = false;
+    });
 }
 
 export function runUntil (condition: {

@@ -198,6 +198,14 @@ pub async fn status(session: &Arc<Session>) -> Result<Value> {
         }
     }
 
+    if top["deterministic"].is_object() {
+        lines.push(format!(
+            "Deterministic session: random numbers are seeded ({}), every frame is {} ms of page time, page time starts at 0 and the date at 1 January 2026. The same input replays to the same frames: save_run keeps it, replay_run plays it again.",
+            top["deterministic"]["seed"],
+            number(&top["deterministic"]["fixedDt"], 3)
+        ));
+    }
+
     // Who is driving. Said only when it is not simply the agent's session to use.
     {
         let state = session.state.lock().unwrap();
@@ -385,7 +393,7 @@ pub async fn step(session: &Arc<Session>, params: &Value) -> Result<Value> {
         let count = until - done;
         let timeout = Duration::from_millis(15_000 + count * 250);
 
-        last = session.probe_all("step", json!({ "frames": count }), timeout).await;
+        last = session.probe_all("step", json!({ "frames": count, "fast": params["fast"] == true }), timeout).await;
         done = until;
 
         if primary(&last)?["reason"] == "idle" {

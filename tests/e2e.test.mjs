@@ -858,6 +858,91 @@ describe('working with the person', () =>
     });
 });
 
+describe('runs: play it again', () =>
+{
+    const state = 'JSON.stringify([game.frame, game.time, game.x, game.y, game.clicks, game.sparks, Date.now(), performance.now()])';
+
+    test('a deterministic session replays to the same state and the same fingerprints', async () =>
+    {
+        const launched = await scanline('launch', server.url('fixtures/matrix/game.html'), '--paused', '--headless', '--deterministic', 'true', '--json');
+
+        assert.match(launched.json.summary, /Deterministic session: random numbers are seeded \(1\), every frame is 16\.667 ms of page time, page time starts at 0/);
+
+        // Play: steer right, then down, clicking twice. Each click throws sparks in random directions.
+        await scanline('step', '40', '--hold', 'ArrowRight');
+        await scanline('step', '50', '--hold', 'ArrowDown', '--events', '[{"at": 5, "pointer": "down", "x": 200, "y": 100}, {"at": 6, "pointer": "up", "x": 200, "y": 100}]');
+        await scanline('step', '90', '--hold', '', '--events', '[{"at": 60, "pointer": "down", "x": 100, "y": 60}, {"at": 61, "pointer": "up", "x": 100, "y": 60}]');
+
+        const before = (await scanline('eval', state)).out;
+
+        // Time is a function of the frame number and nothing else: 180 frames of 1/60 s,
+        // from zero, give or take the rounding of adding one step at a time.
+        const [frames, time, , , clicks, , date] = JSON.parse(before.slice(1, -1));
+
+        assert.equal(frames, 180);
+        assert.ok(Math.abs(time - 3000) < 1e-6, `page time is ${time}`);
+        assert.equal(date, Date.UTC(2026, 0, 1) + 3000, 'and the date started at the first instant of 2026');
+        assert.equal(clicks, 2);
+
+        const saved = await scanline('save_run', '--json');
+
+        assert.equal(saved.code, 0, saved.out);
+        assert.equal(saved.json.data.run, 'run_1');
+        assert.equal(saved.json.data.frames, 180);
+        assert.equal(saved.json.data.prints, 6);
+        assert.match(saved.json.summary, /run_1: the 180 frames since .*game\.html loaded, with 2 key presses, 2 clicks\./);
+
+        const replayed = await scanline('replay_run', 'run_1', '--json');
+
+        assert.equal(replayed.code, 0, replayed.out);
+        assert.equal(replayed.json.data.frame, 180);
+        assert.equal(replayed.json.data.diverged, null);
+        assert.equal(replayed.json.data.matched, 6);
+        assert.match(replayed.json.summary, /All 6 fingerprints along the way match the original/);
+        assert.equal((await scanline('eval', state)).out, before, 'every number the game holds is the same, to the last bit');
+
+        // Going back: the same run, stopped early.
+        const earlier = await scanline('replay_run', 'run_1', '--to-frame', '75', '--json');
+
+        assert.equal(earlier.json.data.frame, 75);
+        assert.match(earlier.json.summary, /Replayed run_1 to frame 75 of 180\. Paused\./);
+        assert.match((await scanline('eval', 'JSON.stringify([game.frame, game.clicks])')).out, /\[75,1\]/);
+
+        // A replayed session can be saved again: it received the same input.
+        await scanline('replay_run', 'run_1');
+
+        const again = await scanline('save_run', '--json');
+
+        assert.equal(again.json.data.events, saved.json.data.events);
+    });
+
+    test('a replay that parts from the original says where', async () =>
+    {
+        await scanline('launch', server.url('fixtures/matrix/game.html'), '--paused', '--headless', '--deterministic', 'true');
+        await scanline('step', '100', '--events', '[{"at": 20, "pointer": "down", "x": 160, "y": 120}, {"at": 21, "pointer": "up", "x": 160, "y": 120}]');
+
+        const run = (await scanline('save_run', '--json')).json.data.run;
+
+        await scanline('close');
+
+        // The same input with other random numbers: the sparks fly elsewhere.
+        await scanline('launch', server.url('fixtures/matrix/game.html'), '--paused', '--headless', '--deterministic', '{"seed": 7}');
+
+        const replayed = await scanline('replay_run', run, '--json');
+
+        assert.equal(replayed.code, 0, replayed.out);
+        assert.match(replayed.json.data.diverged, /at frame 30, its picture differs from the original's/);
+        assert.equal(replayed.json.data.frame, 30, 'it stops there, paused, to be looked at');
+        assert.match(replayed.json.summary, /DIVERGED: the replay of run_\d+ parted from the original/);
+        assert.match(replayed.json.summary, /recorded with deterministic .*"seed":1.*this session has .*"seed":7/);
+
+        const missing = await scanline('replay_run', 'run_999');
+
+        assert.equal(missing.code, 1);
+        assert.match(missing.out, /No run "run_999"\. The most recent of \d+ is run_\d+\./);
+    });
+});
+
 describe('the MCP server', () =>
 {
     test('initialize, list tools, and run a session with an inline image', async () =>

@@ -13,6 +13,7 @@ mod commands;
 mod handoff;
 mod inventory;
 mod keys;
+mod runs;
 mod session;
 mod tools;
 
@@ -104,7 +105,7 @@ impl Host {
 
         // One owner of the input at a time. While the person has it, the agent may look but
         // may not move time or send input: that would fight them for the game.
-        if matches!(method, "input" | "step" | "run_until" | "resume" | "navigate") {
+        if matches!(method, "input" | "step" | "run_until" | "resume" | "navigate" | "replay_run") {
             if let Ok(session) = self.session(&params) {
                 let state = session.state.lock().unwrap();
 
@@ -142,6 +143,8 @@ impl Host {
             "take_control" => handoff::take_control(&live()?).await,
             "debug" => handoff::debug(self, &live()?, &params).await,
             "recording" => handoff::recording(self, &params).await,
+            "save_run" => runs::save_run(self, &live()?).await,
+            "replay_run" => runs::replay_run(self, &live()?, &params).await,
             "captures" => capture::captures(self, &params),
             "pass_tree" => capture::pass_tree(self, &params),
             "draw_list" => capture::draw_list(self, &params),
