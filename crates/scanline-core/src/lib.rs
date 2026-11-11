@@ -21,6 +21,7 @@ mod runs;
 mod session;
 mod tools;
 mod trace;
+mod viewer;
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -40,7 +41,13 @@ pub struct Host {
     pub store: scanline_store::Store,
     sessions: Mutex<BTreeMap<String, Arc<Session>>>,
     next_session: AtomicU32,
+    /// Every command run, newest last: what the person follows the agent by.
+    activity: Mutex<std::collections::VecDeque<Value>>,
+    next_activity: std::sync::atomic::AtomicU64,
 }
+
+/// How many commands the activity log remembers.
+const ACTIVITY: usize = 400;
 
 /// The per-user directory Scanline keeps its files in. `SCANLINE_HOME` overrides it.
 pub fn default_home() -> PathBuf {
@@ -59,6 +66,10 @@ pub fn default_home() -> PathBuf {
     }
 }
 
+fn clip_line(text: &str, most: usize) -> String {
+    if text.chars().count() > most { format!("{}…", text.chars().take(most).collect::<String>()) } else { text.to_string() }
+}
+
 pub fn result(summary: impl Into<String>, data: Value) -> Value {
     json!({ "summary": summary.into(), "data": data, "images": [] })
 }
@@ -67,7 +78,14 @@ impl Host {
     pub fn new(home: PathBuf) -> Result<Arc<Self>> {
         let store = scanline_store::Store::open(home.join("artefacts"))?;
 
-        Ok(Arc::new(Host { home, store, sessions: Mutex::new(BTreeMap::new()), next_session: AtomicU32::new(1) }))
+        Ok(Arc::new(Host {
+            home,
+            store,
+            sessions: Mutex::new(BTreeMap::new()),
+            next_session: AtomicU32::new(1),
+            activity: Mutex::new(std::collections::VecDeque::new()),
+            next_activity: std::sync::atomic::AtomicU64::new(1),
+        }))
     }
 
     /// A session whose browser can replay a capture: the one named, or any that is open.
@@ -90,10 +108,96 @@ impl Host {
         })
     }
 
-    /// Runs one command of the control API.
+    /// Runs one command of the control API, and notes it in the activity log.
     pub async fn call(self: &Arc<Self>, method: &str, params: Value) -> Result<Value> {
-        let params = if params.is_null() { json!({}) } else { params };
+        let mut params = if params.is_null() { json!({}) } else { params };
 
+        // Who asked: the agent, or the person through the viewer.
+        let by = params
+            .as_object_mut()
+            .and_then(|object| object.remove("_by"))
+            .and_then(|by| by.as_str().map(str::to_string))
+            .unwrap_or_else(|| "agent".to_string());
+        let started = std::time::Instant::now();
+        let shown = params.clone();
+        let outcome = self.run(method, params).await;
+
+        // The log is not logged, nor is the viewer's own keeping up to date.
+        if !(method == "activity" || (by == "viewer")) {
+            self.note(method, &shown, &outcome, started.elapsed(), &by);
+        }
+
+        outcome
+    }
+
+    fn note(&self, method: &str, params: &Value, outcome: &Result<Value>, took: std::time::Duration, by: &str) {
+        let clip = |text: &str, most: usize| {
+            if text.chars().count() > most { format!("{}…", text.chars().take(most).collect::<String>()) } else { text.to_string() }
+        };
+        let (ok, said) = match outcome {
+            Ok(value) => (true, value["summary"].as_str().unwrap_or("").to_string()),
+            Err(error) => (false, format!("{error:#}")),
+        };
+
+        let entry = json!({
+            "seq": self.next_activity.fetch_add(1, Ordering::SeqCst),
+            "at": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|since| since.as_millis() as u64).unwrap_or(0),
+            "by": by,
+            "command": method,
+            "arguments": if params.as_object().is_some_and(|object| object.is_empty()) { String::new() } else { clip(&params.to_string(), 300) },
+            "ok": ok,
+            "result": clip(&said, 1200),
+            "ms": (took.as_secs_f64() * 1000.0).round(),
+            "images": outcome.as_ref().ok().map(|value| value["images"].as_array().map(Vec::len).unwrap_or(0)).unwrap_or(0),
+        });
+
+        let mut log = self.activity.lock().unwrap();
+
+        log.push_back(entry);
+
+        while log.len() > ACTIVITY {
+            log.pop_front();
+        }
+    }
+
+    /// The commands run since a place in the log.
+    fn activity(&self, params: &Value) -> Value {
+        let since = params["since"].as_u64().unwrap_or(0);
+        let limit = params["limit"].as_u64().unwrap_or(50).clamp(1, ACTIVITY as u64) as usize;
+        let log = self.activity.lock().unwrap();
+        let all: Vec<&Value> = log.iter().filter(|entry| entry["seq"].as_u64().unwrap_or(0) > since).collect();
+        let rows: Vec<Value> = all.iter().skip(all.len().saturating_sub(limit)).map(|entry| (*entry).clone()).collect();
+        let next = log.back().and_then(|entry| entry["seq"].as_u64()).unwrap_or(since);
+
+        let mut lines = vec![match rows.len() {
+            0 => "No commands have been run since then.".to_string(),
+            count => format!("{count} command{}, oldest first:", if count == 1 { "" } else { "s" }),
+        }];
+
+        for row in &rows {
+            lines.push(format!(
+                "  [{}] {}{} {}{}  {} ms{}",
+                row["seq"],
+                if row["by"] == "person" { "(person) " } else { "" },
+                row["command"].as_str().unwrap_or(""),
+                row["arguments"].as_str().unwrap_or(""),
+                if row["ok"] == true { "" } else { "  FAILED" },
+                row["ms"],
+                match row["result"].as_str().unwrap_or("").lines().next() {
+                    Some(first) if !first.is_empty() => format!("\n      {}", clip_line(first, 200)),
+                    _ => String::new(),
+                }
+            ));
+        }
+
+        if !rows.is_empty() {
+            lines.push(format!("Pass since: {next} for what is run after this."));
+        }
+
+        result(lines.join("\n"), json!({ "activity": rows, "next": next }))
+    }
+
+    async fn run(self: &Arc<Self>, method: &str, params: Value) -> Result<Value> {
         if !params.is_object() {
             bail!("Arguments to {method} must be a JSON object.");
         }
@@ -130,6 +234,8 @@ impl Host {
             "launch" => commands::launch(self, &params).await,
             "status" => commands::status(&live()?).await,
             "sessions" => Ok(self.list()),
+            "activity" => Ok(self.activity(&params)),
+            "viewer" => viewer::viewer(self, &live()?, &params).await,
             "navigate" => commands::navigate(&live()?, &params).await,
             "close" => self.close(&params).await,
             "pause" => commands::pause(&live()?).await,

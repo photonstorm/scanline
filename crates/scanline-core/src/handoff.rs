@@ -204,6 +204,14 @@ pub async fn watch(host: Arc<Host>, session: Arc<Session>) {
             return;
         }
 
+        // What the viewer asked for. Each is answered on its own, so a slow one (a capture
+        // being replayed) does not hold up the rest, or the Debug key.
+        loop {
+            let Some(asked) = session.state.lock().unwrap().viewer_calls.pop_front() else { break };
+
+            tokio::spawn(crate::viewer::answer(host.clone(), session.clone(), asked));
+        }
+
         loop {
             let Some(action) = session.state.lock().unwrap().actions.pop_front() else { break };
 

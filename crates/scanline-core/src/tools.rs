@@ -352,6 +352,30 @@ pub const TOOLS: &[Tool] = &[
         read_only: true,
     },
     Tool {
+        name: "activity",
+        description: "The commands that have been run, oldest first, each with its arguments, how long it took and the first line of its result: the agent's, and the person's own through the viewer. For picking up where another agent left off, or seeing what was tried.",
+        schema: schema!(
+            "[]",
+            r#""since": { "type": "integer", "description": "Only commands after this place in the log (the \"next\" a previous call returned)." }"#,
+            r#""limit": { "type": "integer", "description": "At most this many, the latest. Default 50." }"#,
+        ),
+        read_only: true,
+    },
+    Tool {
+        name: "viewer",
+        description: "Open the viewer for the person at the machine: a window with an activity log of every command you run and its result, live graphs of frame time, GPU time, draws and memory, and a capture viewer (draw list, state, the target at any draw with zoom and pixel values, shaders). show switches its tab as the person would; output: true returns a picture of it.",
+        schema: schema!(
+            "[]",
+            session!(),
+            r#""show": { "type": "string", "enum": ["activity", "live", "capture"] }"#,
+            r#""capture": { "type": "string", "description": "With show: \"capture\": the capture to open." }"#,
+            r#""draw": { "type": "integer", "description": "With capture: the event to select." }"#,
+            r#""pane": { "type": "string", "enum": ["target", "state", "shaders"], "description": "With show: \"capture\": which pane of the event to show." }"#,
+            r#""output": { "type": "boolean", "description": "Return a picture of the viewer." }"#,
+        ),
+        read_only: false,
+    },
+    Tool {
         name: "trace",
         description: "Step a number of frames while the browser records a trace of its own processes: how long the GPU process's main thread was busy (decoding, validating and calling the driver), the busiest threads, what the GPU process spent its time on, and frames presented or dropped where there is a display. Returns the path of the whole trace. For cost that the page's own timings do not show.",
         schema: schema!(

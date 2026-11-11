@@ -1305,6 +1305,77 @@ describe('live patches', () =>
     });
 });
 
+describe('the viewer and the activity log', () =>
+{
+    test('every command is logged, with who ran it, how long it took and what it said', async () =>
+    {
+        await scanline('launch', server.url('fixtures/bugs/b00.html'), '--paused', '--headless');
+        await scanline('step', '3');
+        await scanline('pixels', '9999', '1');
+
+        const log = await scanline('activity', '--json');
+        const rows = log.json.data.activity;
+
+        assert.deepEqual(rows.map((row) => [row.command, row.ok, row.by]), [['launch', true, 'agent'], ['step', true, 'agent'], ['pixels', false, 'agent']]);
+        assert.equal(rows[1].arguments, '{"frames":3}');
+        assert.match(rows[1].result, /^Frame 3 \(stepped 3\)\. Paused\./);
+        assert.match(rows[2].result, /That point is outside ctx_1/);
+        assert.ok(rows.every((row) => typeof row.ms === 'number' && row.at > 1.7e12));
+        assert.match(log.json.summary, /\[3\] pixels \{"x":9999,"y":1\} {2}FAILED/);
+
+        // Asking again from where it left off gives only what is new, and the log does not log itself.
+        await scanline('status');
+
+        const more = await scanline('activity', '--since', log.json.data.next, '--json');
+
+        assert.deepEqual(more.json.data.activity.map((row) => row.command), ['status']);
+    });
+
+    test('the viewer shows the log, live figures and a capture, through the control API alone', async () =>
+    {
+        await scanline('launch', server.url('fixtures/adapters/three.html'), '--paused', '--headless');
+        await scanline('step', '5');
+
+        const capture = /^(cap_\d+):/m.exec((await scanline('capture')).out)?.[1];
+        const opened = await scanline('viewer', '--show', 'activity', '--json');
+
+        assert.equal(opened.code, 0, opened.out);
+        assert.match(opened.json.summary, /The viewer is open in a window of this session's browser/);
+        assert.equal(opened.json.data.showing.tab, 'activity');
+        assert.ok(opened.json.data.showing.rows >= 3, 'launch, step and capture are listed');
+
+        // Live: figures for the frames that ran.
+        const live = await scanline('viewer', '--show', 'live', '--json');
+
+        assert.ok(live.json.data.showing.samples >= 2);
+        assert.match(live.json.data.showing.status, /^ses_\d+ · paused at frame 6$/);
+
+        // A capture: its events, and the target as it stood after one of them.
+        const looked = await scanline('viewer', '--show', 'capture', '--capture', capture, '--draw', '9', '--output', 'true', '--json');
+        const showing = looked.json.data.showing;
+
+        assert.equal(showing.capture, capture);
+        assert.equal(showing.events, 15);
+        assert.equal(showing.draw, 9);
+        assert.equal(showing.picture, true);
+        assert.deepEqual(showing.size, [480, 320]);
+        assert.match(showing.state, /event 9: drawElements to canvas/);
+        assert.match(showing.state, /Object: Mesh «Crate»/);
+        assert.ok(showing.shaders > 0);
+        assert.deepEqual(readFileSync(looked.json.images[0].view).subarray(0, 4), PNG);
+
+        // What the person does in the viewer is in the log as theirs. Its own upkeep is not.
+        const log = (await scanline('activity', '--limit', '200', '--json')).json.data.activity;
+        const theirs = log.filter((row) => row.by === 'person');
+
+        assert.ok(theirs.some((row) => row.command === 'screenshot' && row.arguments.includes('"at_draw":9')), 'choosing an event is the person looking at it');
+        assert.ok(!log.some((row) => row.by === 'viewer'));
+        assert.ok(!log.some((row) => row.command === 'stats' || row.command === 'memory'), 'the graphs\' polling is not logged');
+
+        assert.match((await scanline('viewer', '--show', 'nonsense')).out, /The viewer has three tabs: activity, live and capture/);
+    });
+});
+
 describe('a gamepad', () =>
 {
     const game = async () => JSON.parse((await scanline('eval', 'JSON.stringify(game)', '--json')).json.data.value);

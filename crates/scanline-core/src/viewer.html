@@ -1,0 +1,824 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Scanline viewer</title>
+<style>
+    :root
+    {
+        color-scheme: dark;
+        --ground: #14161a;
+        --raised: #1d2026;
+        --well: #0e1013;
+        --line: #2e323b;
+        --text: #e8eaf0;
+        --quiet: #98a0b3;
+        --person: #f2b84b;
+        --agent: #6cb6ff;
+        --bad: #ff6b6b;
+        --good: #6bd08b;
+        --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body { height: 100%; margin: 0; }
+
+    body
+    {
+        display: flex;
+        flex-direction: column;
+        background: var(--ground);
+        color: var(--text);
+        font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+
+    header
+    {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        flex: none;
+        padding: 0 14px;
+        height: 46px;
+        border-bottom: 1px solid var(--line);
+        background: var(--raised);
+    }
+
+    h1 { margin: 0; font-size: 14px; font-weight: 700; letter-spacing: 0.02em; }
+
+    nav { display: flex; gap: 2px; }
+
+    nav button
+    {
+        height: 30px;
+        padding: 0 12px;
+        border: 0;
+        border-radius: 6px;
+        background: none;
+        color: var(--quiet);
+        font: inherit;
+        font-weight: 600;
+        cursor: pointer;
+    }
+
+    nav button:hover { color: var(--text); }
+    nav button[aria-selected="true"] { background: var(--ground); color: var(--text); }
+
+    button:focus-visible, select:focus-visible, [tabindex]:focus-visible { outline: 2px solid var(--agent); outline-offset: 1px; }
+
+    #status
+    {
+        flex: 1;
+        min-width: 0;
+        color: var(--quiet);
+        text-align: right;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        font-variant-numeric: tabular-nums;
+    }
+
+    main { flex: 1; min-height: 0; }
+
+    section { display: none; height: 100%; }
+    section.on { display: flex; }
+
+    .empty { margin: auto; max-width: 46ch; color: var(--quiet); text-align: center; }
+
+    /* ---- Activity ---- */
+
+    #activity { flex-direction: column; }
+
+    #log { flex: 1; overflow: auto; margin: 0; padding: 6px 0; list-style: none; }
+
+    #log li { border-bottom: 1px solid var(--line); }
+
+    #log summary
+    {
+        display: grid;
+        grid-template-columns: 64px 62px minmax(0, 1fr) 70px;
+        gap: 10px;
+        align-items: baseline;
+        padding: 6px 14px;
+        cursor: pointer;
+        list-style: none;
+    }
+
+    #log summary::-webkit-details-marker { display: none; }
+    #log summary:hover { background: var(--raised); }
+
+    .when, .took { color: var(--quiet); font-variant-numeric: tabular-nums; }
+    .took { text-align: right; }
+
+    .who { font-weight: 600; color: var(--agent); }
+    .who.person { color: var(--person); }
+
+    .what { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .what b { font-family: var(--mono); font-weight: 600; }
+    .what span { color: var(--quiet); font-family: var(--mono); font-size: 12px; }
+    .what i { display: block; overflow: hidden; text-overflow: ellipsis; color: var(--quiet); font-style: normal; }
+    .failed .what i { color: var(--bad); }
+
+    #log pre { margin: 0; padding: 8px 14px 12px 150px; color: var(--text); background: var(--well); }
+
+    pre { font: 12px/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+
+    /* ---- Live ---- */
+
+    #live { flex-direction: column; overflow: auto; padding: 14px; gap: 12px; }
+
+    #graphs { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 12px; }
+
+    .graph { padding: 12px 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--raised); }
+    .graph h2 { margin: 0; font-size: 12px; font-weight: 600; color: var(--quiet); }
+    .graph output { display: block; margin: 2px 0 8px; font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
+    .graph output small { font-size: 12px; font-weight: 500; color: var(--quiet); }
+    .graph canvas { display: block; width: 100%; height: 70px; }
+
+    #live-note { color: var(--quiet); }
+
+    /* ---- Capture ---- */
+
+    #capture { flex-direction: column; }
+
+    #capture-bar { display: flex; align-items: center; gap: 10px; flex: none; padding: 8px 14px; border-bottom: 1px solid var(--line); }
+
+    select, .button
+    {
+        height: 28px;
+        padding: 0 10px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: var(--raised);
+        color: var(--text);
+        font: inherit;
+    }
+
+    .button { cursor: pointer; }
+    .button:hover { border-color: var(--quiet); }
+
+    #capture-what { flex: 1; min-width: 0; color: var(--quiet); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+    #capture-body { display: flex; flex: 1; min-height: 0; }
+
+    #events { flex: none; width: 400px; margin: 0; padding: 0; overflow: auto; border-right: 1px solid var(--line); list-style: none; }
+
+    #events li { display: grid; grid-template-columns: 34px minmax(0, 1fr); gap: 8px; padding: 5px 12px; border-bottom: 1px solid var(--line); cursor: pointer; }
+    #events li:hover { background: var(--raised); }
+    #events li[aria-selected="true"] { background: #25324a; }
+    #events .n { color: var(--quiet); text-align: right; font-variant-numeric: tabular-nums; }
+    #events .d { min-width: 0; font-family: var(--mono); font-size: 12px; }
+    #events .d small { display: block; color: var(--quiet); font-family: system-ui, sans-serif; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #events .nothing small { color: var(--person); }
+    #events .rejected small { color: var(--bad); }
+
+    #detail { display: flex; flex: 1; flex-direction: column; min-width: 0; }
+
+    #detail-tabs { display: flex; align-items: center; gap: 2px; flex: none; padding: 6px 10px; border-bottom: 1px solid var(--line); }
+    #detail-tabs button { height: 26px; padding: 0 10px; border: 0; border-radius: 6px; background: none; color: var(--quiet); font: inherit; font-weight: 600; cursor: pointer; }
+    #detail-tabs button[aria-selected="true"] { background: var(--raised); color: var(--text); }
+    #zoom { margin-left: auto; display: flex; align-items: center; gap: 6px; color: var(--quiet); }
+
+    .pane { display: none; flex: 1; min-height: 0; overflow: auto; }
+    .pane.on { display: block; }
+
+    #target { position: relative; background: repeating-conic-gradient(#1a1c21 0% 25%, #15171b 0% 50%) 0 0 / 16px 16px; }
+    #picture { display: block; image-rendering: pixelated; cursor: crosshair; }
+    #pixel { position: sticky; left: 0; bottom: 0; padding: 6px 12px; background: var(--raised); border-top: 1px solid var(--line); font: 12px var(--mono); }
+    #pixel i { display: inline-block; width: 12px; height: 12px; margin-right: 6px; border: 1px solid var(--line); vertical-align: -2px; }
+
+    #state, #source { margin: 0; padding: 12px 14px; }
+
+    #shaders { display: none; height: 100%; }
+    #shaders.on { display: flex; }
+    #shader-list { flex: none; width: 220px; margin: 0; padding: 0; overflow: auto; border-right: 1px solid var(--line); list-style: none; }
+    #shader-list li { padding: 6px 12px; border-bottom: 1px solid var(--line); cursor: pointer; font-family: var(--mono); font-size: 12px; }
+    #shader-list li small { display: block; color: var(--quiet); font-family: system-ui, sans-serif; }
+    #shader-list li[aria-selected="true"] { background: #25324a; }
+    #source { flex: 1; overflow: auto; counter-reset: line; }
+    #source span { display: block; }
+    #source span::before { counter-increment: line; content: counter(line); display: inline-block; width: 3.5ch; margin-right: 1.5ch; color: var(--quiet); text-align: right; }
+</style>
+<body>
+<header>
+    <h1>Scanline</h1>
+    <nav role="tablist" aria-label="Views">
+        <button role="tab" id="tab-activity" aria-selected="true" aria-controls="activity">Activity</button>
+        <button role="tab" id="tab-live" aria-selected="false" aria-controls="live">Live</button>
+        <button role="tab" id="tab-capture" aria-selected="false" aria-controls="capture">Capture</button>
+    </nav>
+    <div id="status">Connecting…</div>
+</header>
+<main>
+    <section id="activity" class="on" role="tabpanel" aria-labelledby="tab-activity">
+        <ol id="log" aria-live="polite"></ol>
+        <p class="empty" id="log-empty">Nothing has been run yet. Each command the agent runs appears here as it happens, with its result.</p>
+    </section>
+
+    <section id="live" role="tabpanel" aria-labelledby="tab-live">
+        <div id="graphs"></div>
+        <p id="live-note"></p>
+    </section>
+
+    <section id="capture" role="tabpanel" aria-labelledby="tab-capture">
+        <div id="capture-bar">
+            <label for="captures">Capture</label>
+            <select id="captures"></select>
+            <button class="button" id="take" type="button">Capture this frame</button>
+            <div id="capture-what"></div>
+        </div>
+        <div id="capture-body">
+            <ol id="events" aria-label="Events of the frame"></ol>
+            <div id="detail">
+                <div id="detail-tabs" role="tablist" aria-label="About the event">
+                    <button role="tab" id="pane-target" aria-selected="true">Target</button>
+                    <button role="tab" id="pane-state" aria-selected="false">State</button>
+                    <button role="tab" id="pane-shaders" aria-selected="false">Shaders</button>
+                    <div id="zoom">
+                        <label for="scale">Zoom</label>
+                        <select id="scale"><option>1</option><option>2</option><option>4</option><option>8</option><option>16</option></select>
+                    </div>
+                </div>
+                <div class="pane on" id="target">
+                    <canvas id="picture" width="1" height="1"></canvas>
+                    <div id="pixel">Move over the picture for a pixel's value.</div>
+                </div>
+                <div class="pane" id="state-pane"><pre id="state">Choose an event.</pre></div>
+                <div class="pane" id="shaders-pane">
+                    <div id="shaders" class="on">
+                        <ol id="shader-list"></ol>
+                        <pre id="source">Choose a shader.</pre>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+</main>
+<script>
+    // The viewer. Everything it shows it asks the host for through the control API, the
+    // same commands an agent uses; it has no other way in. The host calls start() once
+    // the way to it is open, and receive() with each answer.
+
+    const $ = (id) => document.getElementById(id);
+    const waiting = new Map();
+
+    let nextId = 1;
+    let started = false;
+
+    // `person` marks a command as the person's own doing, so the activity log shows it.
+    function call (command, args = {}, person = false)
+    {
+        return new Promise((resolve, reject) =>
+        {
+            const id = nextId++;
+
+            waiting.set(id, { resolve, reject });
+            window.scanlineViewer(JSON.stringify({ id, command, arguments: args, person }));
+        });
+    }
+
+    window.receive = (id, reply) =>
+    {
+        const asked = waiting.get(id);
+
+        waiting.delete(id);
+
+        if (asked)
+        {
+            if (reply.ok) { asked.resolve(reply.result); } else { asked.reject(new Error(reply.error)); }
+        }
+
+        return true;
+    };
+
+    // ---- Tabs ----
+
+    const tabs = ['activity', 'live', 'capture'];
+    let tab = 'activity';
+
+    function select (name)
+    {
+        tab = name;
+
+        for (const other of tabs)
+        {
+            $(other).classList.toggle('on', other === name);
+            $(`tab-${other}`).setAttribute('aria-selected', String(other === name));
+        }
+
+        if (name === 'capture' && !capture.listing) { capture.listing = listCaptures(); }
+    }
+
+    for (const name of tabs)
+    {
+        $(`tab-${name}`).addEventListener('click', () => select(name));
+    }
+
+    // ---- Activity ----
+
+    const activity = { next: 0, rows: 0, latest: '' };
+
+    function clock (at)
+    {
+        return new Date(at).toLocaleTimeString([], { hour12: false });
+    }
+
+    function addRow (row)
+    {
+        const item = document.createElement('li');
+        const details = document.createElement('details');
+        const summary = document.createElement('summary');
+        const first = (row.result || '').split('\n')[0];
+
+        item.className = row.ok ? '' : 'failed';
+
+        const cell = (className, text) =>
+        {
+            const element = document.createElement('span');
+
+            element.className = className;
+            element.textContent = text;
+
+            return element;
+        };
+
+        const what = document.createElement('span');
+        const name = document.createElement('b');
+        const args = document.createElement('span');
+        const said = document.createElement('i');
+
+        what.className = 'what';
+        name.textContent = row.command;
+        args.textContent = row.arguments ? ` ${row.arguments}` : '';
+        said.textContent = (row.ok ? '' : 'Failed: ') + first;
+        what.append(name, args, said);
+
+        summary.append(cell('when', clock(row.at)), cell(`who ${row.by}`, row.by === 'person' ? 'You' : 'Agent'), what, cell('took', `${row.ms} ms`));
+
+        const full = document.createElement('pre');
+
+        full.textContent = row.result || '(no text)';
+        details.append(summary, full);
+        item.append(details);
+
+        const log = $('log');
+        const atEnd = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
+
+        log.append(item);
+
+        if (atEnd) { log.scrollTop = log.scrollHeight; }
+
+        activity.rows++;
+        activity.latest = row.command;
+        $('log-empty').hidden = true;
+    }
+
+    async function pollActivity ()
+    {
+        try
+        {
+            const reply = await call('activity', { since: activity.next, limit: 200 });
+
+            for (const row of reply.data.activity) { addRow(row); }
+
+            activity.next = reply.data.next;
+        }
+        catch { /* the host is busy or gone; the next poll will say */ }
+    }
+
+    // ---- Live ----
+
+    const SERIES = [
+        { key: 'interval', title: 'Frame interval', unit: 'ms', colour: '#6cb6ff', digits: 2 },
+        { key: 'cpu', title: 'CPU in frame callbacks', unit: 'ms', colour: '#f2b84b', digits: 2 },
+        { key: 'gpu', title: 'GPU time', unit: 'ms', colour: '#c58cff', digits: 3 },
+        { key: 'draws', title: 'Draws a frame', unit: '', colour: '#6bd08b', digits: 0 },
+        { key: 'memory', title: 'GPU memory, estimated', unit: 'MB', colour: '#ff9d6c', digits: 1 },
+        { key: 'process', title: 'GPU process, measured', unit: 'MB', colour: '#ff6b9d', digits: 1 }
+    ];
+
+    const live = { samples: 0, status: '', values: Object.fromEntries(SERIES.map((series) => [series.key, []])) };
+
+    for (const series of SERIES)
+    {
+        const card = document.createElement('div');
+
+        card.className = 'graph';
+        card.innerHTML = `<h2></h2><output id="value-${series.key}">–</output><canvas id="graph-${series.key}" width="640" height="140" role="img"></canvas>`;
+        card.querySelector('h2').textContent = series.title;
+        $('graphs').append(card);
+    }
+
+    function plot (series)
+    {
+        const values = live.values[series.key];
+        const canvas = $(`graph-${series.key}`);
+        const context = canvas.getContext('2d');
+        const { width, height } = canvas;
+        const known = values.filter((value) => value !== null);
+        const last = known.at(-1);
+
+        $(`value-${series.key}`).innerHTML = last === undefined ? '–' : `${last.toFixed(series.digits)} <small>${series.unit}</small>`;
+        canvas.setAttribute('aria-label', `${series.title}: ${last === undefined ? 'no value yet' : `${last.toFixed(series.digits)} ${series.unit}`}`);
+        context.clearRect(0, 0, width, height);
+
+        if (known.length < 2) { return; }
+
+        const top = Math.max(...known) * 1.15 || 1;
+        const step = width / 119;
+
+        context.strokeStyle = '#2e323b';
+        context.lineWidth = 1;
+        context.beginPath();
+        context.moveTo(0, height - 0.5);
+        context.lineTo(width, height - 0.5);
+        context.stroke();
+
+        context.strokeStyle = series.colour;
+        context.lineWidth = 2.5;
+        context.lineJoin = 'round';
+        context.beginPath();
+
+        let pen = false;
+
+        values.forEach((value, index) =>
+        {
+            if (value === null) { pen = false; return; }
+
+            const x = (120 - values.length + index) * step;
+            const y = height - 4 - (value / top) * (height - 12);
+
+            if (pen) { context.lineTo(x, y); } else { context.moveTo(x, y); pen = true; }
+        });
+
+        context.stroke();
+    }
+
+    async function pollLive ()
+    {
+        let status;
+
+        try
+        {
+            status = (await call('status')).data;
+        }
+        catch (error)
+        {
+            $('status').textContent = error.message.split('\n')[0];
+
+            return;
+        }
+
+        live.status = `${status.session} · ${status.paused ? 'paused at' : 'running, at'} frame ${status.frame}`;
+        $('status').textContent = `${live.status} · ${status.url}`;
+
+        if (tab !== 'live') { return; }
+
+        const sample = { interval: null, cpu: null, gpu: null, draws: null, memory: null, process: null };
+
+        try
+        {
+            const stats = (await call('stats', { window_frames: 30 })).data;
+
+            if (stats.frames > 0)
+            {
+                sample.interval = stats.intervalMs.mean;
+                sample.cpu = stats.cpuMs.mean;
+                sample.gpu = stats.gpu && stats.gpu.frames > 0 ? stats.gpu.ms.mean : null;
+                sample.draws = stats.counters.draws.mean;
+            }
+
+            const memory = (await call('memory')).data;
+
+            sample.memory = memory.total_bytes / 1048576;
+            sample.process = memory.gpu_process_bytes ? memory.gpu_process_bytes / 1048576 : null;
+        }
+        catch { /* no rendering context yet */ }
+
+        for (const series of SERIES)
+        {
+            const values = live.values[series.key];
+
+            values.push(sample[series.key]);
+
+            if (values.length > 120) { values.shift(); }
+
+            plot(series);
+        }
+
+        live.samples++;
+        $('live-note').textContent = status.paused
+            ? 'The page is paused, so frame figures are those of the last frames that ran. Memory is measured now.'
+            : 'One sample a second, each the mean of the last 30 frames. The estimate counts what the page created; the GPU process figure is the whole process, as the operating system counts it.';
+    }
+
+    // ---- Capture ----
+
+    const capture = { listing: null, handle: null, events: [], draw: null, picture: false, image: null, shaders: [], pane: 'target' };
+
+    async function listCaptures ()
+    {
+        const reply = await call('captures', { limit: 40 });
+        const select = $('captures');
+
+        select.replaceChildren();
+
+        for (const row of reply.data.captures)
+        {
+            const option = document.createElement('option');
+
+            option.value = row.capture;
+            option.textContent = `${row.capture} · frame ${row.frame} · ${row.api} ${row.width}×${row.height}`;
+            select.append(option);
+        }
+
+        if (reply.data.captures.length === 0)
+        {
+            $('capture-what').textContent = 'No captures yet. "Capture this frame" takes one of the page as it stands.';
+        }
+        else if (!capture.handle)
+        {
+            await openCapture(reply.data.captures[0].capture);
+        }
+
+        return reply.data.captures.length;
+    }
+
+    function describe (event)
+    {
+        if (event.kind !== 'draw') { return `${event.kind} → ${event.target}`; }
+
+        return `${event.mode} ×${event.count}${event.instances > 1 ? ` (${event.instances})` : ''} ${event.program ?? ''} → ${event.target}`;
+    }
+
+    function effect (event)
+    {
+        const parts = [];
+
+        if (event.gl_error) { parts.push(`rejected: ${event.gl_error}`); }
+        else if (event.pixels_changed === 0) { parts.push('changed nothing'); }
+        else if (event.pixels_changed) { parts.push(`${event.pixels_changed} px at ${event.changed_box}`); }
+
+        if (event.entity) { parts.push(event.entity); }
+        if (event.path) { parts.push(`in ${event.path}`); }
+
+        return parts.join(' · ');
+    }
+
+    async function openCapture (handle)
+    {
+        capture.handle = handle;
+        capture.draw = null;
+        capture.events = [];
+        $('captures').value = handle;
+        $('events').replaceChildren();
+
+        let cursor = 0;
+
+        // The whole list, a page at a time.
+        while (cursor !== null && capture.events.length < 5000)
+        {
+            const reply = await call('draw_list', { capture: handle, limit: 200, cursor });
+
+            capture.events.push(...reply.data.events);
+            cursor = reply.data.next_cursor;
+
+            if (cursor === 0) { break; }
+        }
+
+        for (const event of capture.events)
+        {
+            const item = document.createElement('li');
+            const number = document.createElement('span');
+            const text = document.createElement('span');
+            const small = document.createElement('small');
+
+            number.className = 'n';
+            number.textContent = event.draw;
+            text.className = 'd';
+            text.textContent = describe(event);
+            small.textContent = effect(event);
+            text.append(small);
+            item.append(number, text);
+            item.className = event.gl_error ? 'rejected' : (event.pixels_changed === 0 ? 'nothing' : '');
+            item.tabIndex = 0;
+            item.setAttribute('aria-selected', 'false');
+            item.addEventListener('click', () => selectDraw(event.draw));
+            item.addEventListener('keydown', (key) => { if (key.key === 'Enter' || key.key === ' ') { key.preventDefault(); selectDraw(event.draw); } });
+            $('events').append(item);
+        }
+
+        $('capture-what').textContent = `${capture.events.length} events. Choose one to see the target as it stood after it.`;
+
+        const shaders = await call('query', { capture: handle, sql: "SELECT handle, what, source FROM objects WHERE kind = 'shader' ORDER BY id", limit: 200 });
+
+        capture.shaders = shaders.data.rows;
+        $('shader-list').replaceChildren();
+        $('source').textContent = capture.shaders.length ? 'Choose a shader.' : 'This capture holds no shader source.';
+
+        capture.shaders.forEach((row, index) =>
+        {
+            const item = document.createElement('li');
+            const small = document.createElement('small');
+
+            item.textContent = row[0];
+            small.textContent = row[1];
+            item.append(small);
+            item.tabIndex = 0;
+            item.addEventListener('click', () => selectShader(index));
+            item.addEventListener('keydown', (key) => { if (key.key === 'Enter') { selectShader(index); } });
+            $('shader-list').append(item);
+        });
+
+        if (capture.events.length) { await selectDraw(capture.events.at(-1).draw); }
+    }
+
+    function selectShader (index)
+    {
+        [...$('shader-list').children].forEach((item, at) => item.setAttribute('aria-selected', String(at === index)));
+
+        const source = $('source');
+
+        source.replaceChildren();
+
+        for (const line of String(capture.shaders[index][2] ?? '').split('\n'))
+        {
+            const span = document.createElement('span');
+
+            span.textContent = line || ' ';
+            source.append(span);
+        }
+    }
+
+    function paint ()
+    {
+        const image = capture.image;
+
+        if (!image) { return; }
+
+        const scale = Number($('scale').value);
+        const canvas = $('picture');
+
+        canvas.width = image.width;
+        canvas.height = image.height;
+        canvas.style.width = `${image.width * scale}px`;
+        canvas.style.height = `${image.height * scale}px`;
+        canvas.getContext('2d', { willReadFrequently: true }).drawImage(image, 0, 0);
+    }
+
+    async function selectDraw (draw)
+    {
+        capture.draw = draw;
+        capture.picture = false;
+
+        [...$('events').children].forEach((item, index) => item.setAttribute('aria-selected', String(capture.events[index].draw === draw)));
+
+        const event = capture.events.find((row) => row.draw === draw);
+        const target = event && event.target !== 'canvas' ? event.target.split(' ')[0] : undefined;
+
+        $('state').textContent = 'Reading…';
+
+        const [shot, detail] = await Promise.allSettled([
+            call('screenshot', { capture: capture.handle, at_draw: draw, target, max_edge: 4096 }, true),
+            call('draw', { capture: capture.handle, draw })
+        ]);
+
+        // The person may have chosen another while this was on its way.
+        if (capture.draw !== draw) { return; }
+
+        $('state').textContent = detail.status === 'fulfilled' ? detail.value.summary : detail.reason.message;
+
+        if (shot.status === 'fulfilled' && shot.value.images[0]?.data)
+        {
+            const image = new Image();
+
+            image.src = shot.value.images[0].data;
+            await image.decode();
+            capture.image = image;
+            capture.picture = true;
+            paint();
+            $('pixel').textContent = `${image.width}×${image.height}, after event ${draw}. Move over the picture for a pixel's value.`;
+        }
+        else
+        {
+            $('pixel').textContent = shot.status === 'rejected' ? shot.reason.message.split('\n')[0] : 'No picture came back for this event.';
+        }
+
+        $('capture-what').textContent = `${capture.handle}: event ${draw} of ${capture.events.length}. ${event ? describe(event) : ''}`;
+    }
+
+    $('captures').addEventListener('change', (event) => openCapture(event.target.value));
+    $('scale').addEventListener('change', paint);
+
+    $('take').addEventListener('click', async () =>
+    {
+        $('capture-what').textContent = 'Capturing…';
+
+        try
+        {
+            const taken = await call('capture', {}, true);
+
+            capture.handle = null;
+            capture.listing = listCaptures();
+            await capture.listing;
+            $('captures').value = taken.data.capture;
+            await openCapture(taken.data.capture);
+        }
+        catch (error)
+        {
+            $('capture-what').textContent = error.message.split('\n')[0];
+        }
+    });
+
+    $('picture').addEventListener('mousemove', (event) =>
+    {
+        if (!capture.image) { return; }
+
+        const canvas = $('picture');
+        const rect = canvas.getBoundingClientRect();
+        const x = Math.floor((event.clientX - rect.left) * canvas.width / rect.width);
+        const y = Math.floor((event.clientY - rect.top) * canvas.height / rect.height);
+
+        if (x < 0 || y < 0 || x >= canvas.width || y >= canvas.height) { return; }
+
+        const [r, g, b, a] = canvas.getContext('2d').getImageData(x, y, 1, 1).data;
+        const swatch = document.createElement('i');
+
+        swatch.style.background = `rgb(${r} ${g} ${b})`;
+        $('pixel').replaceChildren(swatch, `(${x}, ${y})  rgba ${r}, ${g}, ${b}, ${a}`);
+    });
+
+    const panes = { target: 'target', state: 'state-pane', shaders: 'shaders-pane' };
+
+    function selectPane (name)
+    {
+        capture.pane = name;
+
+        for (const other of Object.keys(panes))
+        {
+            $(panes[other]).classList.toggle('on', other === name);
+            $(`pane-${other}`).setAttribute('aria-selected', String(other === name));
+        }
+
+        $('zoom').style.visibility = name === 'target' ? 'visible' : 'hidden';
+    }
+
+    for (const name of Object.keys(panes))
+    {
+        $(`pane-${name}`).addEventListener('click', () => selectPane(name));
+    }
+
+    // ---- For the host: show something as a click would, and say what is on show ----
+
+    window.show = async (name, handle, draw, pane) =>
+    {
+        select(name);
+
+        if (name === 'activity') { await pollActivity(); }
+        if (name === 'live') { await pollLive(); await pollLive(); }
+
+        if (name === 'capture')
+        {
+            await capture.listing;
+
+            if (handle && handle !== capture.handle) { await openCapture(handle); }
+            if (draw !== null && draw !== undefined) { await selectDraw(draw); }
+            if (pane && panes[pane]) { selectPane(pane); }
+            if (pane === 'shaders' && capture.shaders.length) { selectShader(capture.shaders.length - 1); }
+        }
+
+        return true;
+    };
+
+    window.shown = () => ({
+        tab,
+        status: live.status,
+        rows: activity.rows,
+        latest: activity.latest,
+        samples: live.samples,
+        capture: capture.handle,
+        pane: capture.pane,
+        events: capture.events.length,
+        draw: capture.draw,
+        picture: capture.picture,
+        size: capture.image ? [capture.image.width, capture.image.height] : null,
+        state: $('state').textContent.slice(0, 400),
+        shaders: capture.shaders.length,
+        pixel: $('pixel').textContent
+    });
+
+    window.start = () =>
+    {
+        if (started) { return true; }
+
+        started = true;
+        pollActivity();
+        pollLive();
+        setInterval(pollActivity, 700);
+        setInterval(pollLive, 1000);
+
+        return true;
+    };
+</script>
+</body>
+</html>

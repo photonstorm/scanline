@@ -147,6 +147,9 @@ pub struct State {
     pub net_loading: bool,
     /// Kept responses a replay was due to give that the page never asked for.
     pub net_unasked: u64,
+    /// The viewer's window, if it is open, and what it has asked for and not yet been given.
+    pub viewer: Option<String>,
+    pub viewer_calls: VecDeque<Value>,
     pub annotating: bool,
     /// The frame that is frozen for marking.
     pub annotating_frame: u64,
@@ -217,6 +220,12 @@ const STRIP: &str = include_str!("strip.html");
 const STRIP_URL: &str = "https://strip.scanline.invalid/";
 const STRIP_BINDING: &str = "scanlineStrip";
 const STRIP_HEIGHT: i64 = 56;
+
+/// The viewer: the window in which a person follows what the agent is doing, watches the
+/// page's numbers and looks through captures. A page of the host's own, like the strip.
+const VIEWER: &str = include_str!("viewer.html");
+const VIEWER_URL: &str = "https://viewer.scanline.invalid/";
+pub(crate) const VIEWER_BINDING: &str = "scanlineViewer";
 
 /// Where the replay page lives. Nothing is fetched from it: the host answers the request.
 const REPLAY_URL: &str = "https://replay.scanline.invalid/";
@@ -780,6 +789,68 @@ impl Session {
         Ok(())
     }
 
+    /// Opens the viewer window, or says it is open already.
+    pub async fn open_viewer(&self) -> Result<bool> {
+        if self.state.lock().unwrap().viewer.is_some() {
+            return Ok(false);
+        }
+
+        let target = self
+            .client
+            .send("Target.createTarget", json!({ "url": "about:blank", "newWindow": true, "width": 1180, "height": 820 }), None)
+            .await
+            .context("opening the viewer")?;
+        let attached = self.client.send("Target.attachToTarget", json!({ "targetId": target["targetId"], "flatten": true }), None).await?;
+        let viewer = attached["sessionId"].as_str().ok_or_else(|| anyhow!("The browser gave no session for the viewer."))?.to_string();
+
+        self.state.lock().unwrap().viewer = Some(viewer.clone());
+
+        let outcome = async {
+            self.serve(&viewer, VIEWER_URL, VIEWER).await?;
+            self.client.send("Runtime.enable", json!({}), Some(&viewer)).await?;
+            self.client.send("Runtime.addBinding", json!({ "name": VIEWER_BINDING }), Some(&viewer)).await?;
+            // The page was waiting for its way to the host before asking for anything.
+            self.client.send("Runtime.evaluate", json!({ "expression": "start()" }), Some(&viewer)).await?;
+
+            Ok::<(), anyhow::Error>(())
+        }
+        .await;
+
+        if let Err(error) = outcome {
+            self.state.lock().unwrap().viewer = None;
+
+            return Err(error.context("loading the viewer"));
+        }
+
+        Ok(true)
+    }
+
+    /// Runs an expression in the viewer, waiting for a promise if it gives one. None if
+    /// the viewer is not open.
+    pub async fn viewer_eval(&self, expression: &str) -> Option<Value> {
+        let viewer = self.state.lock().unwrap().viewer.clone()?;
+        let reply = self
+            .client
+            .send_with_timeout(
+                "Runtime.evaluate",
+                json!({ "expression": expression, "returnByValue": true, "awaitPromise": true }),
+                Some(&viewer),
+                Duration::from_secs(20),
+            )
+            .await
+            .ok()?;
+
+        Some(reply["result"]["value"].clone())
+    }
+
+    /// A picture of the viewer as the person sees it.
+    pub async fn viewer_picture(&self) -> Result<Vec<u8>> {
+        let viewer = self.state.lock().unwrap().viewer.clone().ok_or_else(|| anyhow!("The viewer is not open."))?;
+        let reply = self.client.send_with_timeout("Page.captureScreenshot", json!({ "format": "png" }), Some(&viewer), Duration::from_secs(10)).await?;
+
+        base64::engine::general_purpose::STANDARD.decode(reply["data"].as_str().unwrap_or("")).context("decoding the viewer's picture")
+    }
+
     /// Runs an expression in the control strip. None if the strip is not open.
     pub async fn strip_eval(&self, expression: &str) -> Option<Value> {
         let strip = self.state.lock().unwrap().strip.clone()?;
@@ -1063,6 +1134,20 @@ fn handle(session: &Arc<Session>, event: Event) {
                     }
 
                     session.queue(kind, data);
+                }
+            }
+        }
+
+        // The viewer asking for something through the control API. It is answered by the
+        // loop that has the host to hand (handoff::watch).
+        "Runtime.bindingCalled" if params["name"] == VIEWER_BINDING => {
+            let mut state = session.state.lock().unwrap();
+
+            if state.viewer.as_deref() == event.session.as_deref() {
+                if let Ok(asked) = serde_json::from_str::<Value>(params["payload"].as_str().unwrap_or("")) {
+                    state.viewer_calls.push_back(asked);
+                    drop(state);
+                    session.debug.notify_one();
                 }
             }
         }
