@@ -9,7 +9,8 @@ Read this first, then [DEPARTURES.md](DEPARTURES.md) (what was built and how it 
 - Everything is on `main` at github.com/photonstorm/scanline.
 - It builds and runs on two machines: the Mac (Apple silicon, Chrome 157, Metal) and the PC (Windows 11, x64, an NVIDIA RTX 3080 Ti, Chrome 157, Direct3D).
 - On the PC every group of the suite passed on the last build: 265 tests in ten groups and 40 Rust unit tests, none failing. They were run a group at a time, some before the last push and the rest straight after it, and not as one `npm test`. Both slow-frame journeys passed with their timing comparison reported and not asserted: see "Things learned the hard way".
-- On the Mac the whole suite passed after the Windows build and the PlayCanvas adapter: `npm test` as one command, 265 tests in ten groups and 40 Rust unit tests, none failing, with the slow-frame journeys' timing asserted (section 1).
+- On the Mac the whole suite passed on the last build: `npm test` as one command, 267 tests in ten groups and 41 Rust unit tests, none failing, with the slow-frame journeys' timing asserted. The Mac's release archive (`dist/scanline-0.0.1-macos-arm64.tar.gz`) was rebuilt from it.
+- **On the PC the suite has not been run since the four pieces of work in section 1**, which change code both platforms share.
 - Every milestone of the build plan up to 1.0 is worked through, and from the list for after 1.0: the Babylon.js and PlayCanvas adapters, the native-capture profile, assertions for a test run, a recording as a video, and "Send to agent".
 - **Nothing has been compiled or run on Linux.**
 - The specification is not in this repository. It is in the `render-debugger/` folder of the `render-debugger-spec` branch of the `v3-gameblocks` repository, which is pushed. Read it there. Do not edit it and do not copy it here.
@@ -50,15 +51,36 @@ npm ci --os=win32
 - An agent's shell tool there halves doubled backslashes in a here-document, and turns `\t` and `\b` into control characters. Edit any file that holds backslashes (Windows paths, regular expressions) with the editing tool, and look at what was written.
 - Every text file is LF on every machine (`.gitattributes`). The install script for Windows is given CRLF when a release is packed, not in the repository.
 
-## 1. Back on the Mac: the whole suite, run
+## 1. Back on the PC: run the whole suite
 
-Done on 11 November 2026, on `0e7a578`, after `npm install` brought PlayCanvas 2.24.0 in. `npm test` passed as one command: the Rust unit tests (40), the type check, `test:wgsl` (10), `test:probe` (52), `test:bugs` (33), `test:e2e` (51), `test:findings` (54), `test:webgpu` (27), `test:journeys` (2), `test:protocol` (16), `test:security` (15) and `test:package` (5). About seven minutes of tests, and nothing needed changing.
+**Do this first on the PC.** Since the Windows build, the Mac ran the whole suite on what the PC had pushed (it passed as one `npm test`, with nothing needing a change, and both slow-frame journeys asserting their timing), and then four pieces of work were done on the Mac. Each passes there; none has been run through Direct3D, and all are in code both platforms share.
 
-That was the first run on the Mac of everything the Windows build changed on both platforms: the control channel's Unix form in `crates/scanline/src/control.rs`, the probe's timing and its wait for the WebGPU queue, the longer wait in `launch`, `experiment` measuring turn about, the tests that take either of two pixel values, and the PlayCanvas adapter with the three capture fixes it turned up. All of it holds here.
+- **`--ascii`, and `SCANLINE_ASCII=1`** (`crates/scanline/src/cli.rs`, `main.rs`). Output in ASCII only, for a shell that decodes what it captures with a code page that is not UTF-8. Every line the command line prints now goes through `say_as` or `complain`. It was built for Windows PowerShell and has never met it: the check is in `BY-HAND.md`, "On Windows".
+- **A capture's call list shows the data a call was given** (`readable` and `shown_data` in `crates/scanline-core/src/capture.rs`; `was` on a `writeBuffer`'s data in `probe/src/gpu/capture.ts`). Building a capture's tables now reads the small blobs back from the store.
+- **One draw inside a render bundle** (`why` and `geometry` in `replay/src/gpu-analysis.ts`, `draw_inside` in `capture.rs`). `why` was rewritten for every WebGPU draw, not only bundled ones: it now reads the target just before and just after the one draw, inside the replay's draw hook. If "which test rejected it" goes wrong on the PC for an ordinary WebGPU draw, look there first.
+- **Stencil, and one sample of a multisampled texture, from a running WebGPU page** (`probe/src/readback.ts`, `probe/src/gpu/sample.ts`). The stencil is a copy with `aspect: 'stencil-only'`; the sample is a draw from a `texture_multisampled_2d`.
 
-Both slow-frame journeys asserted their timing: the line "GPU time was not steady on this machine, so it was not compared" did not appear, as it should not on this machine.
+So, on the PC:
 
-So both machines now pass the same suite on the same commit. On the PC it has still not been run as one `npm test` since the PlayCanvas adapter, only a group at a time.
+```bash
+git pull
+```
+
+```bash
+npm ci --os=win32
+```
+
+```bash
+npm test
+```
+
+The new tests compare flat colours and whole numbers (stencil 7, a cleared colour, 4,800 pixels changed), so they should not need the two-value allowance. If one does, use `assertPixel` in `tests/host.mjs`.
+
+### What was run last
+
+On the Mac on 11 November 2026, on `86a2795`: `npm test` as one command passed. The Rust unit tests (41), the type check, `test:wgsl` (10), `test:probe` (52), `test:bugs` (33), `test:e2e` (52), `test:findings` (54), `test:webgpu` (28), `test:journeys` (2), `test:protocol` (16), `test:security` (15) and `test:package` (5). About seven minutes of tests.
+
+On the PC the last run was before those four pieces of work: every group passed, a group at a time, on `0e7a578`.
 
 On the Mac, `npm install` cannot write to the usual npm cache from inside an agent's sandbox, and says the cache has root-owned files. Give it a cache it can write to: `npm install --cache "$TMPDIR/npm-cache"`.
 
