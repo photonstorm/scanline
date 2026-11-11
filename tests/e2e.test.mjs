@@ -8,10 +8,11 @@
 
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, afterEach, before, describe, test } from 'node:test';
+import { crc32, deflateSync } from 'node:zlib';
 import { repoRoot, serve } from '../spikes/lib/serve.mjs';
 
 const binary = join(repoRoot, 'target', 'debug', 'scanline');
@@ -1213,6 +1214,98 @@ describe('live patches', () =>
         assert.match((await scanline('patches')).out, /No patches are in force/);
 
         // The frame is right after all that: the state the patches changed was put back each time.
+        assert.deepEqual((await scanline('console', '--level', 'error', '--json')).json.data.lines, []);
+    });
+
+    test('draws are made a flat colour, a texture is stood in from a file, and the page is drawn as overdraw, outlines, draw colours and depth', async () =>
+    {
+        await open('fixtures/bugs/b00.html');
+
+        const sky = await pixel(10, 100);
+        const ground = await pixel(30, 320);
+        const crate = await pixel(100, 220);
+        const look = async () =>
+        {
+            await scanline('step', '2');
+
+            return { sky: await pixel(10, 100), ground: await pixel(30, 320), crate: await pixel(100, 220), glass: await pixel(250, 220) };
+        };
+
+        // One flat colour for everything the sprite program draws: the shapes stay.
+        const solid = await scanline('patch_draws', '--mode', 'solid', '--filter', '{"program": "prg_1"}', '--colour', '[0, 1, 0]', '--json');
+
+        assert.equal(solid.code, 0, solid.out);
+        assert.match(solid.json.data.description, /^draws that use prg_1 are drawn in one flat colour \(0, 1, 0, 1\)/);
+
+        let seen = await look();
+
+        assert.deepEqual(seen.ground, [0, 255, 0, 255]);
+        assert.deepEqual(seen.crate, [0, 255, 0, 255]);
+        assert.deepEqual(seen.sky, sky, 'where nothing is drawn, nothing changes');
+        await scanline('patches', '--revert', 'all');
+
+        // A PNG of the agent's own in place of the crate's texture: 2×2, plain red.
+        const row = Buffer.from([0, 255, 0, 0, 255, 255, 0, 0, 255]);
+        const chunk = (type, data) =>
+        {
+            const body = Buffer.concat([Buffer.from(type), data]);
+            const out = Buffer.alloc(body.length + 8);
+
+            out.writeUInt32BE(data.length, 0);
+            body.copy(out, 4);
+            out.writeUInt32BE(crc32(body), body.length + 4);
+
+            return out;
+        };
+        const header = Buffer.alloc(13);
+
+        header.writeUInt32BE(2, 0);
+        header.writeUInt32BE(2, 4);
+        header.set([8, 6, 0, 0, 0], 8);
+
+        const file = join(home, 'red.png');
+
+        writeFileSync(file, Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk('IHDR', header), chunk('IDAT', deflateSync(Buffer.concat([row, row]))), chunk('IEND', Buffer.alloc(0))]));
+
+        const stood = await scanline('patch_texture', 'tex_1', '--with', file, '--json');
+
+        assert.equal(stood.code, 0, stood.out);
+        assert.match(stood.json.data.description, /^tex_1 drawn as the 2×2 image given/);
+        seen = await look();
+        assert.ok(seen.crate[0] > 150 && seen.crate[1] < 60 && seen.crate[2] < 60, `the crate is red: ${seen.crate}`);
+        assert.deepEqual(seen.ground, ground);
+        await scanline('patches', '--revert', 'all');
+        assert.match((await scanline('patch_texture', 'tex_1', '--with', join(home, 'none.png'))).out, /or the path of a PNG file\. .*none\.png could not be read/);
+
+        // Overdraw: cleared to black, and each draw adds a little.
+        const over = await scanline('live_view', 'overdraw');
+
+        assert.match(over.out, /^pat_\d+: overdraw: the frame is cleared to black/);
+        seen = await look();
+        assert.deepEqual(seen.sky, [0, 0, 0, 255]);
+        assert.ok(seen.ground[0] >= 30 && seen.ground[0] <= 34 && seen.ground[2] < 10, `one layer on the ground: ${seen.ground}`);
+        assert.ok(seen.glass[0] > seen.ground[0] + 25, `the glass is drawn over a crate, so two layers or more: ${seen.glass}`);
+
+        // One view at a time: the next replaces it, and the clear colour is the page's again.
+        await scanline('live_view', 'draw_id');
+        seen = await look();
+        assert.deepEqual(seen.sky, sky);
+        assert.notDeepEqual(seen.ground, ground);
+        assert.notDeepEqual(seen.ground, seen.crate, 'each draw has a colour of its own');
+        assert.match((await scanline('patches')).out, /^1 patch in force/);
+
+        await scanline('live_view', 'depth');
+        seen = await look();
+        assert.ok(seen.ground[0] === seen.ground[1] && seen.ground[1] === seen.ground[2], `depth is grey: ${seen.ground}`);
+
+        await scanline('live_view', 'wireframe');
+        seen = await look();
+        assert.deepEqual(seen.ground, sky, 'inside the ground\'s triangles nothing is drawn');
+
+        assert.match((await scanline('live_view', 'off')).out, /Switched off: 1 of Scanline's own/);
+        seen = await look();
+        assert.deepEqual([seen.sky, seen.ground, seen.crate], [sky, ground, crate], 'the page draws as its own code says again');
+        assert.match((await scanline('live_view', 'nan')).out, /The nan view reads a finished frame and is not drawn on the running page/);
         assert.deepEqual((await scanline('console', '--level', 'error', '--json')).json.data.lines, []);
     });
 

@@ -4,7 +4,10 @@
 // A patch never edits what the page owns. Draws pass through a gate (hooks/generated.ts):
 // it can drop a draw, or change something just before the draw and put it back just after.
 //
-//   draws     drop the draws that match, or all but those that match
+//   draws     drop the draws that match, or all but those that match, or draw them in
+//             one flat colour
+//   view      the whole frame drawn another way: overdraw, outlines, a colour for each
+//             draw, or depth
 //   state     set blend, depth, cull, scissor or the colour mask around matching draws
 //   uniform   hold one uniform of a program at a value, whatever the page sets
 //   shader    draw with a rebuilt copy of a program in place of the page's
@@ -16,11 +19,15 @@
 // is made current again. The page's program and its uniform locations are never touched,
 // so reverting is simply to stop.
 //
-// WebGL only. A WebGPU pipeline cannot be changed, only replaced, which is not built.
+// A flat colour is drawn by a shadow too: the page's fragment shader with its main() renamed
+// and a new main() that calls it and then writes the colour, so whatever the page's shader
+// discards is still discarded.
+//
+// This file is WebGL. A WebGPU pipeline cannot be changed, only replaced: gpu/patch.ts.
 
 import { onFrameBegin } from './clock/gate';
 import { allContexts, contextById, type ContextInfo } from './contexts';
-import { trackerFor, uniformWatch, type GlTracker, type UniformSlot } from './gl/tracker';
+import { clearWatch, trackerFor, uniformWatch, type GlTracker, type UniformSlot } from './gl/tracker';
 import { gpuPatchAdd, gpuPatchFrame, gpuPatchList, gpuPatchRemove } from './gpu/patch';
 import type { Rec } from './hooks/hub';
 import { G, type Fn } from './natives';
@@ -38,16 +45,34 @@ interface Filter
 
 interface ShadowUniform { location: unknown; type: number }
 
+// A program's stand-in that draws one flat colour where the page's draws its own.
+interface Solid
+{
+    shadow: unknown;
+    uniforms: Map<string, ShadowUniform>;
+    stale: boolean;
+    colour: unknown;        // where its colour goes
+}
+
 interface Patch
 {
     id: number;
-    kind: 'draws' | 'state' | 'uniform' | 'shader' | 'texture';
+    kind: 'draws' | 'state' | 'uniform' | 'shader' | 'texture' | 'view';
     context: number;
     description: string;
     filter: Filter;
 
-    mode?: 'skip' | 'isolate';
+    mode?: 'skip' | 'isolate' | 'solid';
     state?: Record<string, unknown>;
+
+    // solid: the colour, or 'draw' for one of each draw's own, or 'depth' for its depth;
+    // and the stand-in made for each program it has met (null where one could not be made).
+    colour?: number[] | 'draw' | 'depth';
+    solids?: Map<number, Solid | null>;
+    unmade?: number;
+
+    // view
+    view?: string;
 
     // uniform, shader
     program?: number;
@@ -207,6 +232,21 @@ function applyState (n: Record<string, Fn>, gl: unknown, t: GlTracker, state: Re
         restores.push(() => n.colorMask.call(gl, ...was));
     }
 
+    // Added to what is there, whatever the page's blend is: how the overdraw view counts.
+    if (state.blend_add === true)
+    {
+        const was = [t.blendSrcRgb, t.blendDstRgb, t.blendSrcAlpha, t.blendDstAlpha, t.blendEquationRgb, t.blendEquationAlpha];
+
+        cap(n, gl, t, BLEND, true, restores);
+        n.blendFunc.call(gl, 1, 1);
+        n.blendEquation.call(gl, 0x8006);
+        restores.push(() =>
+        {
+            n.blendFuncSeparate.call(gl, was[0], was[1], was[2], was[3]);
+            n.blendEquationSeparate.call(gl, was[4], was[5]);
+        });
+    }
+
     if (state.scissor === false)
     {
         cap(n, gl, t, SCISSOR, false, restores);
@@ -221,14 +261,14 @@ function applyState (n: Record<string, Fn>, gl: unknown, t: GlTracker, state: Re
     }
 }
 
-// Gives the shadow program the values the page has given its own.
-function sync (n: Record<string, Fn>, gl: unknown, patch: Patch): void
+// Gives a shadow program, which is current, the values the page has given its own.
+function sync (n: Record<string, Fn>, gl: unknown, program: number, shadow: { uniforms?: Map<string, ShadowUniform>; stale?: boolean }): void
 {
-    const slots: Map<string, UniformSlot> | undefined = find('program', patch.program!)?.p.uniforms;
+    const slots: Map<string, UniformSlot> | undefined = find('program', program)?.p.uniforms;
 
     for (const [name, slot] of slots ?? [])
     {
-        const uniform = patch.uniforms!.get(name);
+        const uniform = shadow.uniforms!.get(name);
 
         if (uniform && uniform.location && slot.set >= 0)
         {
@@ -236,7 +276,21 @@ function sync (n: Record<string, Fn>, gl: unknown, patch: Patch): void
         }
     }
 
-    patch.stale = false;
+    shadow.stale = false;
+}
+
+// A colour for an event, by its number: far apart for numbers that are close.
+function colourOfDraw (index: number): [number, number, number, number]
+{
+    const hue = (index * 0.618033988749895) % 1;
+    const part = (offset: number): number =>
+    {
+        const k = (offset + hue * 6) % 6;
+
+        return 0.25 + 0.75 * G.Math.max(0, G.Math.min(1, G.Math.min(k, 4 - k)));
+    };
+
+    return [part(5), part(3), part(1), 1];
 }
 
 function gate (c: Rec, gl: unknown): boolean
@@ -260,7 +314,7 @@ function gate (c: Rec, gl: unknown): boolean
 
     for (const patch of state.patches)
     {
-        if (patch.kind !== 'draws')
+        if (patch.kind !== 'draws' || patch.mode === 'solid')
         {
             continue;
         }
@@ -315,7 +369,55 @@ function gate (c: Rec, gl: unknown): boolean
 
                 if (patch.stale)
                 {
-                    sync(n, gl, patch);
+                    sync(n, gl, patch.program!, patch);
+                }
+
+                restores.push(() => n.useProgram.call(gl, own));
+            }
+        }
+        else if (patch.mode === 'solid' && program !== undefined && matches(patch.filter, program, index, t))
+        {
+            let solid = patch.solids!.get(program);
+
+            if (solid === undefined)
+            {
+                try
+                {
+                    solid = makeSolid(t.info, t, program, patch.colour === 'depth');
+                }
+                catch
+                {
+                    // A program that cannot be given a stand-in is drawn as the page made it.
+                    solid = null;
+                    patch.unmade = (patch.unmade ?? 0) + 1;
+                }
+
+                patch.solids!.set(program, solid);
+            }
+
+            patch.hits++;
+
+            if (solid)
+            {
+                const own = t.program;
+
+                if (patch.state)
+                {
+                    applyState(n, gl, t, patch.state, restores);
+                }
+
+                n.useProgram.call(gl, solid.shadow);
+
+                if (solid.stale)
+                {
+                    sync(n, gl, program, solid);
+                }
+
+                if (solid.colour)
+                {
+                    const colour = patch.colour === 'draw' ? colourOfDraw(index) : patch.colour as number[];
+
+                    n.uniform4f.call(gl, solid.colour, colour[0], colour[1], colour[2], colour[3]);
                 }
 
                 restores.push(() => n.useProgram.call(gl, own));
@@ -383,6 +485,13 @@ function onUniform (slot: UniformSlot): void
     {
         for (const patch of state.patches)
         {
+            const solid = patch.solids?.get(slot.program);
+
+            if (solid)
+            {
+                solid.stale = true;
+            }
+
             if (patch.program !== slot.program)
             {
                 continue;
@@ -403,7 +512,7 @@ function onUniform (slot: UniformSlot): void
 
 function wire (state: Patched): void
 {
-    const drawn = state.patches.some((patch) => patch.kind !== 'uniform');
+    const drawn = state.patches.some((patch) => patch.kind !== 'uniform' && patch.view !== 'wireframe');
 
     state.info.record.gate = drawn ? gate : null;
 
@@ -416,10 +525,29 @@ function wire (state: Patched): void
 
     for (const other of patched.values())
     {
-        watching = watching || other.patches.some((patch) => patch.kind === 'uniform' || patch.kind === 'shader');
+        watching = watching || other.patches.some((patch) => patch.kind === 'uniform' || patch.kind === 'shader' || patch.mode === 'solid');
     }
 
     uniformWatch.set = watching ? onUniform : null;
+
+    // The overdraw view counts up from black, whatever the page clears to.
+    let clearing = false;
+
+    for (const other of patched.values())
+    {
+        clearing = clearing || other.patches.some((patch) => patch.view === 'overdraw');
+    }
+
+    clearWatch.set = clearing ? onClearColour : null;
+}
+
+// The page has set its clear colour while the overdraw view is on: black again.
+function onClearColour (t: GlTracker): void
+{
+    if (patched.get(t.info.id)?.patches.some((patch) => patch.view === 'overdraw'))
+    {
+        t.info.natives.clearColor.call(t.info.ctx, 0, 0, 0, 1);
+    }
 }
 
 // ---- Making patches ----
@@ -524,27 +652,29 @@ function edited (source: string, spec: { source?: string; edits?: Array<{ find: 
     return { text, said: said.join('; ') };
 }
 
-function makeShadow (info: ContextInfo, t: GlTracker, patch: Patch, spec: any): string
+// A second program linked from a program's own shaders, with one of them changed: every
+// attribute where it was, and uniform blocks bound where the page's are.
+function linkShadow (info: ContextInfo, t: GlTracker, program: number, which: number | undefined, change: (source: string) => string): { shadow: unknown; uniforms: Map<string, ShadowUniform>; type: number; log: string }
 {
     const n = info.natives;
     const gl = info.ctx;
-    const { entry, object } = programOf(info, patch.program!);
+    const { entry, object } = programOf(info, program);
     const shaders = (entry.p.shaders as number[]).map((id) => find('shader', id)).filter(G.Boolean) as Array<NonNullable<ReturnType<typeof find>>>;
-    const target = spec.shader !== undefined ? shaders.find((shader) => shader.id === spec.shader) : shaders.find((shader) => shader.p.type === 0x8B30);
+    const target = which !== undefined ? shaders.find((shader) => shader.id === which) : shaders.find((shader) => shader.p.type === 0x8B30);
 
     if (!target)
     {
-        throw new Error(spec.shader !== undefined ? `Shader ${spec.shader} is not one of this program's.` : 'This program has no fragment shader to patch. Name one of its shaders.');
+        throw new Error(which !== undefined ? `Shader ${which} is not one of this program's.` : 'This program has no fragment shader to patch. Name one of its shaders.');
     }
 
-    const change = edited(G.String(target.p.source ?? ''), spec);
+    const text = change(G.String(target.p.source ?? ''));
     const shadow = n.createProgram.call(gl);
     const logs: string[] = [];
     const made: unknown[] = [];
 
     for (const shader of shaders)
     {
-        const result = compile(n, gl, shader.p.type, shader === target ? change.text : G.String(shader.p.source ?? ''));
+        const result = compile(n, gl, shader.p.type, shader === target ? text : G.String(shader.p.source ?? ''));
 
         made.push(result.shader);
 
@@ -611,15 +741,81 @@ function makeShadow (info: ContextInfo, t: GlTracker, patch: Patch, spec: any): 
         }
     }
 
-    patch.shadow = shadow;
-    patch.uniforms = uniformsOf(n, gl, shadow);
-    patch.stale = true;
-    patch.description = `${target.p.type === 0x8B30 ? 'fragment' : 'vertex'} shader of program ${patch.program}: ${change.said}`;
-
-    return logs.join('\n');
+    return { shadow, uniforms: uniformsOf(n, gl, shadow), type: target.p.type, log: logs.join('\n') };
 }
 
-function makeTexture (info: ContextInfo, t: GlTracker, kind: string): unknown
+function makeShadow (info: ContextInfo, t: GlTracker, patch: Patch, spec: any): string
+{
+    let said = '';
+
+    const made = linkShadow(info, t, patch.program!, spec.shader, (source) =>
+    {
+        const change = edited(source, spec);
+
+        said = change.said;
+
+        return change.text;
+    });
+
+    patch.shadow = made.shadow;
+    patch.uniforms = made.uniforms;
+    patch.stale = true;
+    patch.description = `${made.type === 0x8B30 ? 'fragment' : 'vertex'} shader of program ${patch.program}: ${said}`;
+
+    return made.log;
+}
+
+// A fragment shader that runs the page's own and then writes one colour (or the
+// fragment's depth) to every colour it writes. The page's main() is renamed and called
+// from a new one, so a fragment the page's shader discards is still discarded.
+export function solidSource (source: string, depth: boolean): string
+{
+    if (!/\bvoid\s+main\s*\(/.test(source))
+    {
+        throw new Error('The fragment shader has no main() to wrap.');
+    }
+
+    const value = depth ? 'vec4(vec3(gl_FragCoord.z), 1.0)' : 'scanlineSolid';
+    const plain = source.replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, '');
+    const writes: string[] = [];
+
+    if (/^\s*#version\s+300\s+es/m.test(source))
+    {
+        const parts: Record<string, string> = { vec4: '', vec3: '.rgb', vec2: '.rg', float: '.r' };
+
+        for (const found of plain.matchAll(/\bout\s+(?:(?:lowp|mediump|highp)\s+)?(vec4|vec3|vec2|float)\s+(\w+)\s*(\[[^\]]*\])?\s*;/g))
+        {
+            writes.push(`${found[2]}${found[3] ? '[0]' : ''} = (${value})${parts[found[1]]};`);
+        }
+
+        if (writes.length === 0)
+        {
+            throw new Error('The fragment shader writes no colour.');
+        }
+    }
+    else
+    {
+        writes.push(/\bgl_FragData\b/.test(plain) ? `gl_FragData[0] = ${value};` : `gl_FragColor = ${value};`);
+    }
+
+    return `${source.replace(/\bvoid\s+main\s*\(/, 'void scanline_main(')}
+uniform mediump vec4 scanlineSolid;
+void main ()
+{
+    scanline_main();
+    ${writes.join('\n    ')}
+}
+`;
+}
+
+function makeSolid (info: ContextInfo, t: GlTracker, program: number, depth: boolean): Solid
+{
+    const made = linkShadow(info, t, program, undefined, (source) => solidSource(source, depth));
+
+    return { shadow: made.shadow, uniforms: made.uniforms, stale: true, colour: depth ? null : info.natives.getUniformLocation.call(info.ctx, made.shadow, 'scanlineSolid') };
+}
+
+function makeTexture (info: ContextInfo, t: GlTracker, kind: string, image?: { width: number; height: number; pixels: Uint8Array }): unknown
 {
     const n = info.natives;
     const gl = info.ctx;
@@ -654,7 +850,22 @@ function makeTexture (info: ContextInfo, t: GlTracker, kind: string): unknown
         n.texImage2D.call(gl, 0x0DE1, at, 0x1908, edge, edge, 0, 0x1908, 0x1401, data);
     };
 
-    if (kind === 'mips')
+    if (image)
+    {
+        // Rows from the top, as an image is: the first row is where t is 0.
+        const power = (edge: number): boolean => (edge & (edge - 1)) === 0;
+
+        n.texImage2D.call(gl, 0x0DE1, 0, 0x1908, image.width, image.height, 0, 0x1908, 0x1401, image.pixels);
+        n.texParameteri.call(gl, 0x0DE1, 0x2801, 0x2601);
+
+        if (!t.gl2 && !(power(image.width) && power(image.height)))
+        {
+            // WebGL 1 samples a texture of any other size only when it does not repeat.
+            n.texParameteri.call(gl, 0x0DE1, 0x2802, 0x812F);
+            n.texParameteri.call(gl, 0x0DE1, 0x2803, 0x812F);
+        }
+    }
+    else if (kind === 'mips')
     {
         // Each level its own colour, so the level a draw samples shows on screen.
         const colours: Array<[number, number, number]> = [[255, 0, 0], [255, 128, 0], [255, 255, 0], [0, 255, 0], [0, 255, 255], [0, 0, 255], [255, 0, 255]];
@@ -672,12 +883,33 @@ function makeTexture (info: ContextInfo, t: GlTracker, kind: string): unknown
         n.texParameteri.call(gl, 0x0DE1, 0x2801, 0x2600);
     }
 
-    n.texParameteri.call(gl, 0x0DE1, 0x2800, 0x2600);
+    n.texParameteri.call(gl, 0x0DE1, 0x2800, image ? 0x2601 : 0x2600);
     n.pixelStorei.call(gl, 0x9240, flip);
     n.pixelStorei.call(gl, 0x9241, premultiply);
     n.bindTexture.call(gl, 0x0DE1, t.units[t.unit]?.t2d ?? null);
 
     return texture;
+}
+
+// The image a file stand-in is made from, as the host sends it: RGBA, rows from the top.
+export function imageOf (args: any): { width: number; height: number; pixels: Uint8Array }
+{
+    const width = G.Number(args.width) | 0;
+    const height = G.Number(args.height) | 0;
+    const text: string = G.atob(G.String(args.pixels ?? ''));
+    const pixels = new G.Uint8Array(text.length) as Uint8Array;
+
+    for (let i = 0; i < text.length; i++)
+    {
+        pixels[i] = text.charCodeAt(i);
+    }
+
+    if (width < 1 || height < 1 || pixels.length !== width * height * 4)
+    {
+        throw new Error('The image for a texture stand-in did not arrive whole.');
+    }
+
+    return { width, height, pixels };
 }
 
 function filterSaid (filter: Filter): string
@@ -696,6 +928,25 @@ function drop (state: Patched, patch: Patch): void
     const n = state.info.natives;
     const gl = state.info.ctx;
     const t = trackerFor(state.info);
+
+    for (const solid of patch.solids?.values() ?? [])
+    {
+        if (solid)
+        {
+            n.deleteProgram.call(gl, solid.shadow);
+        }
+    }
+
+    if (patch.view === 'overdraw' && t)
+    {
+        // Back to the colour the page last asked for.
+        n.clearColor.call(gl, t.clearColor[0], t.clearColor[1], t.clearColor[2], t.clearColor[3]);
+    }
+
+    if (patch.view === 'wireframe')
+    {
+        n.getExtension.call(gl, 'WEBGL_polygon_mode')?.polygonModeWEBGL(0x0408, 0x1B02);
+    }
 
     if (patch.kind === 'shader' && patch.shadow)
     {
@@ -769,8 +1020,69 @@ export function installPatches (): void
         switch (args.kind)
         {
             case 'draws':
+                if (args.mode === 'solid')
+                {
+                    const colour: number[] = G.Array.isArray(args.colour) && args.colour.length >= 3 ? [G.Number(args.colour[0]), G.Number(args.colour[1]), G.Number(args.colour[2]), G.Number(args.colour[3] ?? 1)] : [1, 0, 1, 1];
+
+                    patch.mode = 'solid';
+                    patch.colour = colour;
+                    patch.solids = new G.Map();
+                    patch.description = `${filterSaid(filter)} are drawn in one flat colour (${colour.join(', ')}); what their shaders discard is still discarded`;
+                    break;
+                }
+
                 patch.mode = args.mode === 'isolate' ? 'isolate' : 'skip';
                 patch.description = patch.mode === 'isolate' ? `only ${filterSaid(filter)} are drawn` : `${filterSaid(filter)} are not drawn`;
+                break;
+
+            case 'view':
+                patch.view = G.String(args.view);
+
+                switch (patch.view)
+                {
+                    case 'wireframe':
+                    {
+                        const mode = info.natives.getExtension.call(info.ctx, 'WEBGL_polygon_mode');
+
+                        if (!mode)
+                        {
+                            throw new Error('This browser has no WEBGL_polygon_mode for this context, which the live wireframe view draws with. view(capture, view: "wireframe") draws it from a capture.');
+                        }
+
+                        mode.polygonModeWEBGL(0x0408, 0x1B01);
+                        patch.description = 'every triangle is drawn as its outline';
+                        break;
+                    }
+
+                    case 'overdraw':
+                        patch.mode = 'solid';
+                        patch.colour = [0.125, 0.045, 0.015, 0];
+                        patch.state = { blend_add: true, depth_test: false, depth_write: false };
+                        patch.solids = new G.Map();
+                        info.natives.clearColor.call(info.ctx, 0, 0, 0, 1);
+                        patch.description = 'overdraw: the frame is cleared to black and every draw adds a little orange where it lands, with the depth test off, so brighter is drawn more often (eight layers reach full red)';
+                        break;
+
+                    case 'draw_id':
+                        patch.mode = 'solid';
+                        patch.colour = 'draw';
+                        patch.state = { blend: false };
+                        patch.solids = new G.Map();
+                        patch.description = 'each draw is drawn in a flat colour of its own, by its event number, with blending off';
+                        break;
+
+                    case 'depth':
+                        patch.mode = 'solid';
+                        patch.colour = 'depth';
+                        patch.state = { blend: false };
+                        patch.solids = new G.Map();
+                        patch.description = 'each draw writes its depth as grey (near is dark, far is light), with blending off';
+                        break;
+
+                    default:
+                        throw new Error(`There is no live "${patch.view}" view. On the running page: overdraw, wireframe, draw_id and depth, and the views the page registered. view(capture, view) has stencil, mip and nan.`);
+                }
+
                 break;
 
             case 'state':
@@ -825,11 +1137,12 @@ export function installPatches (): void
                     throw new Error(`There is no live texture ${args.texture} in this context.`);
                 }
 
-                const kind = ['checker', 'white', 'black', 'mips'].includes(args.with) ? args.with : 'checker';
+                const kind = ['checker', 'white', 'black', 'mips', 'file'].includes(args.with) ? args.with : 'checker';
+                const image = kind === 'file' ? imageOf(args) : undefined;
 
                 patch.texture = args.texture;
-                patch.replacement = makeTexture(info, t, kind);
-                patch.description = `texture ${args.texture} drawn as ${kind === 'mips' ? 'a texture whose mip levels are each a different colour' : (kind === 'checker' ? 'a checkerboard' : `plain ${kind}`)}${filter.program !== undefined || filter.draws !== undefined ? ` for ${filterSaid(filter)}` : ''}`;
+                patch.replacement = makeTexture(info, t, kind, image);
+                patch.description = `texture ${args.texture} drawn as ${image ? `the ${image.width}×${image.height} image given` : (kind === 'mips' ? 'a texture whose mip levels are each a different colour' : (kind === 'checker' ? 'a checkerboard' : `plain ${kind}`))}${filter.program !== undefined || filter.draws !== undefined ? ` for ${filterSaid(filter)}` : ''}`;
                 break;
             }
 
@@ -859,7 +1172,15 @@ export function installPatches (): void
         {
             for (const patch of state.patches)
             {
-                out.push({ patch: patch.id, kind: patch.kind, context: patch.context, description: patch.description, draws: G.Math.max(patch.hits, patch.lastHits) });
+                out.push({
+                    patch: patch.id,
+                    kind: patch.kind,
+                    context: patch.context,
+                    description: patch.description,
+                    draws: G.Math.max(patch.hits, patch.lastHits),
+                    view: patch.view,
+                    failure: patch.unmade ? `${patch.unmade} program${patch.unmade === 1 ? '' : 's'} could not be given a flat-colour stand-in and ${patch.unmade === 1 ? 'is' : 'are'} drawn as the page made ${patch.unmade === 1 ? 'it' : 'them'}` : undefined
+                });
             }
         }
 
@@ -868,9 +1189,9 @@ export function installPatches (): void
         return { patches: out };
     });
 
-    expose('patch.remove', (args: { patch?: number; all?: boolean }) =>
+    expose('patch.remove', (args: { patch?: number; all?: boolean; views?: boolean }) =>
     {
-        let removed = gpuPatchRemove(args);
+        const gone: number[] = gpuPatchRemove(args);
 
         for (const state of patched.values())
         {
@@ -878,10 +1199,10 @@ export function installPatches (): void
 
             for (const patch of state.patches)
             {
-                if (args.all || patch.id === args.patch)
+                if (args.all || patch.id === args.patch || (args.views && patch.kind === 'view'))
                 {
                     drop(state, patch);
-                    removed++;
+                    gone.push(patch.id);
                 }
                 else
                 {
@@ -893,6 +1214,6 @@ export function installPatches (): void
             wire(state);
         }
 
-        return { removed };
+        return { removed: gone.length, ids: gone };
     });
 }

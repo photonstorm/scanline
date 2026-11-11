@@ -155,7 +155,7 @@ describe('a page that uses the protocol', () =>
         await scanline('step');
 
         assert.doesNotMatch((await scanline('page', 'groups')).out, /«debug»/);
-        assert.match((await scanline('live_view', 'overdraw')).out, /"overdraw" on the running page is not built\. view\(capture, kind: "overdraw"\)/);
+        assert.match((await scanline('live_view', 'stencil')).out, /The stencil view reads a finished frame and is not drawn on the running page.*and the page's own views: «bounds» \(off\)/);
         assert.match((await scanline('live_view', 'nope')).out, /The page has no view «nope»\. It has: «bounds» \(off\)/);
     });
 
@@ -224,7 +224,7 @@ describe('a page that uses the protocol', () =>
 
         assert.match(page.out, /The page has made no page-protocol calls/);
         assert.match((await scanline('page', 'controls')).out, /The page registered no controls/);
-        assert.match((await scanline('live_view')).out, /The page registered no debug views/);
+        assert.match((await scanline('live_view')).out, /The page registered no debug views of its own/);
         assert.match((await scanline('page', 'checkpoint')).out, /The page offers no checkpoints/);
     });
 });

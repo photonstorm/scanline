@@ -32,7 +32,10 @@ export interface GpuPatch
     pipeline?: number;
 
     // draws
-    mode?: 'skip' | 'isolate';
+    mode?: 'skip' | 'isolate' | 'solid';
+
+    // A live view (overdraw, draw_id): what it is called.
+    view?: string;
 
     // state
     state?: Record<string, any>;
@@ -902,24 +905,25 @@ export function gpuPatchList (): Array<Record<string, unknown>>
     return patches.map((patch) => ({ patch: patch.id, kind: patch.kind, context: 0, description: patch.description, draws: G.Math.max(patch.hits, patch.lastHits), failure }));
 }
 
-export function gpuPatchRemove (args: { patch?: number; all?: boolean }): number
+export function gpuPatchRemove (args: { patch?: number; all?: boolean; views?: boolean }): number[]
 {
-    const before = patches.length;
+    const gone: number[] = [];
 
     for (let index = patches.length - 1; index >= 0; index--)
     {
-        if (args.all || patches[index].id === args.patch)
+        if (args.all || patches[index].id === args.patch || (args.views && patches[index].view !== undefined))
         {
+            gone.push(patches[index].id);
             patches.splice(index, 1);
         }
     }
 
-    if (patches.length !== before)
+    if (gone.length > 0)
     {
         wire();
     }
 
-    return before - patches.length;
+    return gone;
 }
 
 export function gpuPatchFrame (): void

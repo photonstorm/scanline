@@ -233,11 +233,28 @@ pub async fn patch_draws(session: &Arc<Session>, params: &Value) -> Result<Value
     let context = choose_context(session, params).await?;
     let mode = params["mode"].as_str().unwrap_or("skip");
 
-    if !["skip", "isolate"].contains(&mode) {
-        bail!("mode is skip (the matching draws are not drawn) or isolate (only they are), not \"{mode}\".");
+    if !["skip", "isolate", "solid"].contains(&mode) {
+        bail!("mode is skip (the matching draws are not drawn), isolate (only they are) or solid (they are drawn in one flat colour), not \"{mode}\".");
     }
 
     let filter = filter_of(session, &context, &params["filter"])?;
+
+    if mode == "solid" {
+        let colour = match &params["colour"] {
+            Value::Null => Value::Null,
+            Value::Array(parts) if (3..=4).contains(&parts.len()) && parts.iter().all(Value::is_number) => params["colour"].clone(),
+            _ => bail!("colour is [r, g, b] or [r, g, b, a], each from 0 to 1. Left out: magenta."),
+        };
+        let (handle, made) = add(session, &context, json!({ "kind": "draws", "mode": "solid", "colour": colour, "filter": filter })).await?;
+
+        return Ok(done(
+            session,
+            &context,
+            &handle,
+            &made,
+            vec!["The shape, the tests and what the shader discards are the page's own; only the colour written is replaced. A draw that still does not show is not reaching the target: geometry and pixel_history on a capture say why.".to_string()],
+        ));
+    }
 
     if mode == "skip" && filter.as_object().is_some_and(|filter| filter.is_empty()) {
         bail!("patch_draws needs a filter: which draws to skip. For example filter: {{\"program\": \"prg_2\"}} or {{\"draws\": [6, 8]}}.");
@@ -370,15 +387,104 @@ pub async fn patch_texture(session: &Arc<Session>, params: &Value) -> Result<Val
     let target = params["handle"].as_str().ok_or_else(|| anyhow!("patch_texture needs handle: the texture to stand in for, such as \"tex_3\"."))?;
     let with = params["with"].as_str().unwrap_or("checker");
 
-    if !["checker", "white", "black", "mips"].contains(&with) {
-        bail!("with is checker, white, black or mips (each mip level a different colour), not \"{with}\".");
-    }
-
     let texture = id_of(session, &context, target, "texture")?;
     let filter = filter_of(session, &context, &params["filter"])?;
-    let (handle, made) = add(session, &context, json!({ "kind": "texture", "texture": texture, "with": with, "filter": filter })).await?;
+    let mut args = json!({ "kind": "texture", "texture": texture, "with": with, "filter": filter });
 
-    Ok(done(session, &context, &handle, &made, Vec::new()))
+    // A file was read by the host (with_image) and comes as its pixels.
+    if params[IMAGE].is_object() {
+        args["with"] = json!("file");
+        args["width"] = params[IMAGE]["width"].clone();
+        args["height"] = params[IMAGE]["height"].clone();
+        args["pixels"] = params[IMAGE]["pixels"].clone();
+    } else if !["checker", "white", "black", "mips"].contains(&with) {
+        bail!("with is checker, white, black, mips (each mip level a different colour) or the path of a PNG file, not \"{with}\".");
+    }
+
+    let (handle, made) = add(session, &context, args).await?;
+
+    Ok(done(
+        session,
+        &context,
+        &handle,
+        &made,
+        if params[IMAGE].is_object() {
+            vec![format!(
+                "The image is {}, sampled with linear filtering and no mipmaps; its first row is where the texture coordinate t is 0.",
+                page_text(with, 200)
+            )]
+        } else {
+            Vec::new()
+        },
+    ))
+}
+
+/// Where the pixels of a file given to patch_texture travel in its parameters.
+const IMAGE: &str = "_image";
+
+/// patch_texture's parameters with the file it names, if it names one, read and put
+/// beside them as pixels. The host reads the file: the page never sees a path.
+pub fn with_image(host: &crate::Host, params: &Value) -> Result<Value> {
+    let with = params["with"].as_str().unwrap_or("checker");
+
+    if ["checker", "white", "black", "mips"].contains(&with) {
+        return Ok(params.clone());
+    }
+
+    let path = crate::tiers::file(host, with, "The image")?;
+    let bytes = std::fs::read(&path)
+        .map_err(|error| anyhow!("with is checker, white, black, mips or the path of a PNG file. {} could not be read: {error}.", path.display()))?;
+    let image = scanline_image::Image::from_png(&bytes).map_err(|error| anyhow!("{} is not a PNG this can read: {error}.", path.display()))?;
+
+    // A stand-in has no need to be large, and it travels to the page as text.
+    let (image, _) = image.fit(2048);
+    let mut out = params.clone();
+
+    out[IMAGE] = json!({
+        "width": image.width,
+        "height": image.height,
+        "pixels": base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &image.data),
+    });
+
+    Ok(out)
+}
+
+/// A view of the whole frame on the running page: overdraw, outlines, a colour for each
+/// draw, or depth. It is a patch like any other, and patches(revert) undoes it.
+pub async fn view(session: &Arc<Session>, params: &Value, which: &str) -> Result<Value> {
+    let context = choose_context(session, params).await?;
+    let (handle, made) = add(session, &context, json!({ "kind": "view", "view": which })).await?;
+
+    Ok(done(
+        session,
+        &context,
+        &handle,
+        &made,
+        vec![format!(
+            "It is the page's own frame, drawn as it runs: offscreen passes are drawn this way too, so what a later pass makes of them shows as well. view(capture, view: \"{which}\") measures one frame exactly. live_view(view: \"off\") switches it off."
+        )],
+    ))
+}
+
+/// Switches every live view off. Returns how many there were.
+pub async fn views_off(session: &Arc<Session>) -> usize {
+    let replies = session.probe_all("patch.remove", json!({ "views": true }), SHORT).await;
+    let mut gone = 0;
+
+    for (instance, reply) in &replies {
+        for id in reply["ids"].as_array().into_iter().flatten().filter_map(Value::as_i64) {
+            let mut state = session.state.lock().unwrap();
+            let handle = state.patches.iter().find(|(_, entry)| entry.0 == *instance && entry.1 == id).map(|(handle, _)| handle.clone());
+
+            if let Some(handle) = handle {
+                state.patches.remove(&handle);
+            }
+
+            gone += 1;
+        }
+    }
+
+    gone
 }
 
 /// The patches in force, each with what it changes; or, with revert, one or all undone.

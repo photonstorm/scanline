@@ -200,6 +200,13 @@ pub(crate) fn refusal(tiers: &Tiers, method: &str, params: &Value, page: Option<
         }
     }
 
+    // Scanline's own live views draw the page with shaders of Scanline's making: a patch.
+    if method == "live_view" && matches!(params["view"].as_str(), Some("overdraw" | "wireframe" | "draw_id" | "depth")) {
+        if let Some(why) = refusal(tiers, "patch_state", &Value::Null, page) {
+            return Some(why.replacen("patch_state is", "live_view with one of Scanline's own views patches the page's draws, which is", 1));
+        }
+    }
+
     match method {
         "pause" | "resume" | "step" | "run_until" | "input" | "request_human" | "take_control" | "debug" | "strip" | "replay_run" | "live_view"
             if !tiers.control =>

@@ -447,9 +447,12 @@ pub async fn live_view(session: &Arc<Session>, params: &Value) -> Result<Value> 
     let Some(wanted) = params["view"].as_str() else {
         return Ok(result(
             if views.is_empty() {
-                "The page registered no debug views (views.register), so there is nothing to switch on live. view(capture, kind) draws overdraw and wireframe from a capture.".to_string()
+                "live_view(view) draws the running page another way: overdraw, wireframe, draw_id or depth. view: \"off\" switches it off. The page registered no debug views of its own (views.register).".to_string()
             } else {
-                format!("Views the page can draw: {}. live_view(view: \"id\") switches one on; on: false, or view: \"off\" for all, switches off.", listed())
+                format!(
+                    "Views the page can draw: {}. live_view(view: \"id\") switches one on; on: false, or view: \"off\" for all, switches off. Scanline's own, on any page: overdraw, wireframe, draw_id, depth.",
+                    listed()
+                )
             },
             json!({ "views": said["views"] }),
         ));
@@ -465,17 +468,42 @@ pub async fn live_view(session: &Arc<Session>, params: &Value) -> Result<Value> 
             switched.push(format!("«{}»", page_text(id, 60)));
         }
 
+        let own = crate::patch::views_off(session).await;
+
+        if own > 0 {
+            switched.push(format!("{own} of Scanline's own"));
+        }
+
         return Ok(result(
             if switched.is_empty() { "No view was on.".to_string() } else { format!("Switched off: {}. It shows from the next frame.", switched.join(", ")) },
             json!({ "off": switched.len() }),
         ));
     }
 
-    if ["overdraw", "wireframe", "depth", "stencil", "mip", "nan"].contains(&wanted) && !views.iter().any(|view| view["id"] == wanted) {
-        bail!(
-            "live_view switches on views the page registered; \"{wanted}\" on the running page is not built. view(capture, kind: \"{wanted}\") draws it from a capture{}.",
-            if views.is_empty() { String::new() } else { format!(". The page's own views: {}", listed()) }
-        );
+    // Scanline's own views need nothing from the page. A page's view of the same name comes first.
+    if !views.iter().any(|view| view["id"] == wanted) {
+        if ["overdraw", "wireframe", "draw_id", "depth"].contains(&wanted) {
+            if params["on"] == false {
+                let own = crate::patch::views_off(session).await;
+
+                return Ok(result(
+                    if own > 0 { "Switched off. It shows from the next frame." } else { "No view of Scanline's own was on." },
+                    json!({ "off": own }),
+                ));
+            }
+
+            // One at a time: two would draw over each other.
+            crate::patch::views_off(session).await;
+
+            return crate::patch::view(session, params, wanted).await;
+        }
+
+        if ["stencil", "mip", "nan"].contains(&wanted) {
+            bail!(
+                "The {wanted} view reads a finished frame and is not drawn on the running page. view(capture, view: \"{wanted}\") draws it from a capture. On the running page: overdraw, wireframe, draw_id, depth{}.",
+                if views.is_empty() { String::new() } else { format!(", and the page's own views: {}", listed()) }
+            );
+        }
     }
 
     let on = params["on"].as_bool().unwrap_or(true);

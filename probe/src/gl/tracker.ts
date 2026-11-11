@@ -523,6 +523,9 @@ function setStencil (t: GlTracker, face: number, apply: (side: StencilSide) => v
 // Set while a live patch needs to know of every uniform the page sets (patch.ts).
 export const uniformWatch: { set: null | ((slot: UniformSlot) => void) } = { set: null };
 
+// Set while a live view holds the clear colour (patch.ts): called when the page has set its own.
+export const clearWatch: { set: null | ((tracker: GlTracker) => void) } = { set: null };
+
 function uniformN (location: object | null, count: number, a: number, b: number, c: number, d: number): void
 {
     const slot = location ? locationTag.get(location) : undefined;
@@ -874,6 +877,11 @@ const handlers: Record<string, H> = {
             v[1] = g;
             v[2] = b;
             v[3] = a;
+
+            if (clearWatch.set !== null)
+            {
+                clearWatch.set(t);
+            }
         }
     },
 

@@ -535,13 +535,14 @@ pub const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "patch_draws",
-        description: "Leave some of the running page's draws out (skip), or draw only them (isolate), from now on. To see what a draw contributes, or what is behind it. Returns a patch handle; patches(revert) undoes it.",
+        description: "Leave some of the running page's draws out (skip), draw only them (isolate), or draw them in one flat colour (solid), from now on. To see what a draw contributes, what is behind it, or where it lands whatever its shader and textures do. Returns a patch handle; patches(revert) undoes it.",
         schema: schema!(
             "[]",
             session!(),
             context!(),
             r#""filter": { "type": "object", "description": "Which draws. WebGL: {\"program\": \"prg_2\"}, {\"texture\": \"tex_3\"} and/or {\"draws\": [6, 8]} (event numbers, as draw_list gives them). WebGPU: {\"pipeline\": \"pip_2\"}.", "properties": { "program": { "type": "string" }, "pipeline": { "type": "string" }, "texture": { "type": "string" }, "draws": {} } }"#,
-            r#""mode": { "type": "string", "enum": ["skip", "isolate"], "description": "Default skip." }"#,
+            r#""mode": { "type": "string", "enum": ["skip", "isolate", "solid"], "description": "Default skip." }"#,
+            r#""colour": { "type": "array", "items": { "type": "number" }, "description": "solid: [r, g, b] or [r, g, b, a], each 0 to 1. Default magenta." }"#,
             r#""keep": { "type": "boolean", "description": "Make the patch again after a reload (navigate(reload: true), replay_run), so a fix can be tried from the first frame." }"#,
         ),
         read_only: false,
@@ -592,13 +593,13 @@ pub const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "patch_texture",
-        description: "Draw with a stand-in wherever one texture of the running page is bound: a checkerboard (are the texture coordinates right?), plain white or black, or (WebGL) a texture whose mip levels are each a different colour (which level is sampled?). Returns a patch handle.",
+        description: "Draw with a stand-in wherever one texture of the running page is bound: a checkerboard (are the texture coordinates right?), plain white or black, a texture whose mip levels are each a different colour (which level is sampled? WebGL), or a PNG file of your own (is the art at fault, or the shader?). Returns a patch handle.",
         schema: schema!(
             r#"["handle"]"#,
             session!(),
             context!(),
             r#""handle": { "type": "string", "description": "The texture, such as tex_3." }"#,
-            r#""with": { "type": "string", "enum": ["checker", "white", "black", "mips"], "description": "Default checker." }"#,
+            r#""with": { "type": "string", "description": "checker (the default), white, black, mips, or the path of a PNG file." }"#,
             r#""filter": { "type": "object", "description": "Only for these draws: {\"program\": \"prg_2\"} and/or {\"draws\": [6, 8]} (event numbers).", "properties": { "program": { "type": "string" }, "draws": {} } }"#,
             r#""keep": { "type": "boolean", "description": "Make the patch again after a reload (navigate(reload: true), replay_run), so a fix can be tried from the first frame." }"#,
         ),
@@ -658,12 +659,12 @@ pub const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "live_view",
-        description: "Switch on a debug view the page registered (collision shapes, a shadow cascade overlay, a G-buffer channel): the page draws it itself from the next frame. With no view, lists them. view: \"off\" switches every one off. For overdraw and wireframe, which need no help from the page, use view on a capture.",
+        description: "Draw the running page another way, from the next frame. Scanline's own views work on any page: overdraw (brighter is drawn more often), wireframe, draw_id (each draw a flat colour of its own) and depth. A view the page registered (collision shapes, a shadow cascade overlay, a G-buffer channel) is drawn by the page itself. With no view, lists them. view: \"off\" switches every one off. view on a capture measures one frame exactly.",
         schema: schema!(
             "[]",
             session!(),
             context!(),
-            r#""view": { "type": "string", "description": "A view's id as the page registered it, or \"off\"." }"#,
+            r#""view": { "type": "string", "description": "overdraw, wireframe, draw_id, depth, a view's id as the page registered it, or \"off\"." }"#,
             r#""on": { "type": "boolean", "description": "Default true." }"#,
         ),
         read_only: false,
