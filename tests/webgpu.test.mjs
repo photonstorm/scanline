@@ -15,11 +15,11 @@
 
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, afterEach, before, describe, test } from 'node:test';
-import { inflateSync } from 'node:zlib';
+import { crc32, deflateSync, inflateSync } from 'node:zlib';
 import { repoRoot, serve } from '../spikes/lib/serve.mjs';
 
 const binary = join(repoRoot, 'target', 'debug', 'scanline');
@@ -409,3 +409,150 @@ describe('GPU time by draw of a WebGPU capture', () =>
         assert.equal(passes.json.data.rows[0].pass, '1');
     });
 });
+
+describe('live patches on a WebGPU page', () =>
+{
+    const pixel = async (x, y) => (await scanline('pixels', x, y, '--json')).json.data.rgba8;
+
+    // A under B, B alone, D's kept half, D's discarded half.
+    const look = async () =>
+    {
+        await scanline('step', 2);
+
+        return { a: await pixel(20, 60), both: await pixel(60, 60), b: await pixel(100, 60), d: await pixel(140, 90), none: await pixel(140, 30) };
+    };
+
+    const open = async () =>
+    {
+        await scanline('launch', server.url('fixtures/history/analysis-webgpu.html'), '--headless', '--paused');
+        await scanline('step', 3);
+        await scanline('resources', 'pipeline');
+        await scanline('resources', 'texture');
+
+        return look();
+    };
+
+    test('the running page is drawn as overdraw and as a colour for each draw', async () =>
+    {
+        const plain = await open();
+        const over = await scanline('live_view', 'overdraw');
+
+        assert.match(over.out, /^pat_\d+: overdraw: a pass that clears a colour clears it to black/);
+
+        // One layer adds (32, 11, 4). A and B overlap; D's shader discards its top half,
+        // which is therefore not counted: the page's own fragments decide.
+        let seen = await look();
+
+        assert.deepEqual(seen.a, [32, 11, 4, 255]);
+        assert.deepEqual(seen.both, [64, 22, 8, 255]);
+        assert.deepEqual(seen.d, [32, 11, 4, 255]);
+        assert.deepEqual(seen.none, [0, 0, 0, 255]);
+
+        await scanline('live_view', 'draw_id');
+        seen = await look();
+        assert.deepEqual(seen.none, plain.none, 'the clear colour is the page\'s again');
+        assert.notDeepEqual(seen.a, plain.a);
+        assert.notDeepEqual(seen.a, seen.b, 'each draw has a colour of its own');
+        assert.notDeepEqual(seen.b, seen.d);
+        assert.match((await scanline('patches')).out, /^1 patch in force/);
+
+        assert.match((await scanline('live_view', 'off')).out, /Switched off: 1 of Scanline's own/);
+        assert.deepEqual(await look(), plain);
+        assert.match((await scanline('live_view', 'wireframe')).out, /The live wireframe view is for WebGL\. On a WebGPU page: overdraw and draw_id live/);
+        assert.doesNotMatch((await scanline('console', '--level', 'error')).out, /not compatible|is invalid|Invalid/);
+    });
+
+    test('draws are named by event number or by a texture, and drawn in one flat colour', async () =>
+    {
+        const plain = await open();
+
+        // B is event 6 of the frame, as draw_list numbers it.
+        const solid = await scanline('patch_draws', '--mode', 'solid', '--filter', '{"draws": 6}', '--colour', '[0, 1, 0]');
+
+        assert.match(solid.out, /^pat_\d+: draws at event 6 of the frame are drawn in one flat colour \(0, 1, 0, 1\)/);
+
+        let seen = await look();
+
+        assert.deepEqual(seen.b, [0, 255, 0, 255]);
+        assert.deepEqual([seen.a, seen.both, seen.d], [plain.a, plain.both, plain.d], 'B is still behind A, and nothing else changed');
+        await scanline('patches', '--revert', 'all');
+
+        // D is the one draw with «checks» in a bind group. A flat colour keeps its discard.
+        await scanline('patch_draws', '--mode', 'solid', '--filter', '{"texture": "tex_1"}');
+        seen = await look();
+        assert.deepEqual(seen.d, [255, 0, 255, 255]);
+        assert.deepEqual(seen.none, plain.none, 'the half its shader discards is still discarded');
+        await scanline('patches', '--revert', 'all');
+
+        const skipped = await scanline('patch_draws', '--filter', '{"texture": "tex_1"}');
+
+        assert.match(skipped.out, /draws with tex_1 in a bind group are not drawn/);
+        seen = await look();
+        assert.deepEqual(seen.d, plain.none);
+        assert.match((await scanline('patches')).out, /are not drawn {2}\(1 draw a frame\)/);
+        await scanline('patches', '--revert', 'all');
+        assert.deepEqual(await look(), plain);
+    });
+
+    test('a uniform is held by the name its shader gives it, and put back', async () =>
+    {
+        const plain = await open();
+        const held = await scanline('patch_uniform', '--target', 'pip_1', '--name', 'colour', '--value', '[0, 1, 1, 1]', '--json');
+
+        assert.equal(held.code, 0, held.out);
+        assert.equal(held.json.data.description, 'uniform tint.colour (vec4f) held at 0, 1, 1, 1 for draws that use pip_1');
+
+        // A and B are drawn with pip_1, each from a buffer of its own; D with another pipeline.
+        let seen = await look();
+
+        assert.deepEqual([seen.a, seen.b], [[0, 255, 255, 255], [0, 255, 255, 255]]);
+        assert.deepEqual(seen.d, plain.d);
+
+        // This page never writes those buffers again: undone, they get back what they held.
+        await scanline('patches', '--revert', 'all');
+        assert.deepEqual(await look(), plain);
+
+        assert.match((await scanline('patch_uniform', '--target', 'pip_1', '--name', 'nope', '--value', 1)).out, /declare no uniform named "nope"\. They have: tint\.colour, tint\.rect, tint\.depth/);
+        assert.match((await scanline('patch_uniform', '--target', 'pip_1', '--name', 'tint.depth', '--value', '[1, 2]')).out, /tint\.depth is a f32, which takes 1 number, and 2 were given/);
+    });
+
+    test('a texture is stood in for from a file', async () =>
+    {
+        const plain = await open();
+
+        // 2×2, plain red.
+        const row = Buffer.from([0, 255, 0, 0, 255, 255, 0, 0, 255]);
+        const chunk = (type, data) =>
+        {
+            const body = Buffer.concat([Buffer.from(type), data]);
+            const out = Buffer.alloc(body.length + 8);
+
+            out.writeUInt32BE(data.length, 0);
+            body.copy(out, 4);
+            out.writeUInt32BE(crc32(body), body.length + 4);
+
+            return out;
+        };
+        const header = Buffer.alloc(13);
+
+        header.writeUInt32BE(2, 0);
+        header.writeUInt32BE(2, 4);
+        header.set([8, 6, 0, 0, 0], 8);
+
+        const file = join(home, 'red.png');
+
+        writeFileSync(file, Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk('IHDR', header), chunk('IDAT', deflateSync(Buffer.concat([row, row]))), chunk('IEND', Buffer.alloc(0))]));
+
+        const stood = await scanline('patch_texture', 'tex_1', '--with', file);
+
+        assert.match(stood.out, /every draw: tex_1 replaced by the 2×2 image given/);
+
+        const seen = await look();
+
+        assert.deepEqual(seen.d, [255, 0, 0, 255]);
+        assert.deepEqual(seen.a, plain.a);
+        await scanline('patches', '--revert', 'all');
+        assert.deepEqual(await look(), plain);
+    });
+});
+

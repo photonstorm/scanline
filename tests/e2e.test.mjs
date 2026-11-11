@@ -1475,8 +1475,8 @@ describe('live patches', () =>
         assert.match((await scanline('patches')).out, /No patches are in force/);
 
         // What WebGPU patches do not do is said plainly.
-        assert.match((await scanline('patch_uniform', '--target', 'pip_5', '--name', 'sun', '--value', '1')).out, /patch_uniform is for WebGL/);
-        assert.match((await scanline('patch_draws', '--filter', '{"draws": [1, 2]}')).out, /On WebGPU a filter names a pipeline/);
+        assert.match((await scanline('patch_uniform', '--target', 'pip_5', '--name', 'sun', '--value', '1')).out, /frame\.sun is a vec2f, which takes 2 numbers, and 1 was given/);
+        assert.match((await scanline('patch_draws', '--filter', '{"shader": "shd_1"}')).out, /On WebGPU a filter may name pipeline .* There is no "shader"/);
         assert.match((await scanline('patch_shader', 'pip_5', '--defines', '{"SAMPLES": 24}')).out, /WGSL has no #define/);
         assert.match((await scanline('patch_state', '--state', '{"cull": true}')).out, /can be switched off here, not on/);
 

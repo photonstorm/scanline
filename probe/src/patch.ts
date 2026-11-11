@@ -32,6 +32,7 @@ import { gpuPatchAdd, gpuPatchFrame, gpuPatchList, gpuPatchRemove } from './gpu/
 import type { Rec } from './hooks/hub';
 import { G, type Fn } from './natives';
 import { entryOf, find } from './registry';
+import { imageOf } from './standin';
 import { expose } from './transport';
 
 interface Filter
@@ -889,27 +890,6 @@ function makeTexture (info: ContextInfo, t: GlTracker, kind: string, image?: { w
     n.bindTexture.call(gl, 0x0DE1, t.units[t.unit]?.t2d ?? null);
 
     return texture;
-}
-
-// The image a file stand-in is made from, as the host sends it: RGBA, rows from the top.
-export function imageOf (args: any): { width: number; height: number; pixels: Uint8Array }
-{
-    const width = G.Number(args.width) | 0;
-    const height = G.Number(args.height) | 0;
-    const text: string = G.atob(G.String(args.pixels ?? ''));
-    const pixels = new G.Uint8Array(text.length) as Uint8Array;
-
-    for (let i = 0; i < text.length; i++)
-    {
-        pixels[i] = text.charCodeAt(i);
-    }
-
-    if (width < 1 || height < 1 || pixels.length !== width * height * 4)
-    {
-        throw new Error('The image for a texture stand-in did not arrive whole.');
-    }
-
-    return { width, height, pixels };
 }
 
 function filterSaid (filter: Filter): string

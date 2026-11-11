@@ -170,7 +170,10 @@ export const GPU = {
     GPUCommandEncoder: {
         // Intercepted: the probe adds timestamp writes to passes that have none.
         beginRenderPass: { intercept: true },
-        beginComputePass: { intercept: true }
+        beginComputePass: { intercept: true },
+        // Counted as events while a live patch names draws by number (gpu/patch.ts).
+        copyTextureToTexture: { post: true },
+        copyBufferToTexture: { post: true }
     },
     GPURenderPassEncoder: {
         // Followed while a live patch is in force, so that a draw's pipeline can be swapped
@@ -178,14 +181,16 @@ export const GPU = {
         setPipeline: { post: true },
         setBindGroup: { post: true },
         setScissorRect: { post: true },
+        setBlendConstant: { post: true },
+        executeBundles: { post: true },
         draw: { draw: { mode: null, count: 0, instances: 1 } },
         drawIndexed: { draw: { mode: null, count: 0, instances: 1 } },
         drawIndirect: { draw: { mode: null, count: null, instances: null } },
         drawIndexedIndirect: { draw: { mode: null, count: null, instances: null } }
     },
     GPUComputePassEncoder: {
-        dispatchWorkgroups: { count: 'dispatches' },
-        dispatchWorkgroupsIndirect: { count: 'dispatches' }
+        dispatchWorkgroups: { count: 'dispatches', post: true },
+        dispatchWorkgroupsIndirect: { count: 'dispatches', post: true }
     },
     GPURenderBundleEncoder: {
         // Draws recorded into a bundle are counted when the bundle is built, not when it

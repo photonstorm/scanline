@@ -540,7 +540,7 @@ pub const TOOLS: &[Tool] = &[
             "[]",
             session!(),
             context!(),
-            r#""filter": { "type": "object", "description": "Which draws. WebGL: {\"program\": \"prg_2\"}, {\"texture\": \"tex_3\"} and/or {\"draws\": [6, 8]} (event numbers, as draw_list gives them). WebGPU: {\"pipeline\": \"pip_2\"}.", "properties": { "program": { "type": "string" }, "pipeline": { "type": "string" }, "texture": { "type": "string" }, "draws": {} } }"#,
+            r#""filter": { "type": "object", "description": "Which draws. WebGL: {\"program\": \"prg_2\"}, {\"texture\": \"tex_3\"} and/or {\"draws\": [6, 8]} (event numbers, as draw_list gives them). WebGPU: {\"pipeline\": \"pip_2\"}, {\"texture\": \"tex_3\"} and/or {\"draws\": [6, 8]}.", "properties": { "program": { "type": "string" }, "pipeline": { "type": "string" }, "texture": { "type": "string" }, "draws": {} } }"#,
             r#""mode": { "type": "string", "enum": ["skip", "isolate", "solid"], "description": "Default skip." }"#,
             r#""colour": { "type": "array", "items": { "type": "number" }, "description": "solid: [r, g, b] or [r, g, b, a], each 0 to 1. Default magenta." }"#,
             r#""keep": { "type": "boolean", "description": "Make the patch again after a reload (navigate(reload: true), replay_run), so a fix can be tried from the first frame." }"#,
@@ -554,7 +554,7 @@ pub const TOOLS: &[Tool] = &[
             r#"["state"]"#,
             session!(),
             context!(),
-            r#""filter": { "type": "object", "description": "Which draws. WebGL: {\"program\": \"prg_2\"}, {\"texture\": \"tex_3\"} and/or {\"draws\": [6, 8]} (event numbers). WebGPU: {\"pipeline\": \"pip_2\"}. Left out: every draw.", "properties": { "program": { "type": "string" }, "pipeline": { "type": "string" }, "texture": { "type": "string" }, "draws": {} } }"#,
+            r#""filter": { "type": "object", "description": "Which draws. WebGL: {\"program\": \"prg_2\"}, {\"texture\": \"tex_3\"} and/or {\"draws\": [6, 8]} (event numbers). WebGPU: {\"pipeline\": \"pip_2\"}, {\"texture\": \"tex_3\"} and/or {\"draws\": [6, 8]}. Left out: every draw.", "properties": { "program": { "type": "string" }, "pipeline": { "type": "string" }, "texture": { "type": "string" }, "draws": {} } }"#,
             r#""state": { "type": "object", "description": "Any of blend, depth_test, depth_write, cull (true or false), color_mask ([r, g, b, a]), scissor ([x, y, w, h], or false for off)." }"#,
             r#""keep": { "type": "boolean", "description": "Make the patch again after a reload (navigate(reload: true), replay_run), so a fix can be tried from the first frame." }"#,
         ),
@@ -562,12 +562,12 @@ pub const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "patch_uniform",
-        description: "Hold one uniform of a program at a value, whatever the running page sets it to. To test a colour, a matrix or a constant before changing the code. Returns a patch handle. WebGL.",
+        description: "Hold one uniform at a value, whatever the running page sets it to. To test a colour, a matrix or a constant before changing the code. Returns a patch handle. WebGL: a uniform of a program. WebGPU: a member of a uniform buffer, by the name the pipeline's shaders give it (camera.fog).",
         schema: schema!(
             r#"["target", "name", "value"]"#,
             session!(),
             context!(),
-            r#""target": { "type": "string", "description": "The program, such as prg_1." }"#,
+            r#""target": { "type": "string", "description": "WebGL: the program, such as prg_1. WebGPU: the pipeline, such as pip_2." }"#,
             r#""name": { "type": "string" }"#,
             r#""value": { "description": "A number, or a list of as many numbers as the uniform has components." }"#,
             r#""keep": { "type": "boolean", "description": "Make the patch again after a reload (navigate(reload: true), replay_run), so a fix can be tried from the first frame." }"#,
@@ -624,7 +624,7 @@ pub const TOOLS: &[Tool] = &[
             session!(),
             context!(),
             r#""kind": { "type": "string", "enum": ["scissor_1px", "skip"] }"#,
-            r#""filter": { "type": "object", "description": "For skip: which draws. WebGL: {\"program\": \"prg_2\"}, {\"texture\": \"tex_3\"} and/or {\"draws\": [6, 8]}. WebGPU: {\"pipeline\": \"pip_2\"}." }"#,
+            r#""filter": { "type": "object", "description": "For skip: which draws. WebGL: {\"program\": \"prg_2\"}, {\"texture\": \"tex_3\"} and/or {\"draws\": [6, 8]}. WebGPU: {\"pipeline\": \"pip_2\"}, {\"texture\": \"tex_3\"} and/or {\"draws\": [6, 8]}." }"#,
             r#""frames": { "type": "integer", "description": "How many frames to measure each way. Default 60." }"#,
         ),
         read_only: false,
@@ -659,7 +659,7 @@ pub const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "live_view",
-        description: "Draw the running page another way, from the next frame. Scanline's own views work on any page: overdraw (brighter is drawn more often), wireframe, draw_id (each draw a flat colour of its own) and depth. A view the page registered (collision shapes, a shadow cascade overlay, a G-buffer channel) is drawn by the page itself. With no view, lists them. view: \"off\" switches every one off. view on a capture measures one frame exactly.",
+        description: "Draw the running page another way, from the next frame. On any page: overdraw (brighter is drawn more often), wireframe, draw_id (each draw a flat colour of its own), depth. A view the page registered (collision shapes, a G-buffer channel) is drawn by the page itself. With no view, lists them. view: \"off\" switches all off. view on a capture measures one frame exactly.",
         schema: schema!(
             "[]",
             session!(),
@@ -903,9 +903,8 @@ Not built:
     stands in: launch(pointer_lock: \"shim\")).
   - Analysis of what a WebGPU render bundle draws: a bundle is one event, and the views
     that draw the frame with other pipelines leave it out or draw it as it is.
-  - Live patching beyond what is built: debug views on the live page, a solid-colour mode
-    for draws, substituting a texture from a file; and for
-    WebGPU, uniforms by name, filters by event number or texture, and draws in render bundles.
+  - Live patching of what a WebGPU render bundle draws, and the wireframe and depth views
+    on a running WebGPU page (view on a capture has both).
   - Adapters for Babylon.js and PlayCanvas. Windows and Linux. A loopback HTTP transport
     for MCP (stdio only). Signed installers and updates: a release is an archive holding
     the one binary.
@@ -913,8 +912,7 @@ Not built:
 Known limits
   - Page protocol: frame.begin and frame.end are counted, not used as frame boundaries; the
     engine's own time control (time.provide) is called only when asked for, with
-    page(call: \"time\"); live_view switches on views the page registered, not overdraw
-    or wireframe on the running page.
+    page(call: \"time\").
   - Engine adapters: Phaser is mapped on its WebGL renderer only, and its version is known
     only when the page sets window.Phaser. On three.js's WebGPU renderer, objects drawn from
     a reused render bundle are not named one by one. Babylon.js and PlayCanvas have none.
@@ -1135,11 +1133,16 @@ next draw on, and is undone at will. The page's own objects are never touched.
 
   patch_state(filter, state: {cull: false})         blend, depth_test, depth_write, cull,
                                                     color_mask, scissor, for matching draws
-  patch_draws(filter)                               leave draws out; mode: \"isolate\" draws only them
+  patch_draws(filter)                               leave draws out; mode: \"isolate\" draws only
+                                                    them; mode: \"solid\" draws them in one flat
+                                                    colour, keeping what their shaders discard
   patch_uniform(target: \"prg_1\", name, value)      hold a uniform at a value
   patch_shader(handle: \"prg_1\", edits: [{find, replace}])
                                                     edit a shader; also defines, or whole source
-  patch_texture(handle: \"tex_3\", with: \"checker\") a stand-in: checker, white, black, mips
+  patch_texture(handle: \"tex_3\", with: \"checker\") a stand-in: checker, white, black, mips, or
+                                                    the path of a PNG file of your own
+  live_view(view: \"overdraw\")                     the running page drawn another way: overdraw,
+                                                    wireframe, draw_id, depth; view: \"off\" ends it
   patches()                                         what is in force, as the change to make in source
   patches(revert: \"pat_2\")                         undo one; revert: \"all\" undoes every one
   experiment(kind: \"scissor_1px\")                  is the cost in filling pixels? Measures the
@@ -1152,11 +1155,16 @@ a filter means every draw.
 
 On WebGPU a draw's shader and state belong to its pipeline, which cannot be changed, so a
 patch builds the pipeline again with the change and swaps it in round each draw. A filter
-names a pipeline, {pipeline: \"pip_2\"}, or is left out. patch_shader takes a pipeline or a
+names {pipeline: \"pip_2\"}, {texture: \"tex_3\"} (draws with it in a bind group) and/or
+{draws: [6, 8]}, or is left out. patch_shader takes a pipeline or a
 shader module (shd_3: every pipeline that uses it) and find-and-replace edits or whole
 source; an edit that does not compile, or a pipeline the browser refuses, changes nothing.
 patch_state can switch culling, the depth test, depth writes and blending off, set the
-colour mask, and set a scissor box. patch_uniform is not for WebGPU: edit the shader.
+colour mask, and set a scissor box. patch_uniform takes the pipeline and the uniform's name
+as its shaders have it (\"camera.fog\", or \"fog\" where only one has that name): the value
+is written into the buffer that pipeline's draws read it from, so every draw that reads the
+same bytes sees it. live_view has overdraw and draw_id. What a render bundle draws is not
+patched: its pipelines were set when it was built.
 
 The way to use it
   1. Find the suspect with a capture: the draw, its state, its uniforms.

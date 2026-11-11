@@ -39,17 +39,7 @@ fn filter_of(session: &Session, context: &ContextRef, given: &Value) -> Result<V
         if let Some(pipeline) = given["pipeline"].as_str().or(given["program"].as_str()) {
             filter["pipeline"] = json!(id_of(session, context, pipeline, "pipeline")?);
         }
-
-        for key in given.as_object().into_iter().flatten().map(|entry| entry.0) {
-            if !["pipeline", "program"].contains(&key.as_str()) {
-                bail!("On WebGPU a filter names a pipeline ({{\"pipeline\": \"pip_2\"}}), or is left out to mean every draw. There is no \"{key}\" here yet.");
-            }
-        }
-
-        return Ok(filter);
-    }
-
-    if let Some(program) = given["program"].as_str() {
+    } else if let Some(program) = given["program"].as_str() {
         filter["program"] = json!(id_of(session, context, program, "program")?);
     }
 
@@ -66,7 +56,13 @@ fn filter_of(session: &Session, context: &ContextRef, given: &Value) -> Result<V
     }
 
     for key in given.as_object().into_iter().flatten().map(|entry| entry.0) {
-        if !["program", "texture", "draws"].contains(&key.as_str()) {
+        if context.api == "webgpu" && !["pipeline", "program", "texture", "draws"].contains(&key.as_str()) {
+            bail!(
+                "On WebGPU a filter may name pipeline (\"pip_2\"), texture (\"tex_2\": draws with it in a bind group) and draws (an event number as in draw_list, or [first, last]). There is no \"{key}\"."
+            );
+        }
+
+        if context.api != "webgpu" && !["program", "texture", "draws"].contains(&key.as_str()) {
             bail!(
                 "A filter may name program (\"prg_1\"), texture (\"tex_2\") and draws (an event number as in draw_list, or [first, last]). There is no \"{key}\"."
             );
@@ -298,9 +294,22 @@ pub async fn patch_uniform(session: &Arc<Session>, params: &Value) -> Result<Val
     };
 
     if context.api == "webgpu" {
-        bail!(
-            "patch_uniform is for WebGL. A WebGPU shader's inputs live in buffers, and overriding one by name needs WGSL reflection, which is not built. patch_shader can replace the value in the shader's source: edit the expression that reads it."
-        );
+        // A WebGPU uniform is bytes in a buffer. The name says which bytes of which binding;
+        // each draw of the pipeline says which buffer.
+        let pipeline = id_of(session, &context, target, "pipeline")
+            .map_err(|error| anyhow!("{error} On WebGPU patch_uniform takes the pipeline whose shaders declare the uniform, such as \"pip_2\"."))?;
+        let (handle, made) = add(session, &context, json!({ "kind": "uniform", "pipeline": pipeline, "name": name, "value": value })).await?;
+
+        return Ok(done(
+            session,
+            &context,
+            &handle,
+            &made,
+            vec![
+                "It is written into the buffer each of that pipeline's draws reads it from, and written again whenever the page writes that buffer. Every draw that reads the same bytes sees the value, whatever its pipeline: a buffer shared by the whole frame (a camera) changes for the whole frame.".to_string(),
+                "Not held if the page fills the buffer by copying another buffer into it.".to_string(),
+            ],
+        ));
     }
 
     let program = id_of(session, &context, target, "program")?;

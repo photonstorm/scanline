@@ -1011,20 +1011,49 @@ export const POSITIONS_ENTRY = 'scanline_positions';
 
 // A module whose fragment entry point `scanline_fragment` runs the page's own (so the
 // same fragments are discarded and the same resources are used) and then writes `value`
-// to one colour output in place of what the page's wrote. Null when the page's entry
-// point has no such output.
-export function fragmentWriting (module: Module, fn: Fn, location: number, value: number[]): string | null
+// to one colour output in place of what the page's wrote, or to every colour output of a
+// float type when `location` is null. Null when the page's entry point has no such output.
+export function fragmentWriting (module: Module, fn: Fn, location: number | null, value: number[]): string | null
 {
     if (!fn.returnType)
     {
         return null;
     }
 
-    const direct = fn.returnAttributes.find((attribute) => attribute.name === 'location' && Number(attribute.args[0]?.replace(/[iu]$/, '')) === location);
-    const member = direct ? null : memberWith(module, fn.returnType, 'location', String(location));
-    const made = construct(module, direct ? fn.returnType : (member?.type ?? ''), value);
+    const at = (attributes: Attribute[]): number | null =>
+    {
+        const found = attributes.find((attribute) => attribute.name === 'location');
 
-    if (!made)
+        return found ? integer(found.args[0] ?? '', module.constants) : null;
+    };
+
+    const writes: string[] = [];
+    const direct = at(fn.returnAttributes);
+
+    if (direct !== null)
+    {
+        const made = location === null || location === direct ? construct(module, fn.returnType, value) : null;
+
+        if (made)
+        {
+            writes.push(`scanline_out = ${made};`);
+        }
+    }
+    else
+    {
+        for (const member of module.structs.get(module.aliases.get(fn.returnType) ?? fn.returnType)?.members ?? [])
+        {
+            const place = at(member.attributes);
+            const made = place !== null && (location === null || location === place) ? construct(module, member.type, value) : null;
+
+            if (made)
+            {
+                writes.push(`scanline_out.${member.name} = ${made};`);
+            }
+        }
+    }
+
+    if (writes.length === 0)
     {
         return null;
     }
@@ -1035,7 +1064,7 @@ export function fragmentWriting (module: Module, fn: Fn, location: number, value
 {
     var scanline_out = ${fn.name}(${fn.params.map((param) => param.name).join(', ')});
 
-    scanline_out${member ? `.${member.name}` : ''} = ${made};
+    ${writes.join('\n    ')}
 
     return scanline_out;
 }

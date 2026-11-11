@@ -11,7 +11,7 @@ import { currentFrame, onFrameBegin, onFrameEnd } from './clock/gate';
 import { allContexts, type ContextInfo } from './contexts';
 import { hub } from './hooks/hub';
 import { recordIntercepted } from './gpu/rec';
-import { gpuPassBegan } from './gpu/patch';
+import { gpuPassBegan, gpuPassGiven } from './gpu/patch';
 import { noteTargets } from './gpu/tracker';
 import { natives, type Handlers } from './hooks/install';
 import { declare } from './mods';
@@ -354,7 +354,9 @@ function beginPass (kind: string): Fn
         hub.gpu.calls++;
         hub.gpu.passes++;
 
-        const pass = begin(encoder, native, args);
+        // A live view may ask for the pass to begin another way (cleared to black).
+        const given = kind === 'render' && args.length === 1 ? gpuPassGiven(args[0]) : args[0];
+        const pass = given === args[0] ? begin(encoder, native, args) : begin(encoder, native, [given] as unknown as IArguments);
 
         if (kind === 'render')
         {

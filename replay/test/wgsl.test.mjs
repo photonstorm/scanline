@@ -4,7 +4,7 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { entryPoint, fragmentWriting, inputNames, layout, reachable, scan, valuesOf, vertexPositions } from '../src/wgsl.ts';
+import { entryPoint, fragmentWriting, inputNames, layout, reachable, scan, valuesOf, vertexPositions } from '../../shared/wgsl.ts';
 
 const SCENE = `
 // A scene shader with the things real ones have.

@@ -137,6 +137,10 @@ export function snapshot (value: any, depth = 0): unknown
 // lives; this keeps the page's handles on them for exactly as long, and no longer.
 const madeFrom = new G.WeakMap() as WeakMap<object, any>;
 
+// Set while a live patch holds a uniform (patch.ts): told when the page writes a buffer,
+// with what it wrote where that is known, and when it unmaps one.
+export const bufferWatch: { written: null | ((buffer: object, offset?: number, data?: unknown, dataOffset?: number, size?: number) => void) } = { written: null };
+
 export function madeFromOf (object: object): any
 {
     return madeFrom.get(object);
@@ -402,13 +406,18 @@ const post: Record<string, Post> = {
         derivedLayout(pipeline, layout, index);
     },
 
-    'GPUQueue.writeBuffer' (_c, _queue, _r, buffer)
+    'GPUQueue.writeBuffer' (_c, _queue, _r, buffer, offset, data, dataOffset, size)
     {
         const entry = entryOf(buffer);
 
         if (entry)
         {
             entry.written = currentFrame();
+        }
+
+        if (bufferWatch.written !== null)
+        {
+            bufferWatch.written(buffer, offset, data, dataOffset, size);
         }
     },
 
@@ -557,6 +566,11 @@ const intercept: Record<string, Intercept> = {
         }
 
         const result = native.apply(buffer, args as any);
+
+        if (bufferWatch.written !== null)
+        {
+            bufferWatch.written(buffer);
+        }
 
         recordIntercepted('GPUBuffer.unmap', buffer, result, args);
 

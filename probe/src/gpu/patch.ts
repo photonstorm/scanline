@@ -13,23 +13,53 @@
 // To do any of this the probe has to know, at each draw, which pipeline and bind groups
 // the pass has. It follows setPipeline, setBindGroup and setScissorRect, but only while a
 // patch is in force.
+//
+// A flat colour, and the live views built on it, keep the page's fragment shader: a second
+// entry point is written into its module that calls the page's own and then replaces the
+// colour (shared/wgsl.ts), so the same resources are used and the same fragments discarded.
+//
+// A uniform is held by name: the reader of WGSL says where in which binding's buffer the
+// name lives, each draw says which buffer that is, and the held bytes are written there
+// again whenever the page writes the buffer.
+//
+// A shadow pipeline is checked by the browser before it is used. A draw made with an
+// invalid pipeline would take the page's whole command buffer with it, so until the
+// browser has answered, and if it says no, the draw is issued as the page made it.
 
+import * as wgsl from '../../../shared/wgsl';
 import { hub, type Rec } from '../hooks/hub';
 import { natives } from '../hooks/install';
 import { G } from '../natives';
 import { all, deviceFor, entryOf, find, type Entry } from '../registry';
-import { madeFromOf, viewOf } from './tracker';
+import { imageOf } from '../standin';
+import { bufferWatch, madeFromOf, viewOf } from './tracker';
 
 export interface GpuPatch
 {
     id: number;
-    kind: 'draws' | 'state' | 'shader' | 'texture';
+    kind: 'draws' | 'state' | 'shader' | 'texture' | 'view' | 'uniform';
     description: string;
     hits: number;
     lastHits: number;
 
-    // Which draws: those of one pipeline, or every draw.
+    // Which draws: those of one pipeline, those at some of the frame's events, those that
+    // have a texture in a bind group, or every draw.
     pipeline?: number;
+    draws?: [number, number];
+    sampled?: number;
+
+    // solid: the colour, or 'draw' for one of each draw's own. Views add to what is there
+    // (overdraw) and switch the depth test off.
+    colour?: number[] | 'draw';
+    additive?: boolean;
+
+    // uniform: where the name lives, the bytes held there, and each place they have been written.
+    name?: string;
+    group?: number;
+    binding?: number;
+    offset?: number;
+    bytes?: Uint8Array;
+    held?: Held[];
 
     // draws
     mode?: 'skip' | 'isolate' | 'solid';
@@ -49,7 +79,13 @@ export interface GpuPatch
     standIn?: object;
 }
 
+interface Held { buffer: object; offset: number; saved: Uint8Array | null }
+
 const patches: GpuPatch[] = [];
+
+// The frame's events so far, counted as a capture counts them: draws, bundles run,
+// dispatches, passes that clear as they begin, and copies into a texture.
+let events = 0;
 
 // Why a patch could not be applied to some draw, if that has happened: the draw was issued
 // as the page made it, and the list of patches says so.
@@ -66,6 +102,7 @@ interface PassState
     pipeline: object | null;
     groups: Array<Bound | undefined>;
     scissor: number[] | null;
+    blendConstant: unknown;
     size: [number, number] | null;
     swapped: Plan | null;
 }
@@ -78,7 +115,7 @@ function stateOf (pass: object): PassState
 
     if (!state)
     {
-        state = { pipeline: null, groups: [], scissor: null, size: null, swapped: null };
+        state = { pipeline: null, groups: [], scissor: null, blendConstant: null, size: null, swapped: null };
         passes.set(pass, state);
     }
 
@@ -93,11 +130,55 @@ interface Plan
     auto: boolean;                        // the shadow has bind group layouts of its own
     textures: Map<number, object>;        // texture ID -> the view standing in for it
     scissor: number[] | null;
+    perDraw: boolean;                     // each draw is given a colour of its own, as the blend constant
     hits: GpuPatch[];
     groups: WeakMap<object, Map<number, object | null>>;   // the page's group -> its shadow, by index
 }
 
-const plans = new G.WeakMap() as WeakMap<object, { version: number; plan: Plan | null }>;
+// What was worked out for one pipeline under one set of patches. `plan` is null while the
+// browser is still checking a shadow, and for good if it said no.
+interface Slot { plan: Plan | null; checking: Promise<string | null> | null }
+
+const plans = new G.WeakMap() as WeakMap<object, { version: number; slots: Map<string, Slot> }>;
+
+// Shader modules read, and the modules made from rewritten source, so each is done once.
+const scanned = new G.Map() as Map<number, wgsl.Module | null>;
+const written = new G.Map() as Map<string, object>;
+
+function moduleOf (id: number): wgsl.Module | null
+{
+    if (!scanned.has(id))
+    {
+        let read: wgsl.Module | null = null;
+
+        try
+        {
+            read = wgsl.scan(G.String(find('shader', id)?.p.source ?? ''));
+        }
+        catch
+        {
+            read = null;
+        }
+
+        scanned.set(id, read);
+    }
+
+    return scanned.get(id)!;
+}
+
+// A colour for an event, by its number: far apart for numbers that are close.
+function colourOfDraw (index: number): number[]
+{
+    const hue = (index * 0.618033988749895) % 1;
+    const part = (offset: number): number =>
+    {
+        const k = (offset + hue * 6) % 6;
+
+        return 0.25 + 0.75 * G.Math.max(0, G.Math.min(1, G.Math.min(k, 4 - k)));
+    };
+
+    return [part(5), part(3), part(1), 1];
+}
 
 // ---- Descriptors, from the copies the tracker keeps ----
 
@@ -225,6 +306,54 @@ function matches (patch: GpuPatch, entry: Entry): boolean
     return patch.pipeline === undefined || patch.pipeline === entry.id;
 }
 
+// The textures a bind group holds views of, by ID.
+const sampledBy = new G.WeakMap() as WeakMap<object, Set<number>>;
+
+function samples (state: PassState, texture: number): boolean
+{
+    for (const bound of state.groups)
+    {
+        if (!bound)
+        {
+            continue;
+        }
+
+        let held = sampledBy.get(bound.group);
+
+        if (!held)
+        {
+            held = new G.Set() as Set<number>;
+
+            for (const entry of madeFromOf(bound.group)?.entries ?? [])
+            {
+                const id = entry?.resource ? viewOf(entry.resource)?.texture?.id : undefined;
+
+                if (id !== undefined)
+                {
+                    held.add(id);
+                }
+            }
+
+            sampledBy.set(bound.group, held);
+        }
+
+        if (held.has(texture))
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+// Whether a patch applies to one draw: its pipeline, its place in the frame, what it samples.
+function applies (patch: GpuPatch, entry: Entry, index: number, state: PassState): boolean
+{
+    return matches(patch, entry)
+        && (patch.draws === undefined || (index >= patch.draws[0] && index <= patch.draws[1]))
+        && (patch.sampled === undefined || samples(state, patch.sampled));
+}
+
 // The page's pipeline descriptor with the patches' changes made.
 function shadowDescriptor (entry: Entry, hits: GpuPatch[], device: any): any
 {
@@ -259,6 +388,68 @@ function shadowDescriptor (entry: Entry, hits: GpuPatch[], device: any): any
     }, device);
 
     descriptor.label = `${descriptor.label ?? ''} (Scanline patch)`.trim();
+
+    // A flat colour: the page's fragment stage, called by an entry point that then writes
+    // the colour. The last such patch is the one that shows.
+    const solid = hits.filter((patch) => patch.colour !== undefined).pop();
+
+    if (solid)
+    {
+        const stage = entry.p.descriptor?.fragment;
+        const module = stage?.module ? moduleOf(stage.module.id) : null;
+        const fn = module ? wgsl.entryPoint(module, 'fragment', stage.entryPoint ?? null) : null;
+        const source = module && fn ? wgsl.fragmentWriting(module, fn, null, solid.colour === 'draw' ? [1, 1, 1, 1] : solid.colour as number[]) : null;
+
+        if (!source)
+        {
+            throw new G.Error(stage ? 'its fragment shader could not be given an entry point that writes a flat colour' : 'it has no fragment stage, so it writes no colour');
+        }
+
+        let made = written.get(source);
+
+        if (!made)
+        {
+            made = natives.GPUDevice.createShaderModule.call(device, { label: 'Scanline: a flat colour', code: source }) as object;
+            written.set(source, made);
+        }
+
+        const replace = { srcFactor: 'one', dstFactor: 'zero', operation: 'add' };
+        const add = { srcFactor: 'one', dstFactor: 'one', operation: 'add' };
+        const blend = solid.additive
+            ? { color: add, alpha: add }
+            : (solid.colour === 'draw' ? { color: { srcFactor: 'constant', dstFactor: 'zero', operation: 'add' }, alpha: replace } : undefined);
+
+        descriptor.fragment = {
+            ...descriptor.fragment,
+            module: made,
+            entryPoint: wgsl.FRAGMENT_ENTRY,
+            targets: G.Array.from(descriptor.fragment.targets ?? [], (target: any) =>
+            {
+                if (!target)
+                {
+                    return target;
+                }
+
+                const next = { ...target, writeMask: 0xF };
+
+                if (blend)
+                {
+                    next.blend = blend;
+                }
+                else if (solid.view !== undefined)
+                {
+                    delete next.blend;
+                }
+
+                return next;
+            })
+        };
+
+        if (solid.additive && descriptor.depthStencil)
+        {
+            descriptor.depthStencil = { ...descriptor.depthStencil, depthCompare: 'always', depthWriteEnabled: false };
+        }
+    }
 
     for (const patch of hits)
     {
@@ -327,20 +518,42 @@ function shadowDescriptor (entry: Entry, hits: GpuPatch[], device: any): any
     return descriptor;
 }
 
-function planFor (pipeline: object): Plan | null
+// The patches that apply to every draw of a pipeline, whatever its place in the frame.
+function always (entry: Entry): GpuPatch[]
 {
-    const cached = plans.get(pipeline);
+    return patches.filter((patch) => matches(patch, entry) && patch.draws === undefined && patch.sampled === undefined);
+}
 
-    if (cached && cached.version === version)
+function slotFor (pipeline: object, entry: Entry, hits: GpuPatch[]): Slot
+{
+    let cached = plans.get(pipeline);
+
+    if (!cached || cached.version !== version)
     {
-        return cached.plan;
+        cached = { version, slots: new G.Map() };
+        plans.set(pipeline, cached);
     }
+
+    const key = hits.map((patch) => patch.id).join(',');
+    const known = cached.slots.get(key);
+
+    if (known)
+    {
+        return known;
+    }
+
+    const slot: Slot = { plan: null, checking: null };
+    const device = deviceFor(pipeline) as any;
+
+    cached.slots.set(key, slot);
 
     let plan: Plan | null = null;
 
+    device?.pushErrorScope('validation');
+
     try
     {
-        plan = makePlan(pipeline);
+        plan = makePlan(pipeline, entry, hits);
     }
     catch (error: any)
     {
@@ -349,21 +562,44 @@ function planFor (pipeline: object): Plan | null
         failure = `a pipeline could not be rebuilt: ${G.String(error?.message ?? error).slice(0, 200)}`;
     }
 
-    plans.set(pipeline, { version, plan });
+    const scope: Promise<any> = device ? device.popErrorScope() : G.Promise.resolve(null);
 
-    return plan;
+    if (!plan || !plan.shadow)
+    {
+        // Nothing for the browser to check.
+        slot.plan = plan;
+
+        return slot;
+    }
+
+    const made = plan;
+
+    slot.checking = scope.then((error: any) =>
+    {
+        slot.checking = null;
+
+        if (error)
+        {
+            failure = `a rebuilt pipeline is not valid, so its draws are issued as the page made them: ${G.String(error.message).slice(0, 300)}`;
+
+            return G.String(error.message).slice(0, 600);
+        }
+
+        slot.plan = made;
+
+        return null;
+    }, () => null);
+
+    return slot;
 }
 
-function makePlan (pipeline: object): Plan | null
+function makePlan (pipeline: object, entry: Entry, hits: GpuPatch[]): Plan | null
 {
-    const entry = entryOf(pipeline);
-
-    if (!entry || entry.p.type !== 'render')
+    if (entry.p.type !== 'render')
     {
         return null;
     }
 
-    const hits = patches.filter((patch) => matches(patch, entry));
     const isolating = patches.some((patch) => patch.kind === 'draws' && patch.mode === 'isolate');
 
     if (hits.length === 0 && !isolating)
@@ -371,7 +607,7 @@ function makePlan (pipeline: object): Plan | null
         return null;
     }
 
-    const plan: Plan = { skip: false, shadow: null, auto: false, textures: new G.Map(), scissor: null, hits, groups: new G.WeakMap() };
+    const plan: Plan = { skip: false, shadow: null, auto: false, textures: new G.Map(), scissor: null, perDraw: false, hits, groups: new G.WeakMap() };
 
     if (hits.some((patch) => patch.kind === 'draws' && patch.mode === 'skip'))
     {
@@ -402,7 +638,7 @@ function makePlan (pipeline: object): Plan | null
         }
     }
 
-    const rebuilt = hits.some((patch) => patch.kind === 'shader' || (patch.kind === 'state' && G.Object.keys(patch.state!).some((key: string) => key !== 'scissor')));
+    const rebuilt = hits.some((patch) => patch.kind === 'shader' || patch.colour !== undefined || (patch.kind === 'state' && G.Object.keys(patch.state!).some((key: string) => key !== 'scissor')));
 
     if (rebuilt)
     {
@@ -410,6 +646,7 @@ function makePlan (pipeline: object): Plan | null
 
         plan.shadow = natives.GPUDevice.createRenderPipeline.call(device, shadowDescriptor(entry, hits, device));
         plan.auto = entry.p.descriptor?.layout === 'auto';
+        plan.perDraw = hits.filter((patch) => patch.colour !== undefined).pop()?.colour === 'draw';
     }
 
     return plan;
@@ -470,23 +707,33 @@ function shadowGroup (plan: Plan, pipeline: object, index: number, group: object
 
 function gate (_c: Rec, pass: any): boolean
 {
+    // Its number among the frame's events, whether or not anything is done to it.
+    const index = events++;
     const state = passes.get(pass);
+    const entry = state?.pipeline ? entryOf(state.pipeline) : undefined;
 
-    if (!state || !state.pipeline)
+    if (!state || !state.pipeline || !entry)
     {
         return true;
     }
 
-    const plan = planFor(state.pipeline);
+    const hits = patches.filter((patch) => applies(patch, entry, index, state));
+
+    for (const patch of hits)
+    {
+        patch.hits++;
+
+        if (patch.kind === 'uniform')
+        {
+            hold(patch, state);
+        }
+    }
+
+    const plan = slotFor(state.pipeline, entry, hits).plan;
 
     if (plan === null)
     {
         return true;
-    }
-
-    for (const patch of plan.hits)
-    {
-        patch.hits++;
     }
 
     if (plan.skip)
@@ -501,6 +748,11 @@ function gate (_c: Rec, pass: any): boolean
     {
         n.setPipeline.call(pass, plan.shadow);
         swapped = true;
+
+        if (plan.perDraw)
+        {
+            n.setBlendConstant.call(pass, colourOfDraw(index));
+        }
     }
 
     if ((plan.shadow && plan.auto) || plan.textures.size > 0)
@@ -550,6 +802,11 @@ function after (_c: Rec, pass: any): void
     if (plan.shadow)
     {
         n.setPipeline.call(pass, state.pipeline);
+
+        if (plan.perDraw)
+        {
+            n.setBlendConstant.call(pass, state.blendConstant ?? [0, 0, 0, 0]);
+        }
     }
 
     if ((plan.shadow && plan.auto) || plan.textures.size > 0)
@@ -579,6 +836,229 @@ function wire (): void
     failure = null;
     hub.gpu.gate = patches.length > 0 ? gate : null;
     hub.gpu.after = patches.length > 0 ? after : null;
+    bufferWatch.written = patches.some((patch) => patch.kind === 'uniform') ? onBufferWritten : null;
+}
+
+// ---- A uniform held by name ----
+
+// The offsets given with a bind group go, in order, to the bindings that take one.
+function movedBy (bound: Bound, sources: any, binding: number): number
+{
+    const layout = sources?.layout ? entryOf(sources.layout) : undefined;
+    const moving: number[] = (layout?.p.descriptor?.entries ?? [])
+        .filter((entry: any) => entry?.buffer?.hasDynamicOffset)
+        .map((entry: any) => G.Number(entry.binding))
+        .sort((a: number, b: number) => a - b);
+    const at = moving.indexOf(binding);
+    const given: any = bound.rest[0];
+
+    if (at < 0 || !given)
+    {
+        return 0;
+    }
+
+    return G.Number(given[at + (G.Number(bound.rest[1]) || 0)]) || 0;
+}
+
+function writeHeld (patch: GpuPatch, held: Held, bytes: Uint8Array): void
+{
+    const device = deviceFor(held.buffer) as any;
+
+    if (device)
+    {
+        natives.GPUQueue.writeBuffer.call(device.queue, held.buffer, held.offset, bytes);
+    }
+
+    void patch;
+}
+
+// At a draw the patch applies to: finds the buffer its name lives in, keeps what is there
+// and writes the held value over it.
+function hold (patch: GpuPatch, state: PassState): void
+{
+    const bound = state.groups[patch.group!];
+    const sources = bound ? madeFromOf(bound.group) : undefined;
+    const resource = sources?.entries.find((entry: any) => entry.binding === patch.binding)?.resource;
+    const buffer: any = resource?.buffer;
+
+    if (!bound || !buffer)
+    {
+        return;
+    }
+
+    const offset = (G.Number(resource.offset) || 0) + movedBy(bound, sources, patch.binding!) + patch.offset!;
+
+    if (patch.held!.some((held) => held.buffer === buffer && held.offset === offset))
+    {
+        return;
+    }
+
+    const held: Held = { buffer, offset, saved: null };
+    const device = deviceFor(buffer) as any;
+    const size = patch.bytes!.length;
+
+    patch.held!.push(held);
+
+    // What the page had there, read before it is written over, for when the patch is undone.
+    if (device && (buffer.usage & 0x0004) !== 0 && offset + size <= buffer.size)
+    {
+        try
+        {
+            const copy = natives.GPUDevice.createBuffer.call(device, { label: 'Scanline: a held uniform, as it was', size, usage: 0x0001 | 0x0008 });
+            const encoder = natives.GPUDevice.createCommandEncoder.call(device);
+
+            natives.GPUCommandEncoder.copyBufferToBuffer.call(encoder, buffer, offset, copy, 0, size);
+            natives.GPUQueue.submit.call(device.queue, [natives.GPUCommandEncoder.finish.call(encoder)]);
+
+            natives.GPUBuffer.mapAsync.call(copy, 0x0001).then(() =>
+            {
+                // Unless the page has written it since, which is newer.
+                held.saved ??= new G.Uint8Array(natives.GPUBuffer.getMappedRange.call(copy)).slice();
+                natives.GPUBuffer.unmap.call(copy);
+                natives.GPUBuffer.destroy.call(copy);
+            }, () => undefined);
+        }
+        catch
+        {
+            // It goes back to whatever the page next writes.
+        }
+    }
+
+    writeHeld(patch, held, patch.bytes!);
+}
+
+// The page has written a buffer (or unmapped it). What it wrote is what to put back when
+// the patch is undone; for now, the held value goes over it again.
+function onBufferWritten (buffer: object, offset?: number, data?: any, dataOffset?: number, size?: number): void
+{
+    for (const patch of patches)
+    {
+        for (const held of patch.held ?? [])
+        {
+            if (held.buffer !== buffer)
+            {
+                continue;
+            }
+
+            const length = patch.bytes!.length;
+
+            if (data && typeof offset === 'number')
+            {
+                try
+                {
+                    const view = G.ArrayBuffer.isView(data);
+                    const each: number = view ? (data.BYTES_PER_ELEMENT ?? 1) : 1;
+                    const all = view ? new G.Uint8Array(data.buffer, data.byteOffset, data.byteLength) : new G.Uint8Array(data);
+                    const start = (dataOffset ?? 0) * each;
+                    const span = size === undefined ? all.length - start : size * each;
+                    const from = held.offset - offset;
+
+                    if (from >= 0 && from + length <= span)
+                    {
+                        held.saved = all.slice(start + from, start + from + length);
+                    }
+                }
+                catch
+                {
+                    // What was kept before stands.
+                }
+            }
+
+            writeHeld(patch, held, patch.bytes!);
+        }
+    }
+}
+
+// The bytes of a value of one leaf's type.
+function encode (leaf: wgsl.Leaf, values: number[]): Uint8Array
+{
+    if (leaf.scalar === 'f16')
+    {
+        throw new G.Error('A 16-bit float uniform cannot be held yet.');
+    }
+
+    if (values.length !== leaf.columns * leaf.rows)
+    {
+        throw new G.Error(`${leaf.name} is a ${leaf.type}, which takes ${leaf.columns * leaf.rows} number${leaf.columns * leaf.rows === 1 ? '' : 's'}, and ${values.length} ${values.length === 1 ? 'was' : 'were'} given.`);
+    }
+
+    const bytes = new G.Uint8Array((leaf.columns - 1) * leaf.stride + leaf.rows * 4) as Uint8Array;
+    const view = new G.DataView(bytes.buffer) as DataView;
+
+    for (let column = 0; column < leaf.columns; column++)
+    {
+        for (let row = 0; row < leaf.rows; row++)
+        {
+            const at = column * leaf.stride + row * 4;
+            const value = values[column * leaf.rows + row];
+
+            if (leaf.scalar === 'f32') { view.setFloat32(at, value, true); }
+            else if (leaf.scalar === 'i32') { view.setInt32(at, value, true); }
+            else { view.setUint32(at, value, true); }
+        }
+    }
+
+    return bytes;
+}
+
+// Where a name lives among the uniform buffers a pipeline's shaders declare.
+function uniformNamed (entry: Entry, name: string): { group: number; binding: number; leaf: wgsl.Leaf }
+{
+    const found = new G.Map() as Map<string, { group: number; binding: number; leaf: wgsl.Leaf }>;
+    const known: string[] = [];
+
+    for (const stage of [entry.p.descriptor?.vertex, entry.p.descriptor?.fragment])
+    {
+        const module = typeof stage?.module?.id === 'number' ? moduleOf(stage.module.id) : null;
+
+        for (const global of module?.globals.values() ?? [])
+        {
+            if (global.space !== 'uniform' || global.group === null || global.binding === null)
+            {
+                continue;
+            }
+
+            let leaves: wgsl.Leaf[] = [];
+
+            try
+            {
+                leaves = wgsl.layout(module!, global, 4096).leaves;
+            }
+            catch
+            {
+                continue;
+            }
+
+            for (const leaf of leaves)
+            {
+                if (!known.includes(leaf.name))
+                {
+                    known.push(leaf.name);
+                }
+
+                if (leaf.name === name || leaf.name.endsWith(`.${name}`))
+                {
+                    found.set(`${global.group}:${global.binding}:${leaf.offset}`, { group: global.group, binding: global.binding, leaf });
+                }
+            }
+        }
+    }
+
+    const all = [...found.values()];
+
+    if (all.length === 1)
+    {
+        return all[0];
+    }
+
+    if (all.length > 1)
+    {
+        throw new G.Error(`"${name}" is more than one uniform of this pipeline: ${all.map((one) => one.leaf.name).join(', ')}. Give the whole name.`);
+    }
+
+    throw new G.Error(known.length
+        ? `This pipeline's shaders declare no uniform named "${name}". They have: ${known.slice(0, 24).join(', ')}${known.length > 24 ? ', …' : ''}.`
+        : 'No uniform buffer could be read from this pipeline\'s shaders.');
 }
 
 // ---- What a pass has set, followed while a patch is in force ----
@@ -611,8 +1091,79 @@ export const gpuPatchHandlers: Record<string, Post> = {
         {
             stateOf(pass).scissor = [x, y, width, height];
         }
+    },
+
+    'GPURenderPassEncoder.setBlendConstant' (_c, pass, _result, colour)
+    {
+        if (patches.length > 0)
+        {
+            stateOf(pass).blendConstant = colour;
+        }
+    },
+
+    // The rest are events of the frame, counted so that a patch can name a draw by its number.
+    'GPURenderPassEncoder.executeBundles' ()
+    {
+        events++;
+    },
+
+    'GPUComputePassEncoder.dispatchWorkgroups' ()
+    {
+        events++;
+    },
+
+    'GPUComputePassEncoder.dispatchWorkgroupsIndirect' ()
+    {
+        events++;
+    },
+
+    'GPUCommandEncoder.copyTextureToTexture' ()
+    {
+        events++;
+    },
+
+    'GPUCommandEncoder.copyBufferToTexture' ()
+    {
+        events++;
     }
 };
+
+// Whether a render pass clears anything as it begins, which makes it an event.
+function clears (descriptor: any): boolean
+{
+    try
+    {
+        const depth = descriptor?.depthStencilAttachment;
+
+        return G.Array.from(descriptor?.colorAttachments ?? []).some((attachment: any) => attachment?.loadOp === 'clear') || depth?.depthLoadOp === 'clear' || depth?.stencilLoadOp === 'clear';
+    }
+    catch
+    {
+        return false;
+    }
+}
+
+// The descriptor a render pass is begun with. While the overdraw view is on, a pass that
+// clears a colour clears it to black, so that the count starts from nothing.
+export function gpuPassGiven (descriptor: any): any
+{
+    if (!patches.some((patch) => patch.additive) || !descriptor || typeof descriptor !== 'object')
+    {
+        return descriptor;
+    }
+
+    try
+    {
+        return {
+            ...descriptor,
+            colorAttachments: G.Array.from(descriptor.colorAttachments ?? [], (attachment: any) => (attachment && attachment.loadOp === 'clear' ? { ...attachment, clearValue: [0, 0, 0, 1] } : attachment))
+        };
+    }
+    catch
+    {
+        return descriptor;
+    }
+}
 
 // Called as a render pass begins: how large its targets are, for putting a scissor box back.
 export function gpuPassBegan (pass: object, descriptor: any): void
@@ -620,6 +1171,11 @@ export function gpuPassBegan (pass: object, descriptor: any): void
     if (patches.length === 0 || !pass)
     {
         return;
+    }
+
+    if (clears(descriptor))
+    {
+        events++;
     }
 
     try
@@ -685,9 +1241,32 @@ function pipelineEntry (id: number): { entry: Entry; object: object }
     return { entry, object };
 }
 
-// A small texture to stand in for another: a checkerboard, or one flat colour.
-function makeStandIn (device: any, kind: string, format: string): object
+// A small texture to stand in for another: a checkerboard, one flat colour, or an image.
+function makeStandIn (device: any, kind: string, format: string, image?: { width: number; height: number; pixels: Uint8Array }): object
 {
+    if (image)
+    {
+        const data = image.pixels.slice();
+
+        // The file is RGBA; a bgra texture wants its bytes the other way round.
+        if (format.startsWith('bgra'))
+        {
+            for (let i = 0; i < data.length; i += 4)
+            {
+                const red = data[i];
+
+                data[i] = data[i + 2];
+                data[i + 2] = red;
+            }
+        }
+
+        const made = natives.GPUDevice.createTexture.call(device, { label: 'Scanline stand-in (an image)', size: [image.width, image.height], format, usage: 0x04 | 0x02 });
+
+        natives.GPUQueue.writeTexture.call(device.queue, { texture: made }, data, { bytesPerRow: image.width * 4 }, [image.width, image.height]);
+
+        return natives.GPUTexture.createView.call(made);
+    }
+
     const size = 64;
     const pixels = new G.Uint8Array(size * size * 4);
 
@@ -714,26 +1293,93 @@ export async function gpuPatchAdd (args: any, id: number): Promise<Record<string
     const patch: GpuPatch = { id, kind: args.kind, description: '', hits: 0, lastHits: 0 };
     const named = typeof args.filter?.pipeline === 'number' ? args.filter.pipeline : (typeof args.filter?.program === 'number' ? args.filter.program : undefined);
 
-    if (args.filter?.draws !== undefined || args.filter?.texture !== undefined)
-    {
-        throw new G.Error('On WebGPU a filter names a pipeline ({"pipeline": "pip_2"}) or is left out for every draw. Event numbers and textures are not filters here yet.');
-    }
-
     if (named !== undefined)
     {
         pipelineEntry(named);
         patch.pipeline = named;
     }
 
-    const where = patch.pipeline === undefined ? 'every draw' : `draws that use pipeline ${patch.pipeline}`;
+    if (G.Array.isArray(args.filter?.draws))
+    {
+        patch.draws = [G.Number(args.filter.draws[0]) || 0, G.Number(args.filter.draws[args.filter.draws.length - 1]) || 0];
+    }
+    else if (typeof args.filter?.draws === 'number')
+    {
+        patch.draws = [args.filter.draws, args.filter.draws];
+    }
+
+    if (typeof args.filter?.texture === 'number')
+    {
+        patch.sampled = args.filter.texture;
+    }
+
+    const parts: string[] = [];
+
+    if (patch.pipeline !== undefined) { parts.push(`that use pipeline ${patch.pipeline}`); }
+    if (patch.sampled !== undefined) { parts.push(`with texture ${patch.sampled} in a bind group`); }
+    if (patch.draws !== undefined) { parts.push(patch.draws[0] === patch.draws[1] ? `at event ${patch.draws[0]} of the frame` : `at events ${patch.draws[0]} to ${patch.draws[1]} of the frame`); }
+
+    const where = parts.length ? `draws ${parts.join(' and ')}` : 'every draw';
+    const one = parts.length === 0;
     let log = '';
 
     switch (args.kind)
     {
         case 'draws':
+            if (args.mode === 'solid')
+            {
+                const colour: number[] = G.Array.isArray(args.colour) && args.colour.length >= 3 ? [G.Number(args.colour[0]), G.Number(args.colour[1]), G.Number(args.colour[2]), G.Number(args.colour[3] ?? 1)] : [1, 0, 1, 1];
+
+                patch.mode = 'solid';
+                patch.colour = colour;
+                patch.description = `${where} ${one ? 'is' : 'are'} drawn in one flat colour (${colour.join(', ')}); what ${one ? 'its shader discards' : 'their shaders discard'} is still discarded`;
+                break;
+            }
+
             patch.mode = args.mode === 'isolate' ? 'isolate' : 'skip';
-            patch.description = patch.mode === 'skip' ? `${where} ${patch.pipeline === undefined ? 'is' : 'are'} not drawn` : `only ${where} ${patch.pipeline === undefined ? 'is' : 'are'} drawn`;
+            patch.description = patch.mode === 'skip' ? `${where} ${one ? 'is' : 'are'} not drawn` : `only ${where} ${one ? 'is' : 'are'} drawn`;
             break;
+
+        case 'view':
+            patch.view = G.String(args.view);
+            patch.mode = 'solid';
+
+            if (patch.view === 'overdraw')
+            {
+                patch.colour = [0.125, 0.045, 0.015, 0];
+                patch.additive = true;
+                patch.description = 'overdraw: a pass that clears a colour clears it to black, and every draw adds a little orange where it lands, with the depth test off, so brighter is drawn more often (eight layers reach full red)';
+            }
+            else if (patch.view === 'draw_id')
+            {
+                patch.colour = 'draw';
+                patch.description = 'each draw is drawn in a flat colour of its own, by its event number, with blending off';
+            }
+            else
+            {
+                throw new G.Error(patch.view === 'wireframe' || patch.view === 'depth'
+                    ? `The live ${patch.view} view is for WebGL. On a WebGPU page: overdraw and draw_id live, and view(capture, view: "${patch.view}") from a capture.`
+                    : `There is no live "${patch.view}" view. On a WebGPU page: overdraw and draw_id, and the views the page registered. view(capture, view) has the rest.`);
+            }
+
+            break;
+
+        case 'uniform':
+        {
+            const { entry } = pipelineEntry(args.pipeline);
+            const { group, binding, leaf } = uniformNamed(entry, G.String(args.name));
+            const value: number[] = G.Array.from(args.value as ArrayLike<number>, G.Number);
+
+            patch.pipeline = entry.id;
+            patch.name = leaf.name;
+            patch.group = group;
+            patch.binding = binding;
+            patch.offset = leaf.offset;
+            patch.bytes = encode(leaf, value);
+            patch.held = [];
+            patch.description = `uniform ${leaf.name} (${leaf.type}) held at ${value.join(', ')} for draws that use pipeline ${entry.id}`;
+            break;
+        }
 
         case 'state':
         {
@@ -829,17 +1475,19 @@ export async function gpuPatchAdd (args: any, id: number): Promise<Record<string
 
             if (args.with === 'mips')
             {
-                throw new G.Error('The mips stand-in is for WebGL. On WebGPU use checker, white or black.');
+                throw new G.Error('The mips stand-in is for WebGL. On WebGPU use checker, white, black or a PNG file.');
             }
 
+            const image = args.with === 'file' ? imageOf(args) : undefined;
+
             patch.texture = entry.id;
-            patch.standIn = makeStandIn(deviceFor(object), args.with ?? 'checker', entry.p.format.startsWith('bgra') ? 'bgra8unorm' : 'rgba8unorm');
-            patch.description = `${where}: texture ${entry.id} replaced by a ${args.with ?? 'checker'} texture`;
+            patch.standIn = makeStandIn(deviceFor(object), args.with ?? 'checker', entry.p.format.startsWith('bgra') ? 'bgra8unorm' : 'rgba8unorm', image);
+            patch.description = `${where}: texture ${entry.id} replaced by ${image ? `the ${image.width}×${image.height} image given` : `a ${args.with ?? 'checker'} texture`}`;
             break;
         }
 
         default:
-            throw new G.Error(`A "${args.kind}" patch is not built for WebGPU. What works here: draws, state, shader and texture. Uniforms live in buffers, which need WGSL reflection to patch by name.`);
+            throw new G.Error(`There is no "${args.kind}" patch.`);
     }
 
     patches.push(patch);
@@ -849,7 +1497,10 @@ export async function gpuPatchAdd (args: any, id: number): Promise<Record<string
     // not found out by a missing draw.
     const failed = await rehearse(patch);
 
-    if (failed)
+    // A patch that names its change exactly is all or nothing. A flat colour over many
+    // pipelines is not: those it cannot be given to are drawn as the page made them, and
+    // the list of patches says so.
+    if (failed && patch.colour === undefined)
     {
         patches.splice(patches.indexOf(patch), 1);
         wire();
@@ -860,16 +1511,11 @@ export async function gpuPatchAdd (args: any, id: number): Promise<Record<string
     return { patch: patch.id, kind: patch.kind, context: args.context, description: patch.description, log };
 }
 
-// Makes the shadow of every pipeline a patch applies to, inside an error scope. Returns
-// what the browser said if one was refused.
+// Makes the shadow of every pipeline a patch applies to, and waits for the browser to
+// check each. Returns what the browser said if one was refused.
 async function rehearse (patch: GpuPatch): Promise<string | null>
 {
-    if (patch.kind === 'draws' || (patch.kind === 'state' && G.Object.keys(patch.state!).every((key: string) => key === 'scissor')) || patch.kind === 'texture')
-    {
-        return null;
-    }
-
-    const scopes: Array<Promise<any>> = [];
+    const checks: Array<Promise<string | null>> = [];
 
     for (const entry of all('pipeline'))
     {
@@ -880,29 +1526,29 @@ async function rehearse (patch: GpuPatch): Promise<string | null>
             continue;
         }
 
-        const device = deviceFor(pipeline) as any;
+        // Under the patches its draws will meet together: those that always apply, and
+        // this one with them if it is choosier.
+        const usual = always(entry);
 
-        device.pushErrorScope('validation');
-        planFor(pipeline);
-        scopes.push(device.popErrorScope());
-    }
-
-    for (const scope of scopes)
-    {
-        const error = await scope;
-
-        if (error)
+        for (const hits of usual.includes(patch) ? [usual] : [usual, [...usual, patch].sort((a, b) => patches.indexOf(a) - patches.indexOf(b))])
         {
-            return G.String(error.message).slice(0, 600);
+            const slot = slotFor(pipeline, entry, hits);
+
+            if (slot.checking)
+            {
+                checks.push(slot.checking);
+            }
         }
     }
 
-    return null;
+    const said = (await G.Promise.all(checks)).filter(G.Boolean) as string[];
+
+    return said.length ? said[0] : null;
 }
 
 export function gpuPatchList (): Array<Record<string, unknown>>
 {
-    return patches.map((patch) => ({ patch: patch.id, kind: patch.kind, context: 0, description: patch.description, draws: G.Math.max(patch.hits, patch.lastHits), failure }));
+    return patches.map((patch) => ({ patch: patch.id, kind: patch.kind, context: 0, description: patch.description, draws: G.Math.max(patch.hits, patch.lastHits), view: patch.view, failure }));
 }
 
 export function gpuPatchRemove (args: { patch?: number; all?: boolean; views?: boolean }): number[]
@@ -913,6 +1559,15 @@ export function gpuPatchRemove (args: { patch?: number; all?: boolean; views?: b
     {
         if (args.all || patches[index].id === args.patch || (args.views && patches[index].view !== undefined))
         {
+            // A held uniform goes back to what the page last had there.
+            for (const held of patches[index].held ?? [])
+            {
+                if (held.saved)
+                {
+                    writeHeld(patches[index], held, held.saved);
+                }
+            }
+
             gone.push(patches[index].id);
             patches.splice(index, 1);
         }
@@ -928,6 +1583,8 @@ export function gpuPatchRemove (args: { patch?: number; all?: boolean; views?: b
 
 export function gpuPatchFrame (): void
 {
+    events = 0;
+
     for (const patch of patches)
     {
         patch.lastHits = patch.hits;

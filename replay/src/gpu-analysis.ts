@@ -20,7 +20,7 @@
 
 import { DRAW_CALLS, GpuRun, endOf, halfToFloat, isFloat, pixelOf, sameTarget, targetOf, toRgba8, type Json, type Loaded, type PassNow, type Raw } from './gpu';
 import { LINES, LINE_STRIP, POINTS, TRIANGLES, TRIANGLE_STRIP, tally } from './tally';
-import * as wgsl from './wgsl';
+import * as wgsl from '../../shared/wgsl';
 
 const TEXTURE_COPY_SRC = 0x01;
 const TEXTURE_RENDER = 0x10;
