@@ -1,0 +1,18 @@
+CAUSE: The page sets gl.viewport(0, 0, 64, 64) for the 64x64 offscreen minimap pass (which renders to tex_3) and never restores it to 480x360 before drawing the main scene to the canvas. All 20 canvas draws are therefore squeezed into a 64x64 box at the bottom-left.
+
+EVIDENCE: The capture summary flagged: "Every event on canvas (events 4-24) uses viewport 0, 0, 64, 64, but canvas is 480x360. The viewport was last set at call 4." draw_list showed pass 0 (events 0-3: clear plus 3 draws into tex_3, the minimap dots at x 11-53, y 20-28 in a 64-wide texture). Event 4 is the canvas clear, and events 5-24 all carry "viewport 0, 0, 64, 64 (target is 480x360)". Event 5, the ground (rect = 0,260,480,100, resolution 480,360), only covered 64x18 px at (0,342); crates, glass and sparks all landed within x<64, y>300. draw 5 said "viewport 0, 0, 64, 64 (NOT the whole target, which is 480x360)".
+
+FIX: After the minimap pass, and before drawing to the canvas (after bindFramebuffer(null)), call gl.viewport(0, 0, canvas.width, canvas.height), or save and restore the viewport around the offscreen pass.
+
+COMMANDS:
+help
+launch http://127.0.0.1:8765/fixtures/bugs/b09.html --headless
+step --session ses_11 --frames 2
+capture --session ses_11
+draw_list --capture cap_10
+help calls
+draw --capture cap_10 --draw 5
+calls --capture cap_10 --session ses_11
+close --session ses_11
+
+FRICTION: Very little. The "Worth a look" note in capture identified the cause immediately. Minor points: help printed the general overview regardless of the topic I typed ("calls"). My first attempt failed because I put the env var in a variable with `env` (my own shell mistake). The draw output did not state which call number set the viewport (only "last set at call 4" from capture), and `calls` printed generic help rather than a call list, so I could not see the actual gl.viewport call and its arguments directly.

@@ -1,0 +1,22 @@
+CAUSE: The page draws the three crates (events 6, 7, 8) with a negative height in the `rect` uniform. That reverses the triangle winding, and with cull face BACK enabled every triangle is culled, so nothing is drawn.
+
+EVIDENCE: Capture cap_3 (frame 139) has 23 draws. Events 6, 7 and 8 use prg_1 with tex_1, depth LESS and cull BACK, and each one "changed nothing". The tool's own check named three draws that changed no pixels, events 6–8.
+- Event 6: rect = 140, 180, -80, 80
+- Event 7: rect = 300, 160, -100, 100
+- Event 8: rect = 410, 190, -70, 70
+Each of these reports: "every triangle is culled (cull BACK, front face CW). The triangles face away from the viewer: the winding order, or a negative scale or size flipping them." With culling off they would change 6400, 10000 and 4900 pixels. The ground (event 5) and the other sprites have positive rect sizes and draw normally. I read the negative value as the fourth rect component (the height), so the rect is x, y, w, h.
+
+FIX: Make each crate's rect size positive, e.g. (140, 100, 80, 80) with the y origin moved to the top of the crate instead of the bottom, and likewise for the other two. Alternatively, disable CULL_FACE for those draws, or flip frontFace to CCW for them. The first option is better.
+
+COMMANDS:
+help
+launch http://127.0.0.1:8765/fixtures/bugs/b01.html --headless
+step --session ses_6 --frames 2
+capture --session ses_6
+draw_list --session ses_6 cap_3
+draw --session ses_6 --capture cap_3 --draw 6
+draw --session ses_6 --capture cap_3 --draw 7  (loop, grep rect/Why)
+draw --session ses_6 --capture cap_3 --draw 8  (loop, grep rect/Why)
+close --session ses_6
+
+FRICTION: I first ran the commands with an `env` wrapper in a shell variable, which failed, so I used `export` instead; that was my own mistake. The launch output says it is running at frame 1 and not paused, so I had to step before capturing. The capture's "Worth a look" hint and the draw "Why" line gave the answer directly. The draw output does not label the rect components, so I had to infer that the negative value was the height. A note to say which of the four is x, y, w or h would help.

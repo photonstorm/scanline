@@ -1,0 +1,19 @@
+CAUSE: The sunlight haze is drawn as a full-screen quad (480x360, every frame) using a fragment shader that does a 64-iteration loop of texture fetches per pixel (a radial-blur "god rays" march toward the sun at (0.82,0.12)). That is about 11M texture samples per frame, for a faint 0.3-alpha tint.
+
+EVIDENCE: In capture cap_8 (frame 146), draw 10 uses prg_2 and writes 172800 px (0,0,480,360) with additive blend SRC_ALPHA/ONE. Uniforms: rect=0,0,480,360, tint=1,0.95,0.8,0.3, depth=0.1, map bound to tex_3 (256x256 R8). The fragment shader shd_4 (created at scene.js:18, linked at scene.js:28/30, called from scene.js:101) has `const int SAMPLES = 64;` and `for (i<SAMPLES) { light += texture(map, at).r; at += stride; }`, then `colour = vec4(tint.rgb, tint.a*light/64.)`. Every other draw is a cheap textured quad or small sprite (the sparks are 16x16 each). GPU time is mean 0.349 ms with worst 1.2 ms; the haze is the only expensive full-screen shader. The other draws are normal (the sparks are additive, the crates and glass are normal). Note that shd_4 reports "COMPILE FAILED / DESTROYED in frame 0" in resource output even though prg_2 links and draws fine; this is likely just the shader being deleted after linking.
+
+FIX: Cut the cost of the haze pass. Render it at low resolution (e.g. a quarter-size offscreen target) and upsample, and/or reduce SAMPLES to about 8-16 with per-pixel jitter. Alternatively draw it only over the region it affects, or bake it once into a texture if the sun and scene are static, rather than running 64 taps per full-screen pixel every frame.
+
+COMMANDS:
+help
+launch http://127.0.0.1:8765/fixtures/bugs/b14.html --headless
+help --topic skills
+capture --session ses_13
+draw_list --capture cap_8 --session ses_13
+stats --session ses_13
+draw --capture cap_8 --draw 10 --session ses_13
+resource prg_2 --session ses_13
+resource shd_4 --session ses_13
+close --session ses_13
+
+FRICTION: (1) resource shd_4 says "COMPILE FAILED" with an empty log although the program is linked and drawing; the shader was deleted after linking, so it was misleading. (2) Nothing in the draw output flagged the draw as expensive: there was no per-draw GPU time or estimated shader cost (loop counts or texture fetches per pixel), so I had to infer the cost from full-screen coverage plus reading the source. Per-draw GPU timing would have confirmed it directly. (3) stats gave only a whole-frame GPU time and no baseline, so "many times slower" could not be verified against a without-haze frame.

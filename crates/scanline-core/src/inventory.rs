@@ -543,7 +543,15 @@ fn describe_shader(session: &Session, object: &ObjectRef, detail: &Value, lines:
     } else if detail["compiles"].as_u64().unwrap_or(0) == 0 {
         lines.push("Never compiled.".into());
     } else {
-        lines.push(if detail["compiled"] == true { "Compiled.".into() } else { "COMPILE FAILED.".into() });
+        // A deleted shader can no longer be asked whether it compiled. Deleting one after
+        // linking is ordinary, and the program made from it goes on working.
+        lines.push(if detail["compiled"] == true {
+            "Compiled.".into()
+        } else if detail["alive"] == false {
+            "The page has deleted this shader, so its compile status and log can no longer be read. That is ordinary after linking: a program linked from it still works, and its source is below.".into()
+        } else {
+            "COMPILE FAILED.".into()
+        });
 
         let log = detail["log"].as_str().unwrap_or("").trim();
 

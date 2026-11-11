@@ -2163,12 +2163,17 @@ pub async fn draw(host: &Arc<Host>, params: &Value) -> Result<Value> {
 
         lines.push(format!("  the pass begins by clearing {}", cleared.join(", ")));
     } else if kind == "clear" {
+        // Only the buffers the mask names are cleared: say which, in words.
+        let mask = state["mask"].as_u64().unwrap_or(0);
+        let buffers: Vec<&str> =
+            [(0x4000, "colour"), (0x100, "depth"), (0x400, "stencil")].iter().filter(|(bit, _)| mask & bit != 0).map(|(_, name)| *name).collect();
+
         lines.push(format!(
-            "  clears to colour {}, depth {}, stencil {}; mask 0x{:X}",
+            "  clears {} (mask 0x{mask:X}); the clear values are colour {}, depth {}, stencil {}",
+            if buffers.is_empty() { "nothing".to_string() } else { buffers.join(", ") },
             list(&state["clearColor"]),
             state["clearDepth"],
             state["clearStencil"],
-            state["mask"].as_u64().unwrap_or(0)
         ));
     } else if webgpu && (kind == "draw" || kind == "dispatch") {
         lines.extend(gpu_draw_lines(host, &handle, &state, tag));

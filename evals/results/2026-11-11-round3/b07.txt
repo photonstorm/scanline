@@ -1,0 +1,20 @@
+CAUSE: The page enables SCISSOR_TEST with a 12,336,150,12 box for the health bar fill and never disables it. The scissor stays on into the next frame, so every clear and draw (scene pass, offscreen pass, minimap) is clipped to that strip and the rest of the canvas is left black.
+
+EVIDENCE: In capture cap_7 (frame 201), draw_list shows scissor ON 12,336,150,12 on all 25 events, including the clears (events 0 and 4, "frame began with scissor already on") and the scene draws 5 to 21. Those draws "changed nothing", and only the clear and draws 22 and 23 changed 1800 px at 12,12,150,12. The capture's own "worth a look" note says the scissor test was already on at frame start and call 138 switches it on with nothing after it switching it off. The commands table shows gl.enable SCISSOR_TEST at call 138 and gl.scissor(12,336,150,12) at call 139, just before the health bar draw (call 145). Nothing in calls 138 to 151 disables it. The minimap draw 24 (tex_3, 406,10,64,64) also changed nothing because it is clipped. The offscreen pass (tex_3) is clipped too, so the minimap texture stays empty.
+
+FIX: After the health bar draw, call gl.disable(gl.SCISSOR_TEST). Alternatively, enable the scissor only around that draw and disable it afterwards. Also disable it, or reset it, at the start of each frame, before the clears.
+
+COMMANDS:
+help
+launch http://127.0.0.1:8765/fixtures/bugs/b07.html --headless
+pause --session ses_5
+capture --help
+console --session ses_5
+capture --session ses_5
+draw_list --capture cap_7 --session ses_5
+calls --help
+query --capture cap_7 --session ses_5 --sql "select * from commands where name like '%scissor%' or name like '%SCISSOR%' or name='enable' or name='disable'"
+query --capture cap_7 --session ses_5 --sql "select command, method, args from commands where method in ('enable','disable','scissor') or command>=120"
+close --session ses_5
+
+FRICTION: The launch output reported frame 1, but my pause landed on frame 200, so I never saw the first frame as it first rendered. The help text says launch with start "paused", but the CLI flag is --paused, and I did not use it. The query error for a wrong column name was helpful because it listed the schema. The capture's "worth a look" note found the cause almost at once. Nothing says which JS line enabled the scissor. A stack column on commands would have helped. "calls --help" was not a real command, so that was a wasted call. Passing the SQL with --sql worked.

@@ -104,6 +104,10 @@ The press freezes the page and gives you two things: `cap_N`, the frozen frame, 
 
 The person sees your instruction in a control strip under the game's window, with Debug, Pause and Step buttons; `gfx_strip()` says what it is showing them. While the person has the input you can look but not step, resume or send input. `gfx_take_control()` makes you the only source of input and keeps their keys and mouse out of the page, which matters when you are replaying a run; `gfx_take_control(release: true)` gives that up.
 
+## A fault that comes and goes
+
+For a flicker or one bad frame in many, do not capture frame after frame. `gfx_capture(when: {frames: 120}, flight_frames: 120)` runs the page and keeps all of those frames as `rec_N`; `gfx_recording(recording: "rec_N")` names the frames that draw differently from the rest; `gfx_capture(recording: "rec_N", frame: n)` makes a bad one and a good neighbour into captures; `gfx_compare(a, b)` says what differs.
+
 ## Getting back to the bug after a change
 
 Launch with `deterministic: true` when the bug takes play to reach. Random numbers are seeded, every frame is a fixed step of page time, and the clock starts from zero, so the same input gives the same frames. Once the bug is on screen (you played to it with `gfx_step`, or the person did), `gfx_save_run()` keeps the input as `run_1`. After changing the code, `gfx_replay_run(run: "run_1")` reloads and plays it again in a fraction of the time and pauses where it ended; `to_frame` stops it earlier. It checks fingerprints of the frames against the original and says where they first differ. If your fix changes what is drawn, a difference at that point is the fix showing, not a fault.

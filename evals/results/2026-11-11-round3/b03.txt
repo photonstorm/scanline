@@ -1,0 +1,15 @@
+CAUSE: The glass panel is drawn with gl.BLEND disabled, so its tint alpha of 0.4 is ignored and the draw overwrites the crates behind it. The page enables blending only for the spark draws (prg_2) and never for the panel draw.
+EVIDENCE: In capture cap_4, event 9 is a TRIANGLE_STRIP x4 on prg_1 to the canvas. It has uniform rect = 150,120,220,160, textured = 0 and tint = 0.2,0.4,1,0.4, and depth LESS with no depth write. The `draw` output says "blend: off (the draw replaces what is there)", and it changed 35200 pixels over x=150..370, y=120..280, which is the whole panel rectangle. The capture's "Worth a look" note says the same: "Event 9 is drawn with blending off, but its uniform tint has an alpha of 0.4". Draw_list shows blend SRC_ALPHA/ONE only on events 10-21 (the sparks, prg_2). The crates (events 6-8) are drawn before event 9 and are covered by it. I did not verify the fix: my one patch_state attempt used an invalid filter key ("draw") and was rejected, and the screenshot after it came from a frame with no patch in force.
+FIX: Before the panel draw (event 9), call gl.enable(gl.BLEND) and gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA). Disable blending again afterwards if the draws after it (events 10-21) need to set their own state. The sparks already set SRC_ALPHA/ONE themselves.
+COMMANDS:
+help
+launch http://127.0.0.1:8765/fixtures/bugs/b03.html --headless
+step --session ses_7 --frames 3
+capture --session ses_7
+draw --session ses_7 --capture cap_4 --draw 9
+draw_list --session ses_7 --capture cap_4
+calls --help (unknown command)
+patch_state --session ses_7 --filter '{"draw":9}' --state '{"blend":true}' (rejected: invalid filter key)
+step --session ses_7 --frames 1 --screenshot 480
+close --session ses_7
+FRICTION: (1) The patch_state filter key is "draws", but its --help says only "as for patch_draws" and does not name the key. I guessed "draw" and the error then listed the keys. (2) I called `scanline calls --help`, which does not exist. The top-level help is long and I had to find the command list inside it. (3) The capture's "Worth a look" note pointed straight at the bug, which saved a lot of time. (4) Enabling blend through patch_state would use whatever blendFunc is current, and the draw output does not show the blend function for draws with blending off, so a patch test could still look wrong.

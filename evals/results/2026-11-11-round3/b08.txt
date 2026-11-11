@@ -1,0 +1,30 @@
+CAUSE: The page never binds the crate texture (tex_1, 64x64 mipmapped, made by makeCrateTexture) before drawing the crates. The only texture bound in the whole frame is tex_2, the 32x1 health-bar texture, so the crates are sampled from the bar texture.
+
+EVIDENCE:
+- cap_12 draw_list: draws 6, 7 and 8 are the crates (rects 60,180,80,80; 200,160,100,100; 340,190,70,70). All use prg_1 with "textures tex_2".
+- `draw cap_12 6` shows unit 0 holds tex_2 (32x1 RGBA8), "last bound at call 2, for event 0; not bound again for this draw". The uniforms are textured=1 and tint=1,1,1,1, so the shader does sample it.
+- `resources texture` lists tex_1 (64x64, 7 levels, makeCrateTexture at scene.js:154). It has "used f0" only, so it is not used after frame 0.
+- The commands table for the frame has exactly one bindTexture call, at call 2 with tex_2. There is no bindTexture of tex_1 before draws 6-8.
+- The same tex_2 is bound for the ground, glass, sparks and health bar. Only the minimap draw 24 uses a different texture, tex_3 (the render target).
+
+FIX: Before the crate draws (draws 6, 7 and 8), call gl.bindTexture(gl.TEXTURE_2D, crateTexture) with the texture from makeCrateTexture (tex_1). Then bind tex_2 again before the health-bar draws. Alternatively, bind the right texture per draw group.
+
+COMMANDS:
+help
+launch http://127.0.0.1:8765/fixtures/bugs/b08.html --headless
+capture --session ses_12
+draw_list --capture cap_12 --session ses_12
+draw --capture cap_12 --draw 6 --session ses_12
+resources --kind texture --session ses_12
+help calls
+calls --capture cap_12 --from 30 --to 45 --session ses_12   (failed: unknown command "calls")
+query cap_12 "select * from commands where name like ..." --session ses_12   (failed: no such column "name")
+query cap_12 "select command, method, args from commands where method in ('bindTexture','activeTexture','texImage2D') or command<12" --session ses_12
+close --session ses_12
+(One attempt at the start used an `env ...` prefix in a shell variable and failed on shell quoting, so it ran nothing.)
+
+FRICTION:
+- `help <command>` just reprints the general help. I had to find the command list through `help calls`, which was a bad guess on my part. A per-command usage hint is not shown unless you pass --help.
+- The `draw` output reports the texture as "last bound at call 2, for event 0; not bound again for this draw". That is useful, but it does not say outright that the crate texture was never bound. I had to cross-reference `resources texture` (tex_1 used only at f0) and a SQL query on the commands table to be sure.
+- The commands table column is `method`, not `name`. The query error did list the columns, which helped.
+- No direct command lists every command in a range. I used query on the commands table instead.

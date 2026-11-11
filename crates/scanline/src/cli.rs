@@ -313,6 +313,14 @@ fn parse(args: Vec<String>) -> Result<Parsed> {
     let command = args[0].replace('-', "_");
 
     if !TOOLS.iter().any(|tool| tool.name == command) {
+        // Asked for often enough to be worth an answer of its own.
+        if matches!(args[0].as_str(), "calls" | "commands") {
+            bail!(
+                "There is no \"{}\" command. The calls of a captured frame are a table, read with query:\n  scanline query cap_1 \"select command, method, args from commands where for_draw = 7\"\n`scanline help sql` lists the tables and their columns.",
+                args[0]
+            );
+        }
+
         bail!("Unknown command \"{}\".\n\n{}", args[0], usage());
     }
 
@@ -434,6 +442,16 @@ pub async fn run(args: Vec<String>) -> Result<ExitCode> {
                     scanline_core::tiers::Tiers::from_env()?.describe()
                 ),
             },
+            // Something that is neither a topic nor a command: say so, and not the workflow again.
+            None if topic.is_some_and(|topic| !is_topic(topic)) => bail!(
+                "There is no help topic or command named \"{}\". Topics: workflow, input, capture, analysis, patch, page, handoff, sql, security, limits, skills. `scanline --help` lists the commands, and `scanline <command> --help` gives one command's arguments.{}",
+                topic.unwrap_or(""),
+                if matches!(topic, Some("calls" | "commands")) {
+                    "\nThe calls of a captured frame are a table: scanline query cap_1 \"select command, method, args from commands where for_draw = 7\"."
+                } else {
+                    ""
+                }
+            ),
             None => format!("{}\n\n{CALLS}", scanline_core::help(topic)),
         };
 

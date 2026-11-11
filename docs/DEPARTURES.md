@@ -284,9 +284,9 @@ The build plan gives milestone 7 a list and no exit sentence: "Capture viewer an
 
 | PRD section 10 | Target | Standing |
 |---|---|---|
-| Planted bugs diagnosed, no hints | 80% or more | See `evals/results/README.md` for each round. Rounds 1 and 2: 12 of 12 and 6 of 6. Round 3, on this build with all fourteen bugs, is recorded there. |
-| Median tool calls to a correct diagnosis | 12 or fewer | 8.5 in round 1; round 3 in the results file. |
-| Tokens of tool results per diagnosis | Under 40,000 | Roughly 2,000 to 4,500. |
+| Planted bugs diagnosed, no hints | 80% or more | Met on the bugs there are: 14 of 14 in round 3, on the finished build (12 of 12 and 6 of 6 in rounds 1 and 2). The bugs are one small scene with one mistake each, all on WebGL; `evals/results/README.md` says what that does and does not show. |
+| Median tool calls to a correct diagnosis | 12 or fewer | 9 in round 3. One bug is far outside it: the intermittent one (b13) took about 190 commands, because the agent did not find the flight recorder. The help now points at it; that has not been run past an agent. |
+| Tokens of tool results per diagnosis | Under 40,000 | Roughly 2,000 to 4,500 in rounds 1 and 2. Not measured in round 3; b13's 190 commands will have been well over it. |
 | Hand-off round trip with no manual steps | Works on both platforms | Works on macOS: checked by hand with a real F9 press on 11 November 2026, and by `tests/e2e.test.mjs` with `debug`. Windows is not built. |
 | Content matrix: launch, capture, replay matches | All pass | Pass: raw WebGL 1, WebGL 2 and WebGPU, a worker with an OffscreenCanvas (WebGL 2), three.js (both renderers), PixiJS (both), Phaser 4 (WebGL), Babylon.js (both). Not tried: PlayCanvas, a Unity WebGL build, an Emscripten build (none is in the repository, and fetching them needed the person's say-so), and a WebGPU device in a worker. Phaser 4 has no WebGPU renderer to try. |
 | Replay fidelity | Identical, or the difference is reported | Met: every capture is replayed when taken and compared pixel for pixel, and the summary says which. |

@@ -70,7 +70,14 @@ Make the change, `gfx_navigate(reload: true)` (which drops every patch), step to
 
 ## Frames that only sometimes go wrong
 
-Capture a bad frame and a good one and `gfx_compare(a, b)`: it lists events that moved in the order, events only one has, and state that differs. For a fault that comes and goes while someone plays, the flight recording in `scanline-with-a-person` finds the odd frame for you.
+Do not capture frame after frame hoping to land on the bad one. Let the flight recorder find it:
+
+1. `gfx_capture(when: {frames: 120}, flight_frames: 120)` runs the page for 120 frames and keeps every one of them as a recording, `rec_N`. (A flicker that is rarer needs more frames; 600 is the most a recording holds.)
+2. `gfx_recording(recording: "rec_N")` names the frames that draw something different from the rest, and says at which event each first differs from the frame before it.
+3. `gfx_capture(recording: "rec_N", frame: n)` on a bad frame and on a good neighbour makes each a capture.
+4. `gfx_compare(a, b)` lists events that moved in the order, events only one has, and state that differs.
+
+For a fault that only shows while someone plays, the person's Debug press gives you the same recording: see `scanline-with-a-person`.
 
 ## Limits to keep in mind
 

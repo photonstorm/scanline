@@ -1,0 +1,14 @@
+CAUSE: Every frame the page compiles two shaders and links a brand-new program, draws with it, then deletes the program and shaders. This per-frame program creation (from scene.js, a compile helper at line 18 and a link helper at line 28) is the stutter.
+EVIDENCE: After 203 frames, `memory` and `resources` reported CHURN: 205 programs created and 203 destroyed, and 410 shaders created and 410 destroyed, with only 2 programs alive. `resources --kind program --sort created --dead true` shows a new program every frame (prg_205 created and used on f203, prg_204 on f202 and destroyed f203, and so on). Each one comes from `link (fixtures/bugs/scene.js:28:28)`. The shaders come from `compile (fixtures/bugs/scene.js:18:27)`, a 417-character vertex shader and a 278-character fragment shader per frame. `stats` showed "up to 2 shader compiles in a frame" and "up to 1 program link in a frame". Frame interval was 16.66 ms, but that is the stepped display interval and not a real measure. In the headless run, CPU and GPU times looked small, so the cost is in compile and link, which stats did not attribute.
+FIX: Compile and link each program once at startup, or cache it by shader source. Keep the program, and its uniform and attribute locations, in a variable and reuse it on every frame. Do not call createShader, createProgram, linkProgram, deleteProgram or deleteShader inside the frame or render loop.
+COMMANDS:
+help
+launch http://127.0.0.1:8765/fixtures/bugs/b11.html --headless
+step --session ses_8 --frames 30
+stats --session ses_8
+resources --session ses_8
+memory --session ses_8
+resources --session ses_8 --kind program --sort created --dead true
+resources --session ses_8 --kind shader --sort created --dead true
+close --session ses_8
+FRICTION: The stats output says "Stepped frames show the display's interval, not the page's own pace", so the frame times could not show the stutter. The churn warning in memory() and resources() found the cause immediately, but stats() did not mention it. The CHURN lines are printed twice when resources and memory are both called. The stats output gave no per-call timing for compile or link, so I could not measure what the churn costs per frame. Other than that the tool worked well.

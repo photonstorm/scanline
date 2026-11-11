@@ -551,7 +551,7 @@ pub const TOOLS: &[Tool] = &[
             r#"["state"]"#,
             session!(),
             context!(),
-            r#""filter": { "type": "object", "description": "Which draws, as for patch_draws. Left out: every draw.", "properties": { "program": { "type": "string" }, "pipeline": { "type": "string" }, "texture": { "type": "string" }, "draws": {} } }"#,
+            r#""filter": { "type": "object", "description": "Which draws. WebGL: {\"program\": \"prg_2\"}, {\"texture\": \"tex_3\"} and/or {\"draws\": [6, 8]} (event numbers). WebGPU: {\"pipeline\": \"pip_2\"}. Left out: every draw.", "properties": { "program": { "type": "string" }, "pipeline": { "type": "string" }, "texture": { "type": "string" }, "draws": {} } }"#,
             r#""state": { "type": "object", "description": "Any of blend, depth_test, depth_write, cull (true or false), color_mask ([r, g, b, a]), scissor ([x, y, w, h], or false for off)." }"#,
         ),
         read_only: false,
@@ -594,7 +594,7 @@ pub const TOOLS: &[Tool] = &[
             context!(),
             r#""handle": { "type": "string", "description": "The texture, such as tex_3." }"#,
             r#""with": { "type": "string", "enum": ["checker", "white", "black", "mips"], "description": "Default checker." }"#,
-            r#""filter": { "type": "object", "description": "Only for these draws, as for patch_draws.", "properties": { "program": { "type": "string" }, "draws": {} } }"#,
+            r#""filter": { "type": "object", "description": "Only for these draws: {\"program\": \"prg_2\"} and/or {\"draws\": [6, 8]} (event numbers).", "properties": { "program": { "type": "string" }, "draws": {} } }"#,
         ),
         read_only: false,
     },
@@ -612,7 +612,7 @@ pub const TOOLS: &[Tool] = &[
             session!(),
             context!(),
             r#""kind": { "type": "string", "enum": ["scissor_1px", "skip"] }"#,
-            r#""filter": { "type": "object", "description": "For skip: which draws, as for patch_draws." }"#,
+            r#""filter": { "type": "object", "description": "For skip: which draws. WebGL: {\"program\": \"prg_2\"}, {\"texture\": \"tex_3\"} and/or {\"draws\": [6, 8]}. WebGPU: {\"pipeline\": \"pip_2\"}." }"#,
             r#""frames": { "type": "integer", "description": "How many frames to measure each way. Default 60." }"#,
         ),
         read_only: false,
@@ -756,8 +756,17 @@ the draws by the engine's own objects: help(topic: \"page\").
 
 Think you know the fix? Try it in the running page first: help(topic: \"patch\").
 
+A fault that comes and goes (a flicker, one bad frame in many): do not capture frame after
+frame. capture(when: {frames: 120}, flight_frames: 120) runs the page and keeps every one
+of those frames as a recording; recording(rec) names the frames that draw differently from
+the rest; capture(recording, frame) makes a bad one and a good neighbour into captures, and
+compare(a, b) says what differs.
+
 Cannot reproduce it yourself? request_human(instruction) asks the person to play and press
 Debug when it happens; the frames before the press are kept. See help(topic: \"handoff\").
+
+The calls of a captured frame are a table: query(capture, \"select command, method, args
+from commands where for_draw = 7\"). help(topic: \"sql\") lists the tables.
 
 Sending a frame to someone: export(capture) writes it to one file; import(path) reads one in.
 

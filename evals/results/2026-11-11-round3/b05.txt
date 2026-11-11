@@ -1,0 +1,13 @@
+CAUSE: The page clears the main canvas's depth buffer to 0 (clearDepth(0)) while drawing with depthFunc LESS. Every scene fragment (ground, crates, glass, sparks) therefore fails the depth test. The sky and HUD still appear because the clear and the non-depth-tested HUD draws are unaffected.
+EVIDENCE: capture cap_2 has 23 draws; events 5-21 "changed nothing". draw 5 (the ground: rect 0,260,480,100, depth 0.9) is drawn with depth LESS and write on. The tool says: "With the depth test off it changes 48000 pixels: every fragment fails the depth test (LESS). The depth buffer was last cleared to 0 by event 4". Event 4 is the clear to canvas: colour 0.35,0.6,0.9,1, depth 0, stencil 0, mask 0x4100. Events 6-21 (crates, glass with blend, sparks with additive blend) all use depth LESS, so they are rejected too. Events 22-24 (HUD) have no depth test and do draw (3264, 1800 and 4096 px). The offscreen minimap pass (events 0-3) works, as it has no depth test.
+FIX: Clear depth to 1.0 (gl.clearDepth(1.0), the default) before gl.clear(COLOR_BUFFER_BIT | DEPTH_BUFFER_BIT | STENCIL_BUFFER_BIT) on the main canvas. Alternatively, use depthFunc GREATER if the page really means 0 to be the far plane.
+COMMANDS:
+help
+launch http://127.0.0.1:8765/fixtures/bugs/b05.html --headless
+console --session ses_3
+capture --session ses_3
+draw_list cap_2
+draw --capture cap_2 --draw 5
+draw --capture cap_2 --draw 4
+close --session ses_3
+FRICTION: Very little. My first attempt put the scanline command in a shell variable with env and failed; that was my own mistake. The "Worth a look" hint, and the "Why" line on draw 5 that named the clear depth, led straight to the cause. capture needed no explicit session flag, and I wasn't sure it would take one. The draw_list "changed nothing" annotations did not say which test rejected each draw, so I had to run draw on one event to get that. A command that reports the depth clear value for every rejected draw in one list would save a step. The 0x4100 clear mask was shown in hex without being decoded.

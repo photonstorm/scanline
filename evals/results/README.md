@@ -87,11 +87,64 @@ This round used the bugs the changes were written against, so it shows the chang
 
 These last four are covered by `tests/findings.test.mjs` but have not been in front of an agent.
 
+## Round 3: 11 November 2026, build `9b4fde5`, all fourteen bugs
+
+`2026-11-11-round3/`. The first round on the finished build, and the first to include b13 (the flicker) and b14 (the slow haze). Run as rounds 1 and 2 were: one Claude Sonnet sub-agent per bug, the command line, a shared host, `scanline help` as the only instruction. Each answer also lists what slowed the agent down.
+
+| Measure | Result | Target for 1.0 |
+|---|---|---|
+| Diagnosed correctly, no hints | 14 of 14 | 80% or more |
+| Median commands to a correct diagnosis | 9 (range 6 to 11, and b13) | 12 or fewer |
+| b13, the intermittent bug | Correct, by brute force: about 190 commands run in shell loops | |
+
+| Bug | Commands | How it was found |
+|---|---|---|
+| b01 crates culled | 9 | the summary's "3 draws changed no pixels", then `draw`: "every triangle is culled … a negative scale or size flipping them" |
+| b02 missing mipmaps | 8 | the summary: "tex_1 … is incomplete … reads black" |
+| b03 no blending | 10 | the summary: "drawn with blending off, but its uniform tint has an alpha of 0.4" |
+| b04 tint never set | 9 | `pixel_source`, then `draw`: "last set at call 23, for event 3; not set again for this draw" |
+| b05 depth cleared to 0 | 8 | `draw`: "every fragment fails the depth test … last cleared to 0 by event 4" |
+| b06 glass before crates | 8 | the summary: "Event 6 blends, but opaque depth-written events 8–9 are drawn after it" |
+| b07 scissor left on | 11 | the summary named the call that leaves the scissor on; SQL confirmed nothing switches it off |
+| b08 wrong texture | 11 | `draw`: "last bound at call 2, for event 0; not bound again"; `resources`: the crate texture last used in frame 0 |
+| b09 viewport not restored | 9 | the summary: "Every event on canvas … uses viewport 0, 0, 64, 64" |
+| b10 texture every frame | 6 | `memory`: "LIKELY LEAK: 369 textures … makeMapTarget" |
+| b11 program every frame | 9 | `resources` and `memory`: churn, 205 programs created and 203 destroyed |
+| b12 feedback loop | 9 | the summary and `draw`: the target is also bound on unit 0 |
+| b13 flicker, one frame in 40 | about 190 | captured 40 consecutive frames one at a time and read each one's draws until one had the glass before the crates |
+| b14 a 64-sample haze | 10 | `draw_list` showed one full-screen draw; `resource` gave the shader, with `SAMPLES = 64` in a loop. It did not use `profile`, `shader_analysis` or `experiment` |
+
+All fourteen answers were read, not only scored. Each names the right cause. b12's adds a second suspicion (the dots' coordinates) that is not a bug, as in round 1.
+
+Read the limits before the numbers, as before: one small scene, one mistake each. Two things are new:
+
+- **b13 was solved the hard way.** The agent never found the flight recorder, because `help` presented it only as something a person's Debug press produces. Scanline can do the same job alone in four commands: `capture(when: {frames: 100}, flight_frames: 100)` kept 99 frames of b13, `recording` answered "2 of the 99 frames differ from the rest … frames 40, 80. Frame 40 first differs from frame 39 at its event 6", and two more captures and a `compare` finish it. The workflow help and two skills now say so. That route has been checked by hand on b13, and has not been in front of an agent.
+- **b14 was solved without the tools built for it.** Reading the shader was enough on a frame with one suspicious draw. `profile` and `experiment` earn their place on a frame where the costly draw is not obvious, and this scene does not test that. The agent asked for per-draw GPU time and an estimate of shader cost, both of which exist (`profile`, `shader_analysis`); nothing pointed it at them.
+
+### What the agents said slowed them down
+
+| Said by | Friction | What was done |
+|---|---|---|
+| b13 | No way to find the frame whose draws differ, short of capturing every frame | The route exists and was not signposted. `help` now gives it under "A fault that comes and goes", and the `scanline` and `scanline-wrong-pixels` skills have it as a recipe |
+| b03, b07, b08, b09 | Tried a `calls` command to list a frame's calls; `help calls` printed the workflow again | `scanline calls` and `scanline help calls` now answer with the `query` to run. Help for anything that is neither a topic nor a command says so and lists the topics. The workflow help says the calls are a table |
+| b14 | `resource` on a shader the page deleted after linking said "COMPILE FAILED" | It says the shader has been deleted, that this is ordinary after linking, and that the program still works |
+| b03 | `patch_state --help` says its filter is "as for patch_draws" and does not name the keys | Each command that takes a filter now names the keys |
+| b05 | A clear's mask is shown as 0x4100 | `draw` on a clear says which buffers it clears, in words |
+| 9 of 14 | Put `SCANLINE_HOME=…` in a shell variable and the first command failed | Not Scanline's: an artefact of how the round passes the host's directory. A runner that sets the environment for the agent would remove it |
+| b01, b04, b06, b07, b10 | `launch` leaves the page running, so the first frame had passed before they looked | Nothing changed. `launch` says "Running at frame 0" and help's first line of the workflow is `launch(url, start: "paused")`; on the command line that is `--paused`, which `scanline launch --help` shows |
+| b01 | A uniform's components are not labelled (which of `rect`'s four is the height?) | Nothing: the page's shader gives them no names to show |
+| b02 | `draw` does not repeat that a bound texture is incomplete; the summary does | Not done |
+| b11 | `stats` does not mention churn; `resources` and `memory` both do | Not done |
+| b12 | `console` showed the last 25 of 256 repeated warnings | Not done. Repeated lines should be folded |
+| b13 | Capture handles are shared across sessions, and the first one read was another agent's | Already warned about in every answer (it was, and the agent noticed) |
+| b14 | Nothing flags a draw as costly | `profile` does; see above |
+
 ## Still open
 
 - The line of page code that made a call. Only object creation records a call site; a `clearDepth(0)` or a missing `bindTexture` is located by call number, not by file and line.
 - "Which texture should this draw have used?" A capture holds only what the frame used, so a texture the page created and never bound is invisible to it. `resources` shows it, with the frame it was last used in.
 - Pixel-level history: which fragments of a draw a test rejected, pixel by pixel.
 - WebGL's names are given for the arguments of a fixed list of methods, not for every enumerated argument.
-- Bugs not covered: intermittent ones, back-end differences, anything on WebGPU, large frames, engines.
+- Bugs not covered: back-end differences, anything on WebGPU, large frames, engines. The one intermittent bug (b13) is covered, the hard way.
+- The skills have not been in front of an agent. Every round has given agents `scanline help` and nothing else.
 - A runner that starts the agents, so that a round is one command and can be repeated with the MCP server instead of the command line.

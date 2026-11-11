@@ -1,0 +1,17 @@
+CAUSE: The crate texture (tex_1, 64x64 RGBA8, created in makeCrateTexture at scene.js:154) has a single mip level, and its MIN_FILTER is never set, so it stays at the default NEAREST_MIPMAP_LINEAR. The texture is incomplete and samples as black. The page neither calls generateMipmap nor sets MIN_FILTER to LINEAR or NEAREST.
+
+EVIDENCE: The capture summary (cap_1) flagged: "tex_1 is bound for events 6-22 but is incomplete: one mip level and MIN_FILTER (never set, so NEAREST_MIPMAP_LINEAR) needs mipmaps. A shader that samples it reads black." `resource tex_1` says "Sampling parameters set: none" and "samples as black until mipmaps are generated or MIN_FILTER is set". Draws 6, 7 and 8 are the three crates, at rects 60,180,80,80, 200,160,100,100 and 340,190,70,70. Each draws with tex_1 on unit 0, textured=1 and tint=1,1,1,1. The ground (draw 5) uses tex_2 and renders fine. I did not read pixel values with `pixels`.
+
+FIX: In makeCrateTexture (scene.js ~line 154), after texImage2D, either call gl.generateMipmap(gl.TEXTURE_2D) or set gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR) (or NEAREST). Setting the filter is simplest, and it also works if the size is not a power of two.
+
+COMMANDS:
+help
+launch http://127.0.0.1:8765/fixtures/bugs/b02.html --headless
+help capture
+capture --session ses_4
+resource tex_1 --session ses_4
+draw_list cap_1
+draw cap_1 6
+close --session ses_4
+
+FRICTION: Very little. The capture's "Worth a look" list named the cause immediately. Minor points: the `resource` output showed only "Sampling parameters set: none", so I could not see the effective MIN_FILTER directly. Also, the `draw` output for a textured draw did not flag the incomplete texture itself; I had to cross-reference it from the capture summary. `help` shows the tool-call syntax (draw(capture: "cap_1", draw: 7)), but the CLI usage had to be inferred from the last help paragraph. A first attempt using `env VAR=... path` through a zsh variable failed, which was my own shell quoting.

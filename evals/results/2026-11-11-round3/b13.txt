@@ -1,0 +1,33 @@
+CAUSE: On rare frames (about 1 in 40 sampled) the page draws the translucent glass panel BEFORE the three opaque crates instead of after them. The glass is blended with depth write off, so the opaque crates drawn afterwards pass the depth test (the glass left no depth) and overwrite it. The transparent-after-opaque draw ordering is not guaranteed; the draw order is evidently decided by a sort or rotation that sometimes puts the glass first.
+
+EVIDENCE: The glass is the draw with rect = 150,120,220,160, blend SRC_ALPHA/ONE_MINUS_SRC_ALPHA, depth LESS with write false, and tint alpha 0.4. In 39 of 40 captured frames (e.g. cap_21, frame 446) the order is ground (draw 5, depth 0.9), crates (draws 6-8, depths 0.5, 0.4, 0.6, blend off, depth write true), then glass at draw 9 with depth 0.3. In cap_97 (frame 560) the order is ground, then GLASS first (draw 6, depth 0.3, blend on, no depth write), then the crates (draws 7-9, depths 0.5, 0.4, 0.6, opaque, depth write true). The glass is nearest (0.3), but it wrote no depth, so each crate drawn over it passes LESS and replaces the glass pixels. The per-draw depth uniform values are unchanged between frames; only the order is rotated.
+
+FIX: Draw all opaque objects first, then the blended objects, back to front. Do this with an explicit two-phase pass (or a stable sort whose key puts transparent after opaque), not an order that can change from frame to frame. Alternatively, make the sort key deterministic and remove the periodic reordering. Or give the glass a late draw slot that cannot be reordered ahead of the crates.
+
+COMMANDS:
+help
+launch http://127.0.0.1:8765/fixtures/bugs/b13.html --headless
+help capture
+capture --session ses_14
+draw_list --session ses_14 --capture cap_1
+draw_list --session ses_14 --capture cap_9
+step --session ses_14 --frames 7 (x8, each followed by capture --session ses_14)
+draw_list --session ses_14 --capture cap_13 (through cap_20, one per call, in a loop)
+draw --session ses_14 --capture cap_20 --draw 9
+draw --session ses_14 --capture cap_20 --draw 7
+step --session ses_14 --frames 1 (x40, each followed by capture --session ses_14, and draw --capture <cap> --draw 6/7/8/9 in a loop)
+draw_list --session ses_14 --capture cap_97
+draw --session ses_14 --capture cap_97 --draw 5/6/7/8/9/22/23/24 (loop)
+draw_list --session ses_14 --capture cap_21
+draw --session ses_14 --capture cap_21 --draw 5/6/7/8/9/22/23/24 (loop)
+draw --session ses_14 --capture cap_97 --draw 6
+draw --session ses_14 --capture cap_97 --draw 7
+close --session ses_14
+
+FRICTION:
+- A glitch on one frame in 40 had to be found by brute force: capture each frame and grep the draw uniforms. There is no "compare this frame's draw order against the previous frame's" command, and no way to ask for "frames whose draw sequence differs".
+- The capture command prints only a header, so I had to run draw_list or draw separately for each capture. A one-line draw-sequence signature in the capture summary would let me spot the odd frame immediately.
+- step --frames 7 followed by capture advanced the frame counter by 8 each time, not 7 (the capture seems to cost a frame), which makes it easy to skip over a single-frame glitch.
+- Capture handles are global across sessions. My first draw_list on cap_1 returned another agent's capture (a different page, b02). It was flagged with a warning, but it was an easy mistake to make.
+- draw_list truncates its lines with long text; I had to cut and grep, and uniform lines carry a long "← set for this draw, at call N" suffix that clutters scripted comparison.
+- There is no way to select a capture by event content, for example "the capture where the blended draw comes before an opaque draw". The "Worth a look" list did not flag a blended draw drawn before opaque ones in the bad frame.

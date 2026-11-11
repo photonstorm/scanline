@@ -1,0 +1,15 @@
+CAUSE: The page renders the minimap's yellow dots into a 64x64 offscreen texture (tex_3) while that same texture is still bound on texture unit 0, which forms a feedback loop. The browser rejects all three dot draws with GL_INVALID_OPERATION, so the minimap stays at its clear colour.
+EVIDENCE: In capture cap_11, pass 0 (3 draws plus 1 clear, target tex_3, viewport 0,0,64,64) holds events 1-3. Each is a drawArrays on prg_1, marked REJECTED: GL_INVALID_OPERATION and "changed nothing". Event 1 (call 14) uses rect 80,120,40,40, tint 1,0.8,0.2,1, textured=0 and resolution 480,360. The tool says "tex_3 is the target being drawn to and is also bound on texture unit 0", and "unit 0: 2D tex_3 (64x64 RGBA8, render target) <- left bound by an earlier frame". The console shows repeated "Feedback loop formed between Framebuffer and active Texture" warnings. Draw 5 (the ground) also runs with tex_3 left on unit 0.
+Two other things in the dot draws look suspect. They set resolution to 480,360 while the viewport is 64x64, and their rects are in 480x360 coordinates (80,120,...). Once the feedback loop is fixed, the dots may still land off-target unless resolution and rects are scaled to 64x64, so check that.
+FIX: Before drawing into the minimap FBO, unbind tex_3 from unit 0 (bindTexture(TEXTURE_2D, null), or bind a different texture such as tex_1). Draw the dots, then bind tex_3 only when sampling it to draw the minimap quad in the top-right. Also set the resolution uniform and dot rects to the 64x64 minimap space.
+COMMANDS:
+help
+launch http://127.0.0.1:8765/fixtures/bugs/b12.html --headless
+console --session ses_9 --level error
+capture --session ses_9
+draw --session ses_9 --capture cap_11 --draw 0
+draw_list --session ses_9 --capture cap_11
+draw --session ses_9 --capture cap_11 --draw 1
+draw --session ses_9 --capture cap_11 --draw 5
+close --session ses_9
+FRICTION: Two of my first commands failed because I used `env VAR=... path` inside a shell variable, a zsh quoting problem of mine and not the tool's. The console output is flooded with repeated feedback-loop warnings and showed only the last 25 of 256 lines, so the error list was not very useful on its own, though capture summarised the same errors well. I never viewed the minimap quad draw in the final image, so I did not check where the minimap's own draw lands or whether it samples tex_3. Otherwise the tool was very effective: capture flagged the feedback loop directly.

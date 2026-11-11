@@ -1,0 +1,13 @@
+CAUSE: The page draws the translucent glass panel (blended, depth-test only) before the opaque crates, so the crates are drawn on top of the panel instead of being tinted by it. The crates are also drawn at a larger depth value (0.4) than the glass (0.3), so they pass the depth test against it.
+EVIDENCE: capture cap_5, pass 1 (canvas). Event 6 is the glass: rect 150,120,220,160, tint 0.2,0.4,1,0.4, blend SRC_ALPHA/ONE_MINUS_SRC_ALPHA, depth LESS with no write, depth uniform 0.3. Events 7, 8 and 9 are the crates, drawn after it with blend off and depth write on. Event 8 (middle crate) has depth 0.4. The capture's "worth a look" note said: "Event 6 blends, but opaque depth-written events 8–9 are drawn after it on the same pixels." The glass wrote no depth, and the crates replace the blended pixels.
+FIX: Draw order should be sky, ground, crates (opaque), then glass (blended), then sparks. Move the glass draw (event 6) to after the crate draws (events 7-9) and before the sparks (event 10). The glass's depth of 0.3 is already nearer than the crates' 0.4, so it then passes the depth test and blends over them.
+COMMANDS:
+help
+launch http://127.0.0.1:8765/fixtures/bugs/b06.html --headless
+step --session ses_1 --frames 2
+capture --session ses_1
+draw_list --session ses_1 cap_5
+draw cap_5 6 --session ses_1
+draw cap_5 8 --session ses_1
+close --session ses_1
+FRICTION: My first attempt failed because I wrapped the env var in `env` inside a variable. This was my shell mistake, not the tool's. The launch output reported frame 1, but step reported frame 320, so the page had already run many frames after launch with --headless. help does not mention that launch without --paused keeps running. The capture's "worth a look" hint pointed straight at the cause, which was very helpful. The draw output did not say which object is a crate or the glass, so I inferred that from the rect sizes and the tint. I did not use page().

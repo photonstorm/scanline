@@ -1,0 +1,12 @@
+CAUSE: Every frame, the minimap pass (renderMap) calls makeMapTarget, which creates a new 256×256 RGBA8 texture and a framebuffer, and never deletes the previous one. Render targets pile up at one per frame and GPU memory grows without bound.
+EVIDENCE: After 369 frames, `memory` reported "LIKELY LEAK: 369 textures still alive (92.2 MB) were all created by one line... makeMapTarget (fixtures/bugs/scene.js:216:28) < renderMap (scene.js:285:26) < frame (scene.js:440:9)". That is about one per frame, over frames 1 to 369. The estimated total was 94.5 MB, of which 92.5 MB was render targets. Only 4 shaders, 2 programs and 1 framebuffer were alive, so the leaked textures are not attached to the live framebuffer. `resources --kind texture` listed tex_3, tex_4, tex_5 and so on, each 256×256 RGBA8 render target, created on consecutive frames f0, f1, f2 and so on, all from makeMapTarget at scene.js:216:28. Each was used only on the frame it was created.
+FIX: Create the minimap render target once, outside the per-frame path, and reuse it every frame. If it must be recreated, call gl.deleteTexture (and delete the framebuffer) on the old one first. That means removing the makeMapTarget call from renderMap's per-frame path.
+COMMANDS:
+help
+launch http://127.0.0.1:8765/fixtures/bugs/b10.html --headless
+step --session ses_10 --frames 120
+memory --session ses_10
+resources --session ses_10 --kind texture
+close --session ses_10
+(Two of these were run through a shell-quoting mistake of mine that errored out and did nothing: an `env`-prefixed variable in a variable. The first `step` and `memory` pair was rerun correctly.)
+FRICTION: Very little. `memory` pinpointed the leak line with a call stack on its own, so I did not need a diff or a snapshot. The "1 framebuffer alive" figure beside 372 textures was useful. It would help if `memory` also said whether the leaked textures were ever attached to a framebuffer, and whether the framebuffer is also recreated each frame. The `launch` output did not say the page starts running instead of paused, even though the help text suggests `start: "paused"`. The first `step` began at frame 249, not 1, so some frames had already run.
