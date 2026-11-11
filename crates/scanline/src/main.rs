@@ -19,12 +19,17 @@ use anyhow::Result;
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+
+    // The MCP server and the host speak protocols, which are UTF-8 whatever the shell.
+    if !matches!(args.first().map(String::as_str), Some("mcp" | "serve" | "hotkey")) {
+        cli::ascii_asked(&mut args);
+    }
 
     match run(args).await {
         Ok(code) => code,
         Err(error) => {
-            eprintln!("{error:#}");
+            cli::complain(&format!("{error:#}"));
             ExitCode::from(1)
         }
     }

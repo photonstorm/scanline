@@ -88,6 +88,30 @@ describe('the command line', () =>
         assert.equal(hostRunning(home), false, 'no host was started');
     });
 
+    test('--ascii keeps what is printed to ASCII, and loses nothing in JSON', async () =>
+    {
+        // For a shell that decodes what it captures with a code page that is not UTF-8.
+        const plain = await scanline('help', 'limits', '--ascii');
+        const usual = await scanline('help', 'limits');
+
+        assert.match(usual.out, /[«×µ]/);
+        assert.ok(/^[\x00-\x7f]*$/.test(plain.out), 'nothing outside ASCII');
+        assert.match(plain.out, /"used ~f120"/);
+        assert.equal(plain.out.split('\n').length, usual.out.split('\n').length);
+
+        // The environment asks for it once, for every command.
+        const set = await new Promise((resolve) => execFile(binary, ['help', 'capture'], { env: { ...env, SCANLINE_ASCII: '1' } }, (_error, stdout) => resolve(stdout)));
+
+        assert.ok(/^[\x00-\x7f]*$/.test(set));
+
+        // JSON is ASCII too, and reads back as the same text.
+        const json = await new Promise((resolve) => execFile(binary, ['help', 'limits', '--json', '--ascii'], { env }, (_error, stdout) => resolve(stdout)));
+
+        assert.ok(/^[\x00-\x7f]*$/.test(json));
+        assert.equal(JSON.parse(json).summary, (await scanline('help', 'limits', '--json')).json.summary);
+        assert.equal(hostRunning(home), false, 'no host was started');
+    });
+
     test('a session: launch paused, step, look, measure, run until, close', async () =>
     {
         const launched = await scanline('launch', server.url('fixtures/matrix/webgl2.html'), '--paused', '--headless', '--json');

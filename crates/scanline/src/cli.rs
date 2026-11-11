@@ -169,6 +169,8 @@ pub fn usage() -> String {
         "  --region x,y,w,h         screenshot: part of the canvas.".into(),
         "  --out file.png           Copy the returned image to this path.".into(),
         "  --json                   Print the whole result as JSON.".into(),
+        "  --ascii                  Print ASCII only (<< >> for the marks round page text, x, ->, us), for a".into(),
+        "                           shell that garbles UTF-8. SCANLINE_ASCII=1 does the same for every command.".into(),
         String::new(),
         "Exit status: 0 done, 1 error, 2 ran but found nothing (a wait that timed out, a run_until not met).".into(),
         String::new(),
@@ -532,25 +534,118 @@ pub async fn run(args: Vec<String>) -> Result<ExitCode> {
         }
     }
 
-    say(&text);
+    say_as(&text, parsed.json);
 
     let nothing = result["data"]["still_waiting"] == true || result["data"]["met"] == false;
 
     Ok(if nothing { ExitCode::from(2) } else { ExitCode::SUCCESS })
 }
 
+/// Whether what is printed keeps to ASCII: `--ascii`, or SCANLINE_ASCII in the environment.
+static ASCII: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Takes `--ascii` out of the arguments, and says whether output is to keep to ASCII.
+/// Some shells decode what they capture with a code page that is not UTF-8 (Windows
+/// PowerShell, by default), and turn the characters Scanline writes into nonsense.
+pub fn ascii_asked(args: &mut Vec<String>) {
+    let flagged = args.iter().any(|arg| arg == "--ascii");
+    let set = std::env::var("SCANLINE_ASCII").is_ok_and(|value| !matches!(value.to_ascii_lowercase().as_str(), "" | "0" | "off" | "false" | "no"));
+
+    args.retain(|arg| arg != "--ascii");
+    ASCII.store(flagged || set, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Text in ASCII only. The characters Scanline itself writes are spelt out (`<<` and `>>`
+/// round text from the page, `x`, `->`, `us`); anything else, which can only be the
+/// page's, is written as its code point. In JSON every such character is a `\u` escape,
+/// which a JSON reader turns back into the character: nothing is lost there.
+pub fn plain(text: &str, json: bool) -> String {
+    let mut out = String::with_capacity(text.len());
+
+    for character in text.chars() {
+        if character.is_ascii() {
+            out.push(character);
+            continue;
+        }
+
+        if json {
+            let mut units = [0u16; 2];
+
+            for unit in character.encode_utf16(&mut units) {
+                out.push_str(&format!("\\u{unit:04x}"));
+            }
+
+            continue;
+        }
+
+        match character {
+            '«' => out.push_str("<<"),
+            '»' => out.push_str(">>"),
+            '×' => out.push('x'),
+            '…' => out.push_str("..."),
+            '–' | '—' | '−' => out.push('-'),
+            '→' => out.push_str("->"),
+            '←' => out.push_str("<-"),
+            '↔' => out.push_str("<->"),
+            '⇒' => out.push_str("=>"),
+            '≤' => out.push_str("<="),
+            '≥' => out.push_str(">="),
+            'µ' | 'μ' => out.push('u'),
+            '•' => out.push('*'),
+            '∅' => out.push_str("NULL"),
+            '’' | '‘' => out.push('\''),
+            '“' | '”' => out.push('"'),
+            other => out.push_str(&format!("\\u{{{:x}}}", other as u32)),
+        }
+    }
+
+    out
+}
+
 /// Writes to standard output, and lets a closed pipe pass.
 pub fn say(text: &str) {
+    say_as(text, false);
+}
+
+/// The same, for text that is JSON where it matters how a character is spelt.
+pub fn say_as(text: &str, json: bool) {
     use std::io::Write;
 
     let mut out = std::io::stdout().lock();
-    let _ = out.write_all(text.as_bytes());
+
+    if ASCII.load(std::sync::atomic::Ordering::Relaxed) {
+        let _ = out.write_all(plain(text, json).as_bytes());
+    } else {
+        let _ = out.write_all(text.as_bytes());
+    }
+
     let _ = out.flush();
+}
+
+/// Writes an error to standard error, in ASCII if that was asked for.
+pub fn complain(text: &str) {
+    if ASCII.load(std::sync::atomic::Ordering::Relaxed) {
+        eprintln!("{}", plain(text, false));
+    } else {
+        eprintln!("{text}");
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ascii_spells_out_what_scanline_writes_and_escapes_the_rest() {
+        assert_eq!(plain("tex_1 «crate» 256×256 → canvas ⇒ 35 px, 4.1 µs…", false), "tex_1 <<crate>> 256x256 -> canvas => 35 px, 4.1 us...");
+        assert_eq!(plain("events 6–8, ∅, «é😀»", false), "events 6-8, NULL, <<\\u{e9}\\u{1f600}>>");
+
+        // In JSON nothing is lost: a reader turns each escape back into its character.
+        let escaped = plain("{\"text\": \"«é😀» 2×2\"}", true);
+
+        assert!(escaped.is_ascii());
+        assert_eq!(serde_json::from_str::<Value>(&escaped).unwrap()["text"], "«é😀» 2×2");
+    }
 
     fn params(line: &str) -> Value {
         parse(line.split(' ').map(str::to_string).collect()).unwrap().params
