@@ -721,8 +721,14 @@ describe('the page cannot tell', () =>
             assert.deepEqual(seen.names, ['requestAnimationFrame', 'drawArrays', 'Date']);
             assert.deepEqual(seen.lengths, [1, 3, 6, 7]);
             assert.deepEqual(seen.date, [0, true, true, 'string', 1577836800000, 1577836800000]);
-            assert.deepEqual(seen.globals, []);
+            // The one global the probe adds is the page protocol's.
+            assert.deepEqual(seen.globals, ['__scanline']);
             assert.equal(seen.context, true);
+        });
+
+        await withPage('fixtures/matrix/webgl2.html', { unmodified: true }, async (session) =>
+        {
+            assert.equal(await session.evaluate(`Object.getOwnPropertyNames(window).filter((name) => /scanline|THREE_DEVTOOLS|PIXI/i.test(name)).join()`), '', 'unmodified mode adds none');
         });
     });
 
@@ -736,6 +742,139 @@ describe('the page cannot tell', () =>
 
             assert.equal(status.clockEngaged, false);
             assert.ok(status.frame > 0);
+        });
+    });
+});
+
+describe('the page protocol', () =>
+{
+    test('a page names its draws, offers its state, and takes settings', async () =>
+    {
+        await withPage('fixtures/protocol/webgl2.html', { startPaused: true }, async (session) =>
+        {
+            await session.probe('step', { frames: 3 });
+
+            const said = await session.probe('protocol.describe', {});
+
+            assert.equal(said.version, 1);
+            assert.equal(said.present, true);
+
+            // The frame as the page grouped it: five trees of two draws each, inside "trees".
+            const rows = said.groups.rows.map((row) => [row.depth, row.name, row.draws]);
+
+            assert.deepEqual(rows.slice(0, 4), [[0, 'sky', 0], [0, 'ground', 1], [0, 'trees', 10], [1, 'tree-1', 2]]);
+            assert.equal(rows.length, 8);
+            assert.equal(said.groups.loose, 0, 'no draw is outside a group');
+            assert.deepEqual(said.groups.rows[3].entity, { type: 'Tree', name: 'tree-1', id: 1, path: 'orchard/tree-1', height: said.groups.rows[3].entity.height });
+
+            // State, as text.
+            const state = JSON.parse(said.state.text);
+
+            assert.equal(state.scene, 'orchard');
+            assert.equal(state.trees, 5);
+            assert.equal(said.stateSchema.sunHeight, '0 (dusk) to 1 (noon)');
+
+            // Controls carry their current values; a set is checked against what the control takes.
+            assert.deepEqual(said.controls.map((control) => [control.id, control.type, control.value]), [['sun.height', 'number', 0.8], ['wind', 'boolean', true], ['season', 'enum', 'summer']]);
+
+            const set = await session.probe('protocol.set', { id: 'season', value: 'autumn' });
+
+            assert.equal(set.before, 'summer');
+            assert.equal(set.control.value, 'autumn');
+            assert.match((await session.probe('protocol.set', { id: 'season', value: 'winter' })).refused, /one of/);
+            assert.match((await session.probe('protocol.set', { id: 'sun.height', value: 3 })).refused, /maximum is 1/);
+            assert.equal((await session.probe('protocol.set', { id: 'nope', value: 1 })).unknown, true);
+
+            // A registered view is the page's own drawing, switched on.
+            assert.deepEqual(said.views, [{ id: 'bounds', label: 'Tree bounds', description: 'A red box round each tree, trunk and crown together.', on: false }]);
+            await session.probe('protocol.view', { id: 'bounds', on: true });
+            await session.probe('step', { frames: 1 });
+
+            const withView = await session.probe('protocol.describe', {});
+
+            assert.deepEqual(withView.groups.rows.filter((row) => row.name === 'debug').map((row) => row.draws), [20]);
+            assert.equal(withView.views[0].on, true);
+
+            // Marks are events, and the page can be run until one.
+            assert.deepEqual(said.marks.map((mark) => mark.name), ['assets loaded', 'first frame']);
+            assert.ok(session.events.some((event) => event.t === 'mark' && event.name === 'first frame'));
+
+            const stopped = await session.probe('runUntil', { event: 'second passed' });
+
+            assert.equal(stopped.frame, 62, 'one second of page time at sixty frames a second, from the second frame');
+
+            // The engine's own time control and checkpoints, called when asked.
+            assert.deepEqual(said.time, ['pause', 'resume', 'step', 'setScale']);
+            assert.deepEqual(said.checkpoint, { save: true, restore: true });
+
+            const saved = await session.probe('protocol.save', {});
+
+            await session.probe('protocol.set', { id: 'season', value: 'spring' });
+            await session.probe('protocol.restore', { state: saved.state });
+            assert.equal(JSON.parse((await session.probe('protocol.state', {})).text).season, 'autumn');
+
+            // Names given through the protocol reach the inventory, and what was exposed is kept.
+            const programs = await session.probe('registry.list', { kind: 'program' });
+
+            assert.deepEqual(programs.rows.map((row) => row.label), ['flat']);
+            assert.deepEqual(said.exposed.map((entry) => entry.names), [{ light: { min: 0, max: 2 } }]);
+        });
+    });
+
+    test('a capture carries the groups and the game objects', async () =>
+    {
+        await withPage('fixtures/protocol/webgl2.html', { startPaused: true }, async (session) =>
+        {
+            await session.probe('step', { frames: 2 });
+
+            const capture = await captureFrame(session);
+            const groups = capture.data.header.groups;
+
+            assert.equal(groups.filter((entry) => entry[1] === 'push').length, 8);
+            assert.equal(groups.filter((entry) => entry[1] === 'pop').length, 8);
+            assert.equal(groups.filter((entry) => entry[1] === 'entity').length, 6);
+            assert.deepEqual(groups[0].slice(1), ['push', 'sky']);
+
+            // Each entry says how many commands had been recorded: the trees group holds the ten tree draws.
+            const draws = capture.data.draws.filter((row) => row.kind === 'draw').map((row) => row.command);
+            const trees = groups.findIndex((entry) => entry[2] === 'trees');
+            const closes = groups.findLast((entry) => entry[1] === 'pop');
+
+            assert.equal(draws.filter((command) => command >= groups[trees][0] && command < closes[0]).length, 10);
+        });
+    });
+
+    test('calls a later protocol might add are ignored, and nothing the page passes can throw', async () =>
+    {
+        await withPage('fixtures/matrix/webgl2.html', {}, async (session) =>
+        {
+            const result = await session.evaluate(`(() =>
+            {
+                const dbg = __scanline;
+
+                dbg.somethingNew(1, 2);
+                dbg.future.deeper.call({ a: 1 }).more;
+                dbg.views.somethingElse();
+                dbg.label(null, 'x');
+                dbg.label({}, { toString () { throw new Error('no'); } });
+                dbg.entity(null, { get bad () { throw new Error('no'); }, fine: 1 });
+                dbg.pop();
+                dbg.controls.register({ id: 'broken' });
+                dbg.state.provide(() => { throw new Error('page fault'); });
+
+                return [dbg.version, dbg.group('g', () => 7), dbg.time.deterministic()];
+            })()`);
+
+            assert.deepEqual(result, [1, 7, null]);
+            assert.match((await session.probe('protocol.state', {})).error, /page fault/);
+        });
+    });
+
+    test('a deterministic session tells the page its seed and step', async () =>
+    {
+        await withPage('fixtures/protocol/webgl2.html', { deterministic: { seed: 99, fixedDt: 16 } }, async (session) =>
+        {
+            assert.deepEqual(await session.evaluate(`(() => { let got = null; const back = __scanline.time.deterministic((facts) => { got = facts; }); return [got, back]; })()`), [{ seed: 99, fixedDt: 16 }, { seed: 99, fixedDt: 16 }]);
         });
     });
 });

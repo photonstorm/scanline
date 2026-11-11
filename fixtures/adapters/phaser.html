@@ -1,0 +1,81 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Adapter: Phaser 4 (WebGL)</title>
+<style>body { margin: 0; background: #111; } canvas { display: block; }</style>
+<script src="/node_modules/phaser/dist/phaser.js"></script>
+<script>
+// A scene that batches, and flushes its batches for several reasons: a blend mode in the
+// middle of a run of images, shapes after images, a container, text, and a second camera.
+const state = window.fixture = { name: 'adapter-phaser-webgl', frames: 0, elapsed: 0 };
+
+class Yard extends Phaser.Scene
+{
+    constructor ()
+    {
+        super('Yard');
+    }
+
+    create ()
+    {
+        const swatch = (key, colour) =>
+        {
+            const graphics = this.make.graphics({ add: false });
+
+            graphics.fillStyle(colour).fillRect(0, 0, 32, 32);
+            graphics.fillStyle(0x000000, 0.3).fillRect(8, 8, 16, 16);
+            graphics.generateTexture(key, 32, 32);
+            graphics.destroy();
+        };
+
+        swatch('coin', 0xffcc33);
+        swatch('gem', 0x33ccff);
+
+        // A row of images. The fourth is additive, which splits the row.
+        for (let i = 0; i < 7; i++)
+        {
+            const image = this.add.image(40 + i * 44, 40, i % 2 ? 'gem' : 'coin').setName(`${i % 2 ? 'Gem' : 'Coin'}-${i}`);
+
+            if (i === 3)
+            {
+                image.setBlendMode(Phaser.BlendModes.ADD);
+            }
+        }
+
+        this.add.rectangle(60, 110, 80, 30, 0xff6688).setName('HealthBar');
+        this.add.circle(180, 110, 18, 0x66ff88).setName('Orb');
+
+        const crate = this.add.container(300, 110).setName('Crate');
+
+        crate.add(this.add.image(0, 0, 'coin').setName('CrateBody').setScale(2));
+        crate.add(this.add.image(0, -20, 'gem').setName('CrateLid'));
+
+        this.add.text(340, 20, 'Score 120', { fontSize: '20px', color: '#ffffff' }).setName('ScoreText');
+
+        this.player = this.add.sprite(60, 220, 'gem').setName('Player').setScale(1.5);
+
+        // A second camera: a small view of the same scene, in the corner.
+        this.cameras.main.setName('Main');
+        this.cameras.add(360, 220, 110, 90).setName('Minimap').setZoom(0.25).setBackgroundColor(0x102030);
+
+        this.total = 0;
+    }
+
+    update (time, delta)
+    {
+        this.total += delta;
+        state.elapsed = this.total;
+        state.frames++;
+        this.player.x = 60 + Math.floor(this.total * 0.06) % 300;
+    }
+}
+
+window.game = new Phaser.Game({
+    type: Phaser.WEBGL,
+    width: 480,
+    height: 320,
+    backgroundColor: '#203040',
+    banner: false,
+    fps: { smoothStep: false },
+    scene: Yard
+});
+</script>

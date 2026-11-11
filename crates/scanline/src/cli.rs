@@ -32,6 +32,8 @@ fn positional(command: &str) -> &'static [&'static str] {
         "query" => &["capture", "sql"],
         "resource" | "shader_analysis" | "patch_shader" | "patch_texture" => &["handle"],
         "experiment" => &["kind"],
+        "page" => &["call"],
+        "live_view" => &["view"],
         "request_human" => &["instruction"],
         "recording" => &["recording"],
         "replay_run" => &["run"],
@@ -177,6 +179,8 @@ pub fn command_usage(name: &str) -> Option<String> {
         "patch_texture" => "scanline patch_texture tex_3 --with checker",
         "patches" => "scanline patches --revert all",
         "experiment" => "scanline experiment scissor_1px",
+        "page" => "scanline page set_control --id sun.height --value 0.3",
+        "live_view" => "scanline live_view bounds",
         "strip" => "scanline strip --open",
         "take_control" => "scanline take_control",
         "save_run" => "scanline save_run",
@@ -309,7 +313,7 @@ pub async fn run(args: Vec<String>) -> Result<ExitCode> {
     } else if parsed.command == "help" {
         // A command's name is a topic too.
         let topic = parsed.params["topic"].as_str();
-        let is_topic = |topic: &str| ["workflow", "input", "capture", "analysis", "patch", "handoff", "sql", "limits", "help"].contains(&topic);
+        let is_topic = |topic: &str| ["workflow", "input", "capture", "analysis", "patch", "page", "handoff", "sql", "limits", "help"].contains(&topic);
         let text = match topic.filter(|topic| !is_topic(topic)).and_then(|topic| command_usage(&topic.replace('-', "_"))) {
             Some(usage) => usage,
             None => format!("{}\n\n{CALLS}", scanline_core::help(topic)),
@@ -326,19 +330,32 @@ pub async fn run(args: Vec<String>) -> Result<ExitCode> {
         std::fs::copy(view, out).map_err(|error| anyhow!("Could not copy the image to {out}: {error}"))?;
     }
 
-    if parsed.json {
-        println!("{}", serde_json::to_string_pretty(&result)?);
-    } else {
-        println!("{}", result["summary"].as_str().unwrap_or(""));
+    // Whoever reads the output may stop early (`| head`). That is not an error, and must
+    // not be a panic, so nothing is printed with println!.
+    let mut text = if parsed.json { serde_json::to_string_pretty(&result)? } else { result["summary"].as_str().unwrap_or("").to_string() };
 
+    text.push('\n');
+
+    if !parsed.json {
         for image in result["images"].as_array().into_iter().flatten() {
-            println!("image: {}", image["view"].as_str().unwrap_or(""));
+            text.push_str(&format!("image: {}\n", image["view"].as_str().unwrap_or("")));
         }
     }
+
+    say(&text);
 
     let nothing = result["data"]["still_waiting"] == true || result["data"]["met"] == false;
 
     Ok(if nothing { ExitCode::from(2) } else { ExitCode::SUCCESS })
+}
+
+/// Writes to standard output, and lets a closed pipe pass.
+pub fn say(text: &str) {
+    use std::io::Write;
+
+    let mut out = std::io::stdout().lock();
+    let _ = out.write_all(text.as_bytes());
+    let _ = out.flush();
 }
 
 #[cfg(test)]

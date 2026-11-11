@@ -33,6 +33,15 @@ Use the `gfx_*` MCP tools if you have them, or the `scanline` command in a shell
 - `gfx_run_until(until: {expr: "game.scene === 'level2'"})` skips ahead in real time.
 - `gfx_eval("JSON.stringify(game.state)")` reads state the page exposes, which is a better basis for decisions than pixels.
 
+## What the page and its engine say
+
+- `gfx_page()` lists what the page offers through the page protocol, and what Scanline's adapter found if the page uses three.js, PixiJS or Phaser 4: the game's state in its own words, controls you may set, debug views it can draw, and the last frame's draws by named group.
+- The page's state, when it provides one, comes back at the end of every `gfx_step` and `gfx_run_until`. Steer by it.
+- `gfx_page(call: "set_control", id, value)` sets a control the page registered (an exposure, a bias). `gfx_live_view(view)` switches on a debug view the page draws itself.
+- `gfx_run_until(until: {mark: "level 2"})` runs to a mark the page makes.
+- In a capture, each draw carries its group path and its object: `gfx_pass_tree` shows the frame as named groups, `gfx_draw_list(capture, filter: "path LIKE 'main / opaque%'")` lists one group's draws, and `gfx_draw` says which engine object a draw belongs to. On PixiJS and Phaser a draw is a batch, and its object says which sprites are in it and why the batch ended.
+- If you are writing the rendering code, the `scanline-debuggable-rendering` skill says how to make it describe itself.
+
 ## Looking inside
 
 - `gfx_resources(kind: "texture")` lists every texture, largest first, with the line of code that created it. Other kinds: buffer, shader, program, pipeline, framebuffer.

@@ -8,7 +8,7 @@ Scanline runs any page in a Chromium it launches and supervises, with instrument
 
 ## Status
 
-Early. The first three milestones of the build plan ("eyes and hands", "inventory" and "capture") work on macOS, with most of the fourth ("together": the hand-off to a person, the flight recorder, runs), much of the fifth ("depth": pixel history, compare, views, profile) and the WebGL half of the sixth ("change it live").
+Early. The first three milestones of the build plan ("eyes and hands", "inventory" and "capture") work on macOS, with most of the fourth ("together": the hand-off to a person, the flight recorder, runs), much of the fifth ("depth": pixel history, compare, views, profile) and most of the sixth ("change it live": live patches for WebGL, the page protocol, and adapters for three.js, PixiJS and Phaser).
 
 **Works**
 
@@ -26,9 +26,12 @@ Early. The first three milestones of the build plan ("eyes and hands", "inventor
 - Questions of a capture: the draw list (with a SQL filter), one draw in full and how many pixels it changed, what differs between two draws, the target as it stood after any draw, which draws changed a pixel and what was there before, and SQL over the whole capture.
 - What a capture volunteers: draws that changed nothing, calls the browser rejected, a viewport that is not its target's size, a clear clipped by a scissor box left on, translucent draws in the wrong order or with blending off, a bound texture that cannot be sampled, and what the frame created and deleted. For a draw that changed nothing, which test rejected it, found by replaying it with each test off in turn. For each uniform at a draw, the call that set it.
 - Leaks and churn: many live objects from one line of code, or objects made and destroyed every frame, are flagged by `resources` and `memory`.
-- Planted bugs: one scene with twelve known bugs (`fixtures/bugs/`), tests that pin down what Scanline says about each, and an evaluation in which agents diagnose them with nothing but Scanline (`evals/`).
+- Planted bugs: one scene with fourteen known bugs (`fixtures/bugs/`), tests that pin down what Scanline says about each, and an evaluation in which agents diagnose them with nothing but Scanline (`evals/`).
 - Analysis of a capture: the history of a pixel (every draw that covered it, and for one that changed nothing, the test that rejected it); two captures compared (events moved, added or removed, state that differs, the pictures' difference); a lint; what a shader could cost, read from its source; two views by replay, overdraw and wireframe; and GPU time per draw, shader or pass.
 - Live patches, for WebGL: override state, hold a uniform, edit a shader, leave draws out or draw only some, and stand a checkerboard in for a texture, all in the running page and all undone at will. Each patch says in words the change to make in source. An experiment measures the frame with and without a change and puts it back.
+- The slow-frame journey end to end: find the pass and the shader that cost the frame its time, confirm the cost is in filling pixels, read the shader, patch it live, compare the picture and the timing, and get the change to make in source (`tests/journeys.test.mjs`).
+- The page protocol: a page can name its GPU objects and group its draws, declare the game objects they belong to, mark points on its timeline, offer its state (returned with every step), and register controls and debug views, through a global that exists only inside Scanline. `packages/scanline-hooks` wraps it; the `scanline-debuggable-rendering` skill says how to write a page this way.
+- Engine adapters: with no change to the page, every draw on three.js (both renderers), PixiJS 8 (both renderers) and Phaser 4 resolves to the engine's own objects. On three.js that is the `Object3D`, with shadow passes and render targets as groups. PixiJS and Phaser batch, so a draw's object is its batch: which sprites went into it, and why it ended there.
 - Working with a person: the agent asks them to play and press Debug (F9 in the page) when the bug shows. The press freezes the page and captures the frame there and then, and the flight recorder has kept the frames before it (120 by default). A recording says which of its frames draw something different from the rest, gives a contact sheet of every frame, and any frame can be made a capture.
 - The control strip: a small window under the game's, in the same browser, that shows the person who is driving, what the agent asked of them, the frame number and whether frames are being recorded, with Debug, Pause and Step buttons. This is the only interface there is so far.
 - One owner of the input: when the agent takes control, the person's keys and mouse are kept out of the page; when the person has it, the agent may look but not act.
@@ -41,7 +44,7 @@ Early. The first three milestones of the build plan ("eyes and hands", "inventor
 - For WebGPU captures: which test rejected a draw, uniform values by name (WGSL reflection), render bundles built before the frame, external textures.
 - A runner that starts the evaluation's agents by itself (the bugs, prompts and scorer exist: see `evals/`).
 - The depth, stencil, mip and NaN views, vertex data, and pixel history, profile and the views for WebGPU.
-- Live patching for WebGPU. Debug views on the live page. The page protocol and engine adapters.
+- Live patching for WebGPU. Overdraw and the like on the live page. Adapters for Babylon.js and PlayCanvas.
 - The rest of the interface: the capture viewer, live graphs and the activity log. A Debug hotkey that works when another application has the keyboard. Recorded network responses and gamepad input for runs.
 - The browser's real GPU memory. WGSL reflection. Readback of compressed, depth and multisampled textures.
 - The fast binary channel for bulk data. Windows. Installers. A pinned browser download.
@@ -168,7 +171,8 @@ The tools are the same commands with a `gfx_` prefix: `gfx_launch`, `gfx_step`, 
 | `probe/` | The script injected into every page and worker (TypeScript, built to one file) |
 | `probe/tools/` | The generator that writes the WebGL and WebGPU hook wrappers from the published interface definitions |
 | `replay/` | The replay page: runs a capture again in a hidden page of the same browser |
-| `fixtures/` | Test pages: a known scene on each API and engine, a scene with twelve planted bugs, and the spike pages |
+| `fixtures/` | Test pages: a known scene on each API and engine, a scene with fourteen planted bugs, a slow frame, a page that uses the page protocol, awkward scenes for each engine adapter, and the spike pages |
+| `packages/scanline-hooks` | The page protocol as a package a page can import: it does nothing outside Scanline |
 | `evals/` | The agent evaluation: each planted bug's expected diagnosis, the prompt, the scorer and each round's results |
 | `spikes/` | The experiments the build plan asked for before milestone 1, and the Node launcher they share |
 | `docs/` | Spike results, and where the build departs from the specification |
@@ -181,7 +185,7 @@ The tools are the same commands with a `gfx_` prefix: `gfx_launch`, `gfx_step`, 
 npm test
 ```
 
-That builds the probe and the replay page, checks their types, runs the probe's browser tests (about a minute), the planted-bug checks, the Rust unit tests, the end-to-end tests of the binary and the tests of what Scanline says about each planted bug (about 15 s each). The browser tests launch headless Chromium with throwaway profiles. The parts can be run alone: `npm run test:probe`, `npm run test:bugs`, `cargo test`, `npm run test:e2e`, `npm run test:findings`.
+That builds the probe and the replay page, checks their types, runs the probe's browser tests (about a minute), the planted-bug checks, the Rust unit tests, the end-to-end tests of the binary, the tests of what Scanline says about each planted bug, the slow-frame journey, and the page protocol and engine adapters (about 10 to 15 s each). The browser tests launch headless Chromium with throwaway profiles. The parts can be run alone: `npm run test:probe`, `npm run test:bugs`, `cargo test`, `npm run test:e2e`, `npm run test:findings`, `npm run test:journeys`, `npm run test:protocol`.
 
 After changing `probe/tools/method-table.mjs`, run `npm run gen:hooks`. `node spikes/s5-replay.mjs` checks that captured frames replay to identical images, `node spikes/s9-overhead.mjs` measures what the hooks cost per call, and `node spikes/m2-verify.mjs` checks the WebGL state mirror against the context after 1,000 frames on every WebGL page.
 

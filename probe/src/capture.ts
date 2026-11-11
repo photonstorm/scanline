@@ -19,6 +19,7 @@ import { currentFrame, isPaused, onFrameSettled } from './clock/gate';
 import { allContexts, contextById, type ContextInfo } from './contexts';
 import { formatName } from './gl/formats';
 import { gpuBegin, gpuFinish, gpuRecorder, gpuWatchMaps, type GpuState } from './gpu/capture';
+import { openGroups, setGroupSink, type GroupOp } from './groups';
 import { hub } from './hooks/hub';
 import { CAP_CODES, slotOf, trackerFor, vaoStateOf, type GlTracker, type UniformSlot } from './gl/tracker';
 import { METHOD_NAMES } from './hooks/generated';
@@ -56,7 +57,12 @@ export interface Capture
     blobBase: number;
 
     // A flight recording spans several frames: where each one ends in the stream.
-    frames?: Array<{ frame: number; command: number; draw: number }>;
+    frames?: Array<{ frame: number; command: number; draw: number; group?: number }>;
+
+    // Named groups and game objects declared while recording (groups.ts): the number of
+    // commands recorded when each was said, what was said, and its name or details. 'open'
+    // is a group that was already open when recording began.
+    groups: Array<[command: number, op: GroupOp | 'open', payload: unknown]>;
 
     // Set while the flight recorder fills this capture: the page's objects themselves, so
     // that one the page drops is still there to be read when the recording is taken.
@@ -798,7 +804,8 @@ function blank (info: ContextInfo): Capture
         uniformsAtStart: new G.Map(),
         done: false,
         waiters: [],
-        blobBase: 0
+        blobBase: 0,
+        groups: openGroups().map((name) => [0, 'open', name])
     };
 }
 
@@ -830,6 +837,7 @@ function begin (info: ContextInfo, light = false): Capture
         done: false,
         waiters: [],
         blobBase: 0,
+        groups: openGroups().map((name) => [0, 'open', name]),
         light
     };
 
@@ -1048,7 +1056,7 @@ function recorderFrame (active: Recorder): void
         return;
     }
 
-    chunk.frames!.push({ frame: currentFrame(), command: chunk.commands.length, draw: chunk.draws.length });
+    chunk.frames!.push({ frame: currentFrame(), command: chunk.commands.length, draw: chunk.draws.length, group: chunk.groups.length });
 
     if (chunk.frames!.length < CHUNK)
     {
@@ -1133,6 +1141,7 @@ function joined (active: Recorder): Capture
         notes: [],
         used: new G.Set(),
         frames: [],
+        groups: [],
         done: false,
         waiters: [],
         strong: new G.Set()
@@ -1154,9 +1163,23 @@ function joined (active: Recorder): Capture
             capture.draws.push(row);
         }
 
+        const groupBase = capture.groups.length;
+        const opened = chunk !== chunks[0] ? chunk.groups.filter((entry) => entry[1] === 'open').length : 0;
+
+        // Groups already open as a later run began were opened in an earlier one.
+        for (const entry of chunk.groups.slice(opened))
+        {
+            capture.groups.push([entry[0] + commandBase, entry[1], entry[2]]);
+        }
+
         for (const mark of chunk.frames ?? [])
         {
-            capture.frames!.push({ frame: mark.frame, command: mark.command + commandBase, draw: mark.draw + drawBase });
+            capture.frames!.push({
+                frame: mark.frame,
+                command: mark.command + commandBase,
+                draw: mark.draw + drawBase,
+                group: G.Math.max(0, (mark.group ?? 0) - opened) + groupBase
+            });
         }
 
         for (const bytes of chunk.blobs)
@@ -1179,10 +1202,11 @@ function joined (active: Recorder): Capture
     }
 
     // Calls made after the last whole frame belong to a frame that has not finished.
-    const end = capture.frames!.length ? capture.frames![capture.frames!.length - 1] : { command: 0, draw: 0 };
+    const end = capture.frames!.length ? capture.frames![capture.frames!.length - 1] : { command: 0, draw: 0, group: 0 };
 
     capture.commands.length = end.command;
     capture.draws.length = end.draw;
+    capture.groups.length = G.Math.min(capture.groups.length, end.group ?? 0);
 
     if (active.shortened)
     {
@@ -1192,8 +1216,29 @@ function joined (active: Recorder): Capture
     return capture;
 }
 
+// A group opened or closed, or a game object declared, while something is recording.
+function noteGroup (op: GroupOp, payload: unknown): void
+{
+    if (recording !== null)
+    {
+        recording.groups.push([recording.commands.length, op, payload]);
+    }
+
+    if (recorder !== null)
+    {
+        const chunk = recorder.chunks[recorder.chunks.length - 1];
+
+        if (chunk && chunk !== recording)
+        {
+            chunk.groups.push([chunk.commands.length, op, payload]);
+        }
+    }
+}
+
 export function installCapture (): void
 {
+    setGroupSink(noteGroup);
+
     onFrameSettled(() =>
     {
         const active = recorder;
@@ -1367,7 +1412,7 @@ export function installCapture (): void
         }
 
         const body = G.JSON.stringify({
-            header: { ...capture.header, context: capture.info.id, frame: capture.frame, notes: capture.notes, blobBase: capture.blobBase, frames: capture.frames },
+            header: { ...capture.header, context: capture.info.id, frame: capture.frame, notes: capture.notes, blobBase: capture.blobBase, frames: capture.frames, groups: capture.groups },
             initial: capture.initial,
             objects: capture.objects,
             // The names its method numbers stand for. A capture carries its own table, so it

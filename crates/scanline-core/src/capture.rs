@@ -752,8 +752,96 @@ fn findings(body: &Value, tag: u64, errors: &HashMap<i64, String>, effects: &Has
 
 /// `errors` maps a command's index to the GL error it raised when replayed; `effects` maps
 /// an event's number to what replaying it did to its target.
+/// The named groups around each event, outermost first, and the game object it belongs to
+/// (05-PAGE-PROTOCOL.md, section 4). Keyed by the event's command.
+///
+/// Groups come from the page protocol (`header.groups`, said by the page or by an engine
+/// adapter) and, for WebGPU, from the page's own debug groups and pass labels in the stream.
+fn groups_of(body: &Value) -> HashMap<i64, (Vec<String>, Option<Value>)> {
+    let methods: Vec<&str> = body["methods"].as_array().into_iter().flatten().map(|name| name.as_str().unwrap_or("")).collect();
+    let said: Vec<&Value> = body["header"]["groups"].as_array().into_iter().flatten().collect();
+    let events: std::collections::HashSet<i64> = body["draws"].as_array().into_iter().flatten().filter_map(|row| row["command"].as_i64()).collect();
+    let mut out = HashMap::new();
+
+    // What the protocol has open: each group's name and the game object declared in it.
+    let mut open: Vec<(String, Option<Value>)> = Vec::new();
+    let mut next = 0;
+
+    // WebGPU: the debug groups open on each encoder and pass, and what was open around a
+    // pass when it began.
+    let mut on: HashMap<String, Vec<String>> = HashMap::new();
+    let mut around: HashMap<String, Vec<String>> = HashMap::new();
+
+    for (index, command) in body["commands"].as_array().into_iter().flatten().enumerate() {
+        while next < said.len() && said[next][0].as_u64().unwrap_or(0) as usize <= index {
+            match said[next][1].as_str().unwrap_or("") {
+                "push" | "open" => open.push((said[next][2].as_str().unwrap_or("").to_string(), None)),
+                "pop" => {
+                    open.pop();
+                }
+                "entity" => {
+                    if let Some(top) = open.last_mut() {
+                        top.1 = Some(said[next][2].clone());
+                    }
+                }
+                _ => {}
+            }
+
+            next += 1;
+        }
+
+        let method = command[0].as_u64().and_then(|id| methods.get(id as usize)).copied().unwrap_or("");
+        let receiver = command.get(3).map(Value::to_string).unwrap_or_default();
+
+        if method.ends_with(".pushDebugGroup") {
+            on.entry(receiver.clone()).or_default().push(command[1][0].as_str().unwrap_or("").to_string());
+        } else if method.ends_with(".popDebugGroup") {
+            on.entry(receiver.clone()).or_default().pop();
+        } else if method.ends_with(".beginRenderPass") || method.ends_with(".beginComputePass") {
+            let mut outer = on.get(&receiver).cloned().unwrap_or_default();
+
+            if let Some(label) = command[1][0]["label"].as_str().filter(|label| !label.is_empty()) {
+                outer.push(label.to_string());
+            }
+
+            around.insert(command[2].to_string(), outer);
+        }
+
+        if events.contains(&(index as i64)) {
+            // A WebGPU pass clears as it begins: that event is the pass's, not the encoder's.
+            let receiver = if method.ends_with(".beginRenderPass") { command[2].to_string() } else { receiver };
+
+            let mut path: Vec<String> = open.iter().map(|(name, _)| name.clone()).collect();
+
+            path.extend(around.get(&receiver).cloned().unwrap_or_default());
+            path.extend(on.get(&receiver).cloned().unwrap_or_default());
+
+            let entity = open.iter().rev().find_map(|(_, entity)| entity.clone());
+
+            if !path.is_empty() || entity.is_some() {
+                out.insert(index as i64, (path, entity));
+            }
+        }
+    }
+
+    out
+}
+
+/// A game object in a few words: its type and name, or whatever it has.
+pub(crate) fn entity_text(entity: &Value) -> String {
+    let word = |key: &str| entity[key].as_str().map(str::to_string).or_else(|| entity[key].as_i64().map(|number| number.to_string()));
+
+    match (word("type"), word("name").filter(|name| !name.is_empty()).or_else(|| word("id")).or_else(|| word("path"))) {
+        (Some(kind), Some(name)) => format!("{kind} «{}»", page_text(&name, 60)),
+        (Some(kind), None) => kind,
+        (None, Some(name)) => format!("«{}»", page_text(&name, 60)),
+        (None, None) => page_text(&entity.to_string(), 80),
+    }
+}
+
 fn tables(body: &Value, tag: u64, errors: &HashMap<i64, String>, effects: &HashMap<i64, Value>) -> (Vec<Table>, Value) {
     let sizes = Sizes::of(body);
+    let groups = groups_of(body);
     let webgpu = is_webgpu(body);
     let named = |kind: &str, id: &Value| text(handle_for(kind, id, tag));
     let draws = body["draws"].as_array().cloned().unwrap_or_default();
@@ -808,6 +896,7 @@ fn tables(body: &Value, tag: u64, errors: &HashMap<i64, String>, effects: &HashM
 
         let size = sizes.target(row);
         let effect = effects.get(&index).cloned().unwrap_or(Value::Null);
+        let group = groups.get(&row["command"].as_i64().unwrap_or(-1));
 
         let textures: Vec<String> = row["textures"]
             .as_array()
@@ -854,6 +943,9 @@ fn tables(body: &Value, tag: u64, errors: &HashMap<i64, String>, effects: &HashM
             Sql::Integer(size.1),
             int(&effect["changed"]),
             text(effect["w"].as_i64().map(|_| format!("{}, {}, {}, {}", effect["x"], effect["y"], effect["w"], effect["h"]))),
+            text(group.map(|(path, _)| path.join(" / ")).filter(|path| !path.is_empty())),
+            text(group.and_then(|(_, entity)| entity.as_ref()).map(entity_text)),
+            text(group.and_then(|(_, entity)| entity.as_ref()).map(Value::to_string)),
             Sql::Text(row.to_string()),
         ]);
 
@@ -978,7 +1070,18 @@ fn tables(body: &Value, tag: u64, errors: &HashMap<i64, String>, effects: &HashM
 
     let event_count = |kind: &str| draws.iter().filter(|row| row["kind"] == kind).count();
 
+    let grouped = draws
+        .iter()
+        .filter(|row| row["kind"] == "draw" && groups.get(&row["command"].as_i64().unwrap_or(-1)).is_some_and(|(path, _)| !path.is_empty()))
+        .count();
+    let with_entity = draws
+        .iter()
+        .filter(|row| row["kind"] == "draw" && groups.get(&row["command"].as_i64().unwrap_or(-1)).is_some_and(|(_, entity)| entity.is_some()))
+        .count();
+
     let counts = json!({
+        "grouped": grouped,
+        "with_entity": with_entity,
         "draws": event_count("draw"),
         "clears": event_count("clear"),
         "blits": event_count("blit"),
@@ -1025,6 +1128,9 @@ fn tables(body: &Value, tag: u64, errors: &HashMap<i64, String>, effects: &HashM
                 "target_height INTEGER",
                 "pixels_changed INTEGER",
                 "changed_box TEXT",
+                "path TEXT",
+                "entity TEXT",
+                "entity_detail TEXT",
                 "state TEXT",
             ],
             rows: draw_rows,
@@ -1450,6 +1556,29 @@ pub(crate) fn describe_capture(host: &Host, handle: &str, meta: &Value) -> Resul
         lines.push("  … more passes; call pass_tree.".into());
     }
 
+    // Names the page or its engine gave: the draws resolve to them.
+    let draws = counts["draws"].as_u64().unwrap_or(0);
+    let grouped = counts["grouped"].as_u64().unwrap_or(0);
+
+    if grouped > 0 {
+        let entities = counts["with_entity"].as_u64().unwrap_or(0);
+
+        lines.push(format!(
+            "{} in a named group{}. pass_tree shows the groups; draw_list shows each draw's.",
+            match (grouped == draws, draws) {
+                (true, 1) => "The one draw is".to_string(),
+                (true, _) => format!("All {draws} draws are"),
+                (false, _) => format!("{grouped} of the {draws} draws {}", if grouped == 1 { "is" } else { "are" }),
+            },
+            match entities {
+                0 => String::new(),
+                1 if draws == 1 => ", and belongs to an object the page or its engine declared".to_string(),
+                all if all == draws => ", and every one belongs to an object the page or its engine declared".to_string(),
+                some => format!(", and {some} belong to an object the page or its engine declared"),
+            }
+        ));
+    }
+
     lines.push(format!(
         "Uses {} textures ({}) and {} buffers ({}).",
         counts["textures"],
@@ -1598,7 +1727,101 @@ pub fn pass_tree(host: &Arc<Host>, params: &Value) -> Result<Value> {
 
     lines.push(format!("draw_list(capture: \"{handle}\", filter: \"pass = n\") lists a pass's events."));
 
-    Ok(result(lines.join("\n"), json!({ "capture": handle, "passes": rows_as_objects(&passes) })))
+    // The groups the page or its engine named, as a tree. A group's events are those whose
+    // path begins with it.
+    let named = if has_groups(host, &handle) {
+        host.store.query(&handle, "SELECT draw, kind, path, entity FROM draws ORDER BY draw", &[], 20_000)?
+    } else {
+        scanline_store::Rows::default()
+    };
+    let mut groups: Vec<Value> = Vec::new();
+
+    if named.rows.iter().any(|row| row[2].is_string()) {
+        // A group is a run of events that share a path up to its depth. The same name
+        // coming round again after something else is another group.
+        struct Open {
+            depth: usize,
+            name: String,
+            first: i64,
+            last: i64,
+            draws: i64,
+            entity: Option<String>,
+        }
+
+        let mut done: Vec<Open> = Vec::new();
+        let mut open: Vec<usize> = Vec::new(); // indices into `done`, outermost first
+        let mut ungrouped = 0;
+
+        for row in &named.rows {
+            let event = row[0].as_i64().unwrap_or(0);
+            let is_draw = row[1] == "draw";
+            let parts: Vec<&str> = row[2].as_str().map(|path| path.split(" / ").collect()).unwrap_or_default();
+
+            if parts.is_empty() && is_draw {
+                ungrouped += 1;
+            }
+
+            let shared = open.iter().zip(&parts).take_while(|(at, part)| done[**at].name == **part).count();
+
+            open.truncate(shared);
+
+            for (depth, part) in parts.iter().enumerate().skip(shared) {
+                done.push(Open { depth, name: part.to_string(), first: event, last: event, draws: 0, entity: None });
+                open.push(done.len() - 1);
+            }
+
+            for at in &open {
+                done[*at].last = event;
+                done[*at].draws += is_draw as i64;
+            }
+
+            // The event's object is that of its innermost group.
+            if let (Some(at), Some(entity)) = (open.last(), row[3].as_str()) {
+                done[*at].entity.get_or_insert_with(|| entity.to_string());
+            }
+        }
+
+        lines.push(format!(
+            "Named groups, as the page or its engine declared them ({}{}):",
+            plural(done.len() as i64, "group"),
+            if ungrouped > 0 { format!("; {} in none", plural(ungrouped, "draw")) } else { String::new() }
+        ));
+
+        for (shown, group) in done.iter().enumerate() {
+            if shown < 80 {
+                lines.push(format!(
+                    "  {}«{}»  {}  {}{}",
+                    "  ".repeat(group.depth),
+                    page_text(&group.name, 60),
+                    if group.first == group.last { format!("event {}", group.first) } else { format!("events {}–{}", group.first, group.last) },
+                    plural(group.draws, "draw"),
+                    group.entity.as_ref().map(|entity| format!("  of {entity}")).unwrap_or_default()
+                ));
+            }
+
+            groups.push(
+                json!({ "name": group.name, "depth": group.depth, "first": group.first, "last": group.last, "draws": group.draws, "entity": group.entity }),
+            );
+        }
+
+        if done.len() > 80 {
+            lines.push(format!(
+                "  … and {} more groups. query(capture, sql: \"SELECT path, count(*) FROM draws GROUP BY path\") counts draws by path.",
+                done.len() - 80
+            ));
+        }
+
+        lines.push(format!("draw_list(capture: \"{handle}\", filter: \"path LIKE 'name%'\") lists a group's events. Names in «» are the page's own words."));
+    }
+
+    Ok(result(lines.join("\n"), json!({ "capture": handle, "passes": rows_as_objects(&passes), "groups": groups })))
+}
+
+/// Whether a capture's draws carry group paths. One written before they existed does not.
+fn has_groups(host: &Host, handle: &str) -> bool {
+    host.store
+        .query(handle, "SELECT count(*) FROM pragma_table_info('draws') WHERE name = 'path'", &[], 1)
+        .is_ok_and(|found| found.rows.first().is_some_and(|row| row[0].as_i64().unwrap_or(0) > 0))
 }
 
 pub(crate) fn rows_as_objects(rows: &scanline_store::Rows) -> Vec<Value> {
@@ -1665,6 +1888,14 @@ pub(crate) fn describe_event(row: &serde_json::Map<String, Value>) -> String {
         None => {}
     }
 
+    if !word("entity").is_empty() {
+        text.push_str(&format!("  of {}", word("entity")));
+    }
+
+    if !word("path").is_empty() {
+        text.push_str(&format!("  in «{}»", page_text(&word("path"), 90)));
+    }
+
     let error = word("gl_error");
 
     if error.starts_with(DROPPED) {
@@ -1687,7 +1918,10 @@ pub fn draw_list(host: &Arc<Host>, params: &Value) -> Result<Value> {
 
     // The filter is a SQL condition on the draws table. The database is read-only.
     let condition = filter.map(|filter| format!(" WHERE ({filter})")).unwrap_or_default();
-    let columns = "draw, kind, method, pass, target, mode, count, instances, indexed, program, blend, blend_src, blend_dst, depth_test, depth_write, depth_func, cull, scissor, viewport, textures, gl_error, target_width, target_height, pixels_changed, changed_box";
+    let columns = format!(
+        "draw, kind, method, pass, target, mode, count, instances, indexed, program, blend, blend_src, blend_dst, depth_test, depth_write, depth_func, cull, scissor, viewport, textures, gl_error, target_width, target_height, pixels_changed, changed_box{}",
+        if has_groups(host, &handle) { ", path, entity" } else { "" }
+    );
 
     let explain = |error: anyhow::Error| {
         anyhow!(
@@ -1736,7 +1970,10 @@ pub(crate) fn draw_state(host: &Host, handle: &str, draw: &Value) -> Result<Valu
     let Some(index) = draw.as_i64() else { bail!("A draw is named by its number in the capture, from 0. Call draw_list to see them.") };
     let rows = host.store.query(
         handle,
-        "SELECT state, pass, target, program, gl_error, pixels_changed, changed_box, target_width, target_height FROM draws WHERE draw = ?1",
+        &format!(
+            "SELECT state, pass, target, program, gl_error, pixels_changed, changed_box, target_width, target_height, {} FROM draws WHERE draw = ?1",
+            if has_groups(host, handle) { "path, entity, entity_detail" } else { "NULL, NULL, NULL" }
+        ),
         &[Sql::Integer(index)],
         1,
     )?;
@@ -1756,6 +1993,9 @@ pub(crate) fn draw_state(host: &Host, handle: &str, draw: &Value) -> Result<Valu
     state["pixelsChanged"] = row[5].clone();
     state["changedBox"] = row[6].clone();
     state["targetSize"] = json!([row[7], row[8]]);
+    state["path"] = row[9].clone();
+    state["entity"] = row[10].clone();
+    state["entityDetail"] = row[11].as_str().and_then(|text| serde_json::from_str(text).ok()).unwrap_or(Value::Null);
 
     Ok(state)
 }
@@ -1779,6 +2019,15 @@ pub async fn draw(host: &Arc<Host>, params: &Value) -> Result<Value> {
         state["pass"],
         state["command"]
     )];
+
+    // What the page or its engine says this event is. Its words, not Scanline's.
+    if let Some(path) = state["path"].as_str() {
+        lines.push(format!("  In group «{}».", page_text(path, 200)));
+    }
+
+    if let Some(entity) = state["entity"].as_str() {
+        lines.push(format!("  Object: {entity}. As the page or its engine declared it: «{}».", page_text(&state["entityDetail"].to_string(), 400)));
+    }
 
     if kind == "clear" && webgpu {
         // A WebGPU pass clears what it is told to as it begins.

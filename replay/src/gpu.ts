@@ -319,7 +319,16 @@ export class GpuRun
 
         if (typeof value.object === 'string')
         {
-            throw new Error(`a ${value.object}, which a capture cannot hold`);
+            // A GPU object the probe had no record of (an external texture) cannot be made
+            // again. Anything else is not something a WebGPU descriptor can hold: it is
+            // there because an engine passed an object of its own as the descriptor, with
+            // members the browser never reads. PixiJS does, for its samplers.
+            if (value.object.startsWith('GPU'))
+            {
+                throw new Error(`a ${value.object}, which a capture cannot hold`);
+            }
+
+            return undefined;
         }
 
         const out: Record<string, any> = {};

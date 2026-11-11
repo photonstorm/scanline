@@ -5,6 +5,12 @@ import { installAudio } from './audio';
 import { installCapture } from './capture';
 import { installHandoff } from './handoff';
 import { installPatches } from './patch';
+import { installProtocol } from './protocol';
+import { setDrawCounter } from './groups';
+import { installAdapters } from './adapters';
+import './adapters/three';
+import './adapters/pixi';
+import './adapters/phaser';
 import { clock, startClockAtZero, installClock } from './clock/clock';
 import { frameAtWall, frameSamples, gateState, installGate, notePageEvent, onFrameEnd, pause, resume, runUntil, setFixedStep, step } from './clock/gate';
 import { installTimers } from './clock/timers';
@@ -44,6 +50,22 @@ function records ()
 
     return [...seen];
 }
+
+// Draws issued so far on every context: what a group is charged with.
+setDrawCounter(() =>
+{
+    let draws = hub.gpu.draws;
+
+    for (const info of allContexts())
+    {
+        if (info.record !== hub.gpu)
+        {
+            draws += info.record.draws;
+        }
+    }
+
+    return draws;
+});
 
 function setLevel (level: Level): void
 {
@@ -121,6 +143,8 @@ function boot (): void
     installCapture();
     installHandoff();
     installPatches();
+    installProtocol();
+    installAdapters();
     installInputRecorder();
     installErrors();
     installAudio();

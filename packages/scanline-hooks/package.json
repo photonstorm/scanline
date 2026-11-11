@@ -1,0 +1,26 @@
+{
+  "name": "scanline-hooks",
+  "version": "0.0.1",
+  "description": "Tell the Scanline debugger what your draw calls mean. Does nothing outside Scanline.",
+  "type": "module",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    }
+  },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "README.md"
+  ],
+  "sideEffects": false,
+  "keywords": [
+    "webgl",
+    "webgpu",
+    "debugging",
+    "scanline"
+  ]
+}

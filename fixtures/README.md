@@ -35,6 +35,20 @@ Each page sets `window.fixture` (or posts it from a worker) to
 
 `slow/webgl2.html` is a row of columns against a low sun at 1920×1080, in three passes: a mask of the sun and what stands in front of it, the scene, and light shafts added over the scene from the mask. The shafts are one full-screen draw whose fragment shader samples the mask 64 times a pixel, and they take nearly all of the frame's GPU time. Twenty-four samples look the same. It is the page journey J3 is run on (`tests/journeys.test.mjs`).
 
+## The page protocol (`protocol/`)
+
+`protocol/webgl2.html` is an orchard: sky, ground and five trees, in raw WebGL 2, written the way the `scanline-debuggable-rendering` skill asks. Every object is labelled, every draw is in a group (`sky`, `ground`, `trees / tree-N`, and `debug` when the bounds view is on), each tree declares itself as an entity, and the page provides its state, three controls (`sun.height`, `wind`, `season`), one view (`bounds`), marks (`assets loaded`, `first frame`, `second passed` once a second), its own time control and a checkpoint. A frame is 11 draws, or 31 with the view on.
+
+## Engine adapters (`adapters/`)
+
+One scene per engine, each built to be awkward for mapping draws to objects.
+
+| Page | What is in it |
+|---|---|
+| `three.html` (`?renderer=webgpu`) | A scene named `Courtyard`: a shadow-casting light `Sun`, `Ground`, five `Pillars` in one instanced mesh, a `Crate` with two materials (three draws), a transparent double-sided `GlassBall` (two draws), a `Marker` sprite and `Dust` points. 13 draws on WebGL, 4 of them the shadow map. |
+| `pixi.html` (`?renderer=webgpu`) | A stage of seven sprites from two textures (`coin`, `gem`) whose fourth is additive, a `BlurredPanel` with a blur filter, a `MaskedGroup` with a stencil mask, a `BigStar` shape too large to batch, and `ScoreText`. 13 draws: 8 batches, 4 filter passes, 1 unbatched shape. |
+| `phaser.html` | A scene `Yard` of seven images whose fourth is additive, a rectangle and a circle, a container `Crate` of two images, `ScoreText`, a `Player` sprite, and two cameras (`Main`, `Minimap`). 11 draws: 5 batches for each camera, and the minimap's background. |
+
 ## Inventory pages (`matrix/inventory-*.html`)
 
 Objects with known sizes and contents, for checking what the live inventory reports. Both pages make the same things:

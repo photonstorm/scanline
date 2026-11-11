@@ -438,10 +438,24 @@ pub async fn step(session: &Arc<Session>, params: &Value) -> Result<Value> {
 
     let mut value = result("", json!({ "frame": frame, "reason": stop["reason"], "errors": errors }));
 
+    page_state(session, &params["observe"], &mut value, &mut lines).await;
     observe(session, &params["observe"], &mut value, &mut lines).await?;
     value["summary"] = json!(lines.join("\n"));
 
     Ok(value)
+}
+
+/// What the page says of itself through the page protocol, when it says anything. It comes
+/// with every step and run unless observe says state: false.
+async fn page_state(session: &Arc<Session>, wanted: &Value, value: &mut Value, lines: &mut Vec<String>) {
+    if wanted["state"] == false {
+        return;
+    }
+
+    if let Some((line, state)) = crate::page::state_line(session).await {
+        lines.push(line);
+        value["data"]["state"] = state;
+    }
 }
 
 /// The observations a step or run can end with: a screenshot, the frame statistics.
@@ -474,15 +488,22 @@ pub async fn run_until(session: &Arc<Session>, params: &Value) -> Result<Value> 
 
     if !until.is_object() {
         bail!(
-            "run_until needs until: one of {{frame: n}}, {{frames: n}}, {{ms: n}}, {{expr: \"…\"}}, {{event: \"name\"}}, {{error: true}}, {{frame_ms_over: n}}."
+            "run_until needs until: one of {{frame: n}}, {{frames: n}}, {{ms: n}}, {{expr: \"…\"}}, {{event: \"name\"}} (a mark the page makes), {{error: true}}, {{frame_ms_over: n}}."
         );
     }
 
     let mut condition = json!({});
 
-    for (name, probe_name) in
-        [("frame", "frame"), ("frames", "frames"), ("ms", "ms"), ("expr", "expr"), ("event", "event"), ("error", "error"), ("frame_ms_over", "frameMsOver")]
-    {
+    for (name, probe_name) in [
+        ("frame", "frame"),
+        ("frames", "frames"),
+        ("ms", "ms"),
+        ("expr", "expr"),
+        ("event", "event"),
+        ("mark", "event"),
+        ("error", "error"),
+        ("frame_ms_over", "frameMsOver"),
+    ] {
         if !until[name].is_null() {
             condition[probe_name] = until[name].clone();
         }
@@ -533,6 +554,7 @@ pub async fn run_until(session: &Arc<Session>, params: &Value) -> Result<Value> 
 
     let mut value = result("", json!({ "met": met, "frame": frame, "errors": errors }));
 
+    page_state(session, &params["observe"], &mut value, &mut lines).await;
     observe(session, &params["observe"], &mut value, &mut lines).await?;
     value["summary"] = json!(lines.join("\n"));
 

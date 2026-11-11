@@ -506,7 +506,7 @@ describe('what the first evaluation asked for', () =>
         assert.equal(wrong.code, 1);
         assert.match(wrong.out, /no such column: name/);
         assert.match(wrong.out, /commands: command, method, args, draw, for_draw, gl_error/);
-        assert.match(wrong.out, /draws: draw, command, .*pixels_changed, changed_box, state/);
+        assert.match(wrong.out, /draws: draw, command, .*pixels_changed, changed_box, path, entity, entity_detail, state/);
     });
 
     test('help shows how a call is typed, and each command explains itself', async () =>

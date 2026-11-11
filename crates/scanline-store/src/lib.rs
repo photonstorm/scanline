@@ -31,7 +31,7 @@ pub struct Table {
 }
 
 /// The result of a query: column names, and rows of values as JSON.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct Rows {
     pub columns: Vec<String>,
     pub rows: Vec<Vec<Value>>,

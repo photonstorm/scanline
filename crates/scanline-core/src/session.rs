@@ -131,6 +131,10 @@ pub struct State {
     pub strip_note: Option<String>,
     /// Live patches made in this session: the handle shown, and the probe and number behind it.
     pub patches: std::collections::BTreeMap<String, (Instance, i64)>,
+    /// States the page saved through the page protocol: the handle shown, the state as the
+    /// page gave it, and the frame it was saved at.
+    pub checkpoints: HashMap<String, (String, u64)>,
+    pub next_checkpoint: u64,
     worker_urls: HashMap<String, String>,
     /// Workers stopped at start, waiting for the instrumentation pause where the probe goes in.
     waiting_workers: HashSet<String>,

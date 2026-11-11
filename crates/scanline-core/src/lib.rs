@@ -14,6 +14,7 @@ mod commands;
 mod handoff;
 mod inventory;
 mod keys;
+mod page;
 mod patch;
 mod runs;
 mod session;
@@ -154,6 +155,8 @@ impl Host {
             "patch_texture" => patch::patch_texture(&live()?, &params).await,
             "patches" => patch::patches(&live()?, &params).await,
             "experiment" => patch::experiment(&live()?, &params).await,
+            "page" => page::page(&live()?, &params).await,
+            "live_view" => page::live_view(&live()?, &params).await,
             "save_run" => runs::save_run(self, &live()?).await,
             "replay_run" => runs::replay_run(self, &live()?, &params).await,
             "captures" => capture::captures(self, &params),

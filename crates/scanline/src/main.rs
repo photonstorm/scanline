@@ -30,12 +30,12 @@ async fn main() -> ExitCode {
 async fn run(args: Vec<String>) -> Result<ExitCode> {
     match args.first().map(String::as_str) {
         None | Some("--help" | "-h") => {
-            println!("{}", cli::usage());
+            cli::say(&format!("{}\n", cli::usage()));
             Ok(ExitCode::SUCCESS)
         }
 
         Some("--version" | "-V") => {
-            println!("scanline {}", env!("CARGO_PKG_VERSION"));
+            cli::say(&format!("scanline {}\n", env!("CARGO_PKG_VERSION")));
             Ok(ExitCode::SUCCESS)
         }
 
@@ -45,7 +45,7 @@ async fn run(args: Vec<String>) -> Result<ExitCode> {
         }
 
         Some("stop") => {
-            println!("{}", control::stop().await?);
+            cli::say(&format!("{}\n", control::stop().await?));
             Ok(ExitCode::SUCCESS)
         }
 

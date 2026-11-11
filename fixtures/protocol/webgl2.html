@@ -1,0 +1,223 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Orchard</title>
+<style>body { margin: 0; background: #111; } canvas { display: block; }</style>
+<canvas id="game" width="480" height="320"></canvas>
+<script type="module">
+// A small scene written to be debugged: every object named, every draw in a group, the
+// game's state on offer, and its tunable numbers registered. Raw WebGL 2.
+//
+// It draws the same picture with or without a debugger: the calls only describe.
+
+import * as dbg from '../../packages/scanline-hooks/index.js';
+
+const WIDTH = 480;
+const HEIGHT = 320;
+const gl = document.getElementById('game').getContext('webgl2', { antialias: false, alpha: false });
+
+function program (name, vertex, fragment)
+{
+    const made = gl.createProgram();
+
+    for (const [type, source, stage] of [[gl.VERTEX_SHADER, vertex, 'vertex'], [gl.FRAGMENT_SHADER, fragment, 'fragment']])
+    {
+        const shader = gl.createShader(type);
+
+        dbg.label(shader, `${name}.${stage}`);
+        gl.shaderSource(shader, source);
+        gl.compileShader(shader);
+        gl.attachShader(made, shader);
+    }
+
+    gl.bindAttribLocation(made, 0, 'corner');
+    gl.linkProgram(made);
+    dbg.label(made, name);
+
+    return made;
+}
+
+const flat = program('flat', `#version 300 es
+    layout(location = 0) in vec2 corner;
+    uniform vec4 rect;
+    void main ()
+    {
+        vec2 at = rect.xy + corner * rect.zw;
+        gl_Position = vec4(at.x / 240.0 - 1.0, 1.0 - at.y / 160.0, 0.0, 1.0);
+    }`, `#version 300 es
+    precision mediump float;
+    uniform vec4 colour;
+    uniform float light;
+    out vec4 result;
+    void main ()
+    {
+        result = vec4(colour.rgb * light, colour.a);
+    }`);
+
+const rectAt = gl.getUniformLocation(flat, 'rect');
+const colourAt = gl.getUniformLocation(flat, 'colour');
+const lightAt = gl.getUniformLocation(flat, 'light');
+
+dbg.uniforms.expose(flat, { light: { min: 0, max: 2 } });
+
+const quad = gl.createBuffer();
+
+dbg.label(quad, 'unit quad');
+gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0, 0, 1, 0, 0, 1, 1, 1]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+// ---- The game ----
+
+const SEASONS = { spring: [0.55, 0.8, 0.45], summer: [0.2, 0.6, 0.25], autumn: [0.85, 0.5, 0.15] };
+
+const game = {
+    time: 0,
+    season: 'summer',
+    sunHeight: 0.8,
+    wind: true,
+    showBounds: false,
+    paused: false,
+    scale: 1,
+    trees: []
+};
+
+// One clock, and one source of random numbers, so that a deterministic session repeats.
+let seed = dbg.time.deterministic()?.seed ?? 12345;
+
+function random ()
+{
+    seed = (seed * 1664525 + 1013904223) >>> 0;
+
+    return seed / 4294967296;
+}
+
+for (let i = 0; i < 5; i++)
+{
+    game.trees.push({ id: i + 1, name: `tree-${i + 1}`, x: 50 + i * 90, height: 70 + Math.round(random() * 50), sway: random() * 6 });
+}
+
+dbg.mark('assets loaded', { trees: game.trees.length });
+
+dbg.state.provide(() => ({
+    scene: 'orchard',
+    time: Math.round(game.time),
+    season: game.season,
+    sunHeight: game.sunHeight,
+    wind: game.wind,
+    trees: game.trees.length,
+    tallest: game.trees.reduce((best, tree) => (tree.height > best.height ? tree : best)).name
+}));
+
+dbg.state.describe({ time: 'milliseconds of game time', sunHeight: '0 (dusk) to 1 (noon)', tallest: 'name of the tallest tree' });
+
+dbg.controls.register({ id: 'sun.height', label: 'Height of the sun', type: 'number', min: 0, max: 1, get: () => game.sunHeight, set: (value) => { game.sunHeight = value; } });
+dbg.controls.register({ id: 'wind', label: 'Trees sway', type: 'boolean', get: () => game.wind, set: (value) => { game.wind = value; } });
+dbg.controls.register({ id: 'season', label: 'Season', type: 'enum', options: Object.keys(SEASONS), get: () => game.season, set: (value) => { game.season = value; } });
+
+dbg.views.register({ id: 'bounds', label: 'Tree bounds', description: 'A red box round each tree, trunk and crown together.', set: (on) => { game.showBounds = on; } });
+
+dbg.time.provide({
+    pause: () => { game.paused = true; },
+    resume: () => { game.paused = false; },
+    step: (frames = 1) => { game.time += frames * 1000 / 60; },
+    setScale: (scale) => { game.scale = scale; }
+});
+
+dbg.checkpoint.provide({
+    save: () => ({ time: game.time, season: game.season, sunHeight: game.sunHeight, wind: game.wind }),
+    restore: (saved) => Object.assign(game, saved)
+});
+
+dbg.passes.describe([
+    { name: 'sky', purpose: 'Clears to the sky colour for the time of day.', targets: 'canvas' },
+    { name: 'ground', purpose: 'One quad of grass.', targets: 'canvas' },
+    { name: 'trees', purpose: 'A trunk and a crown for each tree, back to front.', targets: 'canvas' },
+    { name: 'debug', purpose: 'The bounds view, when it is on.', targets: 'canvas' }
+]);
+
+// ---- Drawing ----
+
+function rect (x, y, width, height, colour)
+{
+    gl.uniform4f(rectAt, x, y, width, height);
+    gl.uniform4f(colourAt, colour[0], colour[1], colour[2], 1);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+}
+
+let last = null;
+let first = true;
+
+function frame (now)
+{
+    if (!game.paused)
+    {
+        game.time += last === null ? 0 : (now - last) * game.scale;
+    }
+
+    last = now;
+
+    const light = 0.35 + 0.65 * game.sunHeight;
+
+    gl.viewport(0, 0, WIDTH, HEIGHT);
+    gl.useProgram(flat);
+    gl.uniform1f(lightAt, light);
+
+    dbg.group('sky', () =>
+    {
+        gl.clearColor(0.35 * light, 0.6 * light, 0.9 * light, 1);
+        gl.clear(gl.COLOR_BUFFER_BIT);
+    });
+
+    dbg.group('ground', () =>
+    {
+        dbg.entity(null, { type: 'Ground', name: 'grass' });
+        rect(0, 240, WIDTH, 80, [0.3, 0.5, 0.2]);
+    });
+
+    dbg.group('trees', () =>
+    {
+        for (const tree of game.trees)
+        {
+            dbg.group(tree.name, () =>
+            {
+                dbg.entity(tree, { type: 'Tree', name: tree.name, id: tree.id, path: `orchard/${tree.name}`, height: tree.height });
+
+                const lean = game.wind ? Math.sin(game.time * 0.002 + tree.id) * tree.sway : 0;
+
+                rect(tree.x - 5, 240 - tree.height, 10, tree.height, [0.4, 0.26, 0.13]);
+                rect(tree.x - 28 + lean, 240 - tree.height - 36, 56, 56, SEASONS[game.season]);
+            });
+        }
+    });
+
+    if (game.showBounds)
+    {
+        dbg.group('debug', () =>
+        {
+            for (const tree of game.trees)
+            {
+                rect(tree.x - 30, 240 - tree.height - 38, 60, 2, [1, 0, 0]);
+                rect(tree.x - 30, 240, 60, 2, [1, 0, 0]);
+                rect(tree.x - 30, 240 - tree.height - 38, 2, tree.height + 40, [1, 0, 0]);
+                rect(tree.x + 28, 240 - tree.height - 38, 2, tree.height + 40, [1, 0, 0]);
+            }
+        });
+    }
+
+    if (first)
+    {
+        first = false;
+        dbg.mark('first frame');
+    }
+
+    if (Math.floor(game.time / 1000) > Math.floor((game.time - 17) / 1000) && game.time > 900)
+    {
+        dbg.mark('second passed', { seconds: Math.floor(game.time / 1000) });
+    }
+
+    requestAnimationFrame(frame);
+}
+
+requestAnimationFrame(frame);
+</script>

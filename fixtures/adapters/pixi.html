@@ -1,0 +1,114 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Adapter: PixiJS (WebGL or WebGPU renderer)</title>
+<style>body { margin: 0; background: #111; } canvas { display: block; }</style>
+<script type="module">
+// A stage that batches, and breaks its batches for several reasons: a blend mode in the
+// middle of a run of sprites, a filter, a mask, and a mesh big enough to go unbatched.
+// ?renderer=webgpu picks the WebGPU renderer.
+import { Application, BlurFilter, Container, Graphics, Sprite, Text, Texture } from '/node_modules/pixi.js/dist/pixi.mjs';
+
+const webgpu = new URL(location.href).searchParams.get('renderer') === 'webgpu';
+const app = new Application();
+
+await app.init({ width: 480, height: 320, background: 0x203040, antialias: false, resolution: 1, preference: webgpu ? 'webgpu' : 'webgl' });
+
+document.body.append(app.canvas);
+app.stage.label = 'Stage';
+
+function swatch (name, colour)
+{
+    const canvas = document.createElement('canvas');
+
+    canvas.width = canvas.height = 32;
+
+    const context = canvas.getContext('2d');
+
+    context.fillStyle = colour;
+    context.fillRect(0, 0, 32, 32);
+    context.fillStyle = 'rgba(0, 0, 0, 0.3)';
+    context.fillRect(8, 8, 16, 16);
+
+    const texture = Texture.from(canvas);
+
+    texture.label = name;
+    texture.source.label = name;
+
+    return texture;
+}
+
+const coin = swatch('coin', '#ffcc33');
+const gem = swatch('gem', '#33ccff');
+
+// A row of sprites. The fourth is additive, which splits the row into three batches.
+const row = new Container();
+
+row.label = 'Row';
+app.stage.addChild(row);
+
+for (let i = 0; i < 7; i++)
+{
+    const sprite = new Sprite(i % 2 ? gem : coin);
+
+    sprite.label = `${i % 2 ? 'Gem' : 'Coin'}-${i}`;
+    sprite.position.set(20 + i * 44, 20);
+
+    if (i === 3)
+    {
+        sprite.blendMode = 'add';
+    }
+
+    row.addChild(sprite);
+}
+
+// A blurred panel: its children are drawn to a texture, then the filter's passes run.
+const panel = new Container();
+
+panel.label = 'BlurredPanel';
+panel.position.set(20, 90);
+panel.filters = [new BlurFilter({ strength: 4, quality: 2 })];
+panel.addChild(Object.assign(new Sprite(coin), { label: 'PanelCoin', x: 10, y: 10 }));
+panel.addChild(Object.assign(new Sprite(gem), { label: 'PanelGem', x: 60, y: 10 }));
+app.stage.addChild(panel);
+
+// A masked group: the mask is drawn to the stencil buffer.
+const masked = new Container();
+
+masked.label = 'MaskedGroup';
+masked.position.set(200, 90);
+
+const hole = new Graphics().circle(40, 40, 36).fill(0xffffff);
+
+hole.label = 'Hole';
+masked.addChild(hole);
+masked.mask = hole;
+masked.addChild(Object.assign(new Sprite(gem), { label: 'MaskedGem', width: 80, height: 80 }));
+app.stage.addChild(masked);
+
+// A shape with enough vertices that PixiJS draws it on its own.
+const star = new Graphics();
+
+star.label = 'BigStar';
+
+for (let i = 0; i < 60; i++)
+{
+    star.star(40 + (i % 10) * 40, 220 + Math.floor(i / 10) * 14, 5, 7, 3).fill(0xff6688);
+}
+
+app.stage.addChild(star);
+
+const title = new Text({ text: 'Score 120', style: { fill: 0xffffff, fontSize: 20 } });
+
+title.label = 'ScoreText';
+title.position.set(340, 20);
+app.stage.addChild(title);
+
+const state = window.fixture = { name: webgpu ? 'adapter-pixi-webgpu' : 'adapter-pixi-webgl', renderer: app.renderer.name, frames: 0, elapsed: 0 };
+
+app.ticker.add((ticker) =>
+{
+    state.elapsed += ticker.deltaMS;
+    state.frames++;
+    panel.x = 20 + 10 * Math.sin(state.elapsed / 300);
+});
+</script>
