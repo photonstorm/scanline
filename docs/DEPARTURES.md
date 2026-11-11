@@ -42,7 +42,7 @@ Decided 10 November 2026, replacing the percentages in the PRD (section 9.1). Th
 | The window (`scanline` with no arguments starts the app). | No window. `scanline serve` runs the host; the other modes start it. | Milestone 4. |
 | Windows 11 and macOS. | macOS only. The pipe launch for Windows (inherited handles) is not written. | Nothing here has been run on Windows. |
 | Capability tiers, an origin allow-list, `file://` access limited to the launched file's directory. | None of these. `eval` is always available. | Milestone 7. Until then, treat a session as able to do anything the page can. |
-| The probe records a rolling tail of command names, so a crash can be pinned to its last call. | Not built. A crash is reported as an event with no last call. | Comes with the capture level. |
+| The probe records a rolling tail of command names, so a crash can be pinned to its last call. | Built after milestone 7: every wrapper writes its method's ID into a ring of sixteen, and a `context-lost` event (a WebGL context lost, or a WebGPU device the browser took away) carries the names, oldest first. | One store a call. A renderer crash takes the page and the ring with it, so that is still reported with no calls. Graphics calls are queued to the GPU process, so the call that did the damage may be a little before the last. |
 
 ## Milestone 2 against its exit criteria
 

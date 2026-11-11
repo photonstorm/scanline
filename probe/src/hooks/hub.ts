@@ -3,7 +3,7 @@
 
 import type { Tag } from '../tag';
 import { contextTag, extensionTag } from '../tags.generated';
-import { COUNTERS } from './generated';
+import { COUNTERS, METHOD_NAMES } from './generated';
 
 type CounterName = typeof COUNTERS[number];
 
@@ -25,6 +25,9 @@ export interface Rec extends Counters
     // Set while the flight recorder runs (capture.ts): called just before a texture or a
     // buffer is deleted or destroyed, with the object, while its contents can still be read.
     before: null | ((record: Rec, self: any, object?: any) => void);
+
+    // The IDs of the last sixteen calls, in a ring indexed by `calls`.
+    tail: Int16Array;
 
     // The value of `calls` when this record's image was last kept.
     keptAtCalls: number;
@@ -49,9 +52,27 @@ export interface Hub
 // for a draw that does not say. Set by the pipeline tracker.
 export const gpuTopology = { mode: -1 };
 
+// The last calls a record saw, oldest first, by name.
+export function lastCalls (record: Rec): string[]
+{
+    const out: string[] = [];
+
+    for (let back = 16; back >= 1; back--)
+    {
+        const id = record.tail[(record.calls - back) & 15];
+
+        if (id >= 0 && record.calls - back >= 0)
+        {
+            out.push(METHOD_NAMES[id] ?? `method ${id}`);
+        }
+    }
+
+    return out;
+}
+
 export function newRecord (): Rec
 {
-    const record: any = { rec: null, gate: null, after: null, before: null, keptAtCalls: -1, x: null };
+    const record: any = { rec: null, gate: null, after: null, before: null, keptAtCalls: -1, x: null, tail: new Int16Array(16).fill(-1) };
 
     for (const name of COUNTERS)
     {

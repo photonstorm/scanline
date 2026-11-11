@@ -6,7 +6,7 @@ import { recordIntercepted } from './gpu/rec';
 import { attachTracker, contextLost, contextRestored } from './gl/tracker';
 import { hookExtension, natives, type Handlers } from './hooks/install';
 import { withTimestampFeature } from './timing';
-import { hub, recordFor, type Rec } from './hooks/hub';
+import { hub, lastCalls, recordFor, type Rec } from './hooks/hub';
 import { patch } from './masquerade';
 import { declare } from './mods';
 import { G, isWindow, nAddEventListener, type Fn } from './natives';
@@ -122,7 +122,8 @@ function register (canvas: any, type: unknown, ctx: any): void
         {
             info.lost = true;
             contextLost(info);
-            emit('context-lost', { context: info.id, frame: currentFrame() });
+            // With the calls that led up to it: a context lost to a crash was often lost by one of them.
+            emit('context-lost', { context: info.id, frame: currentFrame(), lastCalls: lastCalls(info.record) });
         });
 
         nAddEventListener.call(canvas, 'webglcontextrestored', () =>
@@ -275,6 +276,23 @@ export const contextHandlers: Handlers = {
             if (device && facts)
             {
                 deviceAdapters.set(device, facts);
+            }
+
+            // A device the browser takes away (the GPU process crashed, the driver reset)
+            // is reported with the calls that led up to it. One the page destroyed is not.
+            try
+            {
+                device?.lost?.then((lost: any) =>
+                {
+                    if (lost?.reason !== 'destroyed')
+                    {
+                        emit('context-lost', { api: 'webgpu', frame: currentFrame(), reason: G.String(lost?.message ?? '').slice(0, 300), lastCalls: lastCalls(hub.gpu) });
+                    }
+                }, () => undefined);
+            }
+            catch
+            {
+                // No such promise here: nothing to follow.
             }
 
             return device;

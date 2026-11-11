@@ -246,6 +246,12 @@ describe('the command line', () =>
         assert.equal(lost.code, 0, lost.out);
         assert.equal(lost.json.data.events[0].kind, 'context-lost');
 
+        // With the calls that led up to it, oldest first.
+        const tail = lost.json.data.events[0].data.lastCalls;
+
+        assert.equal(tail.length, 16);
+        assert.ok(tail.every((name) => /^gl\.[a-zA-Z0-9]+$/.test(name)), tail.join(' '));
+
         const status = await scanline('status', '--json');
 
         assert.equal(status.code, 0, 'the session is still usable');

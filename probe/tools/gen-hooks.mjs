@@ -173,7 +173,9 @@ function wrapper (family, qualified, name, op, entry = {})
         body.push('const r = N.apply(this, arguments as any);');
     }
 
-    body.push('c.calls++;');
+    // The call's ID goes in a short ring, so that when a context is lost the calls that
+    // led up to it can be named.
+    body.push(`c.tail[c.calls++ & 15] = ${id};`);
 
     if (entry.draw)
     {
