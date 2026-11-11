@@ -133,6 +133,22 @@ pub async fn launch(host: &Arc<Host>, params: &Value) -> Result<Value> {
 
     value["summary"] = json!(format!("Launched {id}. {summary}"));
 
+    // What to do next with a browser started for a native debugger: Scanline's part ends here.
+    if session.profile.name() == "native-capture" {
+        let pid = session.gpu_pid().await;
+        let said = format!(
+            "{}\nNative capture: this browser's GPU process{} runs with no sandbox and no watchdog, and labels reach the native API as the page wrote them. On macOS: in Xcode choose Debug > Attach to Process by PID or Name, give that number, then use the Metal capture button in the debug bar to capture a frame; what it shows is ANGLE's or Dawn's Metal calls, not the page's. On Windows RenderDoc and PIX attach the same way. Use this profile for that and nothing else: close the session when the capture is taken.",
+            value["summary"].as_str().unwrap_or(""),
+            match pid {
+                Some(pid) => format!(" (process {pid})"),
+                None => String::new(),
+            }
+        );
+
+        value["summary"] = json!(said);
+        value["data"]["native_capture"] = json!({ "gpu_process_pid": pid });
+    }
+
     Ok(value)
 }
 

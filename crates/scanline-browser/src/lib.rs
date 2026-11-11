@@ -25,6 +25,10 @@ pub enum Profile {
     Deep,
     /// Software rasteriser: separates logic bugs from driver bugs. For CI.
     Software,
+    /// For attaching a native GPU debugger to the browser's GPU process: its sandbox is
+    /// off, its watchdog does not kill it while it is stopped, and labels reach the native
+    /// API as the page wrote them. Weaker than a normal browser, so asked for by name.
+    Native,
 }
 
 impl Profile {
@@ -33,7 +37,8 @@ impl Profile {
             "stock" => Ok(Profile::Stock),
             "deep" => Ok(Profile::Deep),
             "software" => Ok(Profile::Software),
-            other => bail!("Unknown profile \"{other}\". Profiles are: stock, deep, software."),
+            "native-capture" | "native" => Ok(Profile::Native),
+            other => bail!("Unknown profile \"{other}\". Profiles are: stock, deep, software, native-capture."),
         }
     }
 
@@ -42,6 +47,7 @@ impl Profile {
             Profile::Stock => "stock",
             Profile::Deep => "deep",
             Profile::Software => "software",
+            Profile::Native => "native-capture",
         }
     }
 
@@ -54,6 +60,23 @@ impl Profile {
                 "--enable-dawn-features=dump_shaders,use_user_defined_labels_in_backend,disable_symbol_renaming",
             ],
             Profile::Software => &["--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--use-webgpu-adapter=swiftshader"],
+            Profile::Native => &[
+                "--disable-gpu-sandbox",
+                "--disable-gpu-watchdog",
+                "--enable-unsafe-webgpu",
+                "--enable-webgpu-developer-features",
+                "--enable-dawn-features=use_user_defined_labels_in_backend,disable_symbol_renaming",
+            ],
+        }
+    }
+
+    /// What the browser's processes are started with in their environment.
+    fn environment(self) -> &'static [(&'static str, &'static str)] {
+        match self {
+            // Metal lets a debugger capture a process's GPU work only if the process was
+            // started saying it may. Both spellings: the name changed between releases.
+            Profile::Native => &[("MTL_CAPTURE_ENABLED", "1"), ("METAL_CAPTURE_ENABLED", "1")],
+            _ => &[],
         }
     }
 }
@@ -170,7 +193,7 @@ impl Browser {
             args.push(format!("--app={}", options.url));
         }
 
-        let (child, client) = spawn_with_pipe(&executable, &args)?;
+        let (child, client) = spawn_with_pipe(&executable, &args, options.profile.environment())?;
         let pid = child.id();
 
         let browser = Browser {
@@ -225,7 +248,7 @@ impl Browser {
 }
 
 #[cfg(unix)]
-fn spawn_with_pipe(executable: &Path, args: &[String]) -> Result<(Child, Client)> {
+fn spawn_with_pipe(executable: &Path, args: &[String], environment: &[(&str, &str)]) -> Result<(Child, Client)> {
     use std::os::fd::FromRawFd;
 
     // Two pipes. The browser reads commands on descriptor 3 and writes replies on 4.
@@ -248,6 +271,7 @@ fn spawn_with_pipe(executable: &Path, args: &[String]) -> Result<(Child, Client)
     let mut command = tokio::process::Command::new(executable);
 
     command.args(args).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).kill_on_drop(true);
+    command.envs(environment.iter().copied());
 
     // Runs in the child between fork and exec. Only async-signal-safe calls are allowed here.
     unsafe {
@@ -336,7 +360,7 @@ fn set_cloexec(fd: i32) -> Result<()> {
 }
 
 #[cfg(not(unix))]
-fn spawn_with_pipe(_executable: &Path, _args: &[String]) -> Result<(Child, Client)> {
+fn spawn_with_pipe(_executable: &Path, _args: &[String], _environment: &[(&str, &str)]) -> Result<(Child, Client)> {
     // Windows passes the pipe as inherited handles named in --remote-debugging-io-pipes.
     // Not written yet: nothing in this repository has been run on Windows.
     bail!("Launching the browser over the debugging pipe is not implemented on this platform yet.")

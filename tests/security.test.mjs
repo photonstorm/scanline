@@ -395,6 +395,34 @@ describe('tiers: widened, and misspelt', () =>
     });
 });
 
+describe('the native-capture profile', () =>
+{
+    test('a browser with its GPU sandbox off is the person\'s to allow', async () =>
+    {
+        const usual = host();
+        const refused = await usual.scanline('launch', server.url('fixtures/matrix/webgpu.html'), '--headless', '--paused', '--profile', 'native-capture');
+
+        assert.equal(refused.code, 1);
+        assert.match(refused.out, /The native-capture profile starts a browser whose GPU process has no sandbox.*SCANLINE_ALLOW=native-capture/);
+        assert.match((await usual.scanline('sessions')).out, /No sessions are open/);
+        await usual.end();
+
+        const allowed = host({ SCANLINE_ALLOW: 'native-capture' });
+        const launched = await allowed.scanline('launch', server.url('fixtures/matrix/webgpu.html'), '--headless', '--paused', '--profile', 'native-capture', '--json');
+
+        assert.equal(launched.code, 0, launched.out);
+        assert.match(launched.json.summary, /\(native-capture profile, level observe\)/);
+        assert.match(launched.json.summary, /Native capture: this browser's GPU process \(process \d+\) runs with no sandbox/);
+        assert.ok(launched.json.data.native_capture.gpu_process_pid > 0);
+
+        // It is still the same tool: the page runs and a capture replays.
+        await allowed.scanline('step', '3');
+        assert.match((await allowed.scanline('capture')).out, /Replay check: replaying the capture gives an image identical/);
+        assert.match((await allowed.scanline('help', 'security')).out, /the native-capture profile .*: on/);
+        await allowed.end();
+    });
+});
+
 describe('MCP over loopback HTTP', () =>
 {
     const home = mkdtempSync(join(tmpdir(), 'scanline-http-'));

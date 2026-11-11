@@ -201,6 +201,20 @@ npm run package
 - [ ] With `SCANLINE_SIGN_IDENTITY` set to your Developer ID Application identity, the script signs the binary, and `codesign --verify --strict dist/scanline-0.0.1-macos-arm64/scanline` passes.
 - [ ] With `SCANLINE_NOTARY_PROFILE` set as well (a `notarytool` keychain profile), the submission is accepted. A bare binary cannot be stapled; a `.pkg` or `.dmg` would be needed for that, and neither is built.
 
+## The native-capture profile
+
+```bash
+scanline stop
+```
+
+```bash
+SCANLINE_ALLOW=native-capture scanline launch http://127.0.0.1:8765/fixtures/matrix/webgpu.html --profile native-capture
+```
+
+- [ ] The answer names the GPU process ("process 12345"). In Xcode, Debug > Attach to Process by PID or Name takes that number and attaches.
+- [ ] With Xcode attached, the Metal capture button in the debug bar captures a frame, and the draw calls it lists carry the page's labels.
+- [ ] If Xcode refuses to attach, or shows no Metal capture button: say what it said. Starting the browser this way is all that has been checked.
+
 ## Yours to decide
 
 These are not tests. They are choices that were not mine to make, and each is a small edit.

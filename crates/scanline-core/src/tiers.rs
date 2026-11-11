@@ -32,11 +32,13 @@ pub struct Tiers {
     pub remote_patch: bool,
     /// Navigation away from the origin a session was launched on.
     pub navigate: bool,
+    /// The native-capture profile: a browser whose GPU process has no sandbox.
+    pub native_capture: bool,
 }
 
 impl Default for Tiers {
     fn default() -> Self {
-        Tiers { control: true, patch: true, files: true, remote_patch: false, navigate: false }
+        Tiers { control: true, patch: true, files: true, remote_patch: false, navigate: false, native_capture: false }
     }
 }
 
@@ -57,8 +59,11 @@ impl Tiers {
             match word.as_str() {
                 "remote-patch" => tiers.remote_patch = true,
                 "navigate" => tiers.navigate = true,
+                "native-capture" => tiers.native_capture = true,
                 other => {
-                    bail!("SCANLINE_ALLOW holds \"{other}\", which is not something it can allow. It takes remote-patch and navigate, separated by commas.")
+                    bail!(
+                        "SCANLINE_ALLOW holds \"{other}\", which is not something it can allow. It takes remote-patch, navigate and native-capture, separated by commas."
+                    )
                 }
             }
         }
@@ -105,6 +110,7 @@ impl Tiers {
                 on(self.files),
                 if self.navigate { "may go to any origin" } else { "keeps to the origin the session was launched on" }
             ),
+            format!("  the native-capture profile (a browser whose GPU process has no sandbox, for a native debugger): {}", on(self.native_capture)),
         ]
         .join("\n")
     }
@@ -205,6 +211,13 @@ pub(crate) fn refusal(tiers: &Tiers, method: &str, params: &Value, page: Option<
         if let Some(why) = refusal(tiers, "patch_state", &Value::Null, page) {
             return Some(why.replacen("patch_state is", "live_view with one of Scanline's own views patches the page's draws, which is", 1));
         }
+    }
+
+    // A browser with part of its sandbox off is the person's to allow, not the client's to ask for.
+    if method == "launch" && matches!(params["profile"].as_str(), Some("native-capture" | "native")) && !tiers.native_capture {
+        return Some(format!(
+            "The native-capture profile starts a browser whose GPU process has no sandbox, so that a native GPU debugger can attach to it. That is weaker than a normal browser, and the person has not allowed it. To allow it, the host must be started with SCANLINE_ALLOW=native-capture. {HOW}."
+        ));
     }
 
     match method {

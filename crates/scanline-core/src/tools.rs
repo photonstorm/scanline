@@ -47,7 +47,7 @@ pub const TOOLS: &[Tool] = &[
             r#""headless": { "type": "boolean", "description": "No window. Default false: a person can watch and play." }"#,
             r#""viewport": { "type": "object", "properties": { "width": { "type": "integer" }, "height": { "type": "integer" } } }"#,
             r#""dpr": { "type": "number", "description": "Device pixel ratio to emulate." }"#,
-            r#""profile": { "type": "string", "enum": ["stock", "deep", "software"], "description": "stock: as users get it. deep: WebGPU developer features. software: software rasteriser." }"#,
+            r#""profile": { "type": "string", "enum": ["stock", "deep", "software", "native-capture"], "description": "stock: as users get it. deep: WebGPU developer features. software: software rasteriser. native-capture: GPU sandbox off, for attaching Xcode's Metal debugger or RenderDoc; the person must allow it." }"#,
             r#""deterministic": { "description": "true, or {\"seed\": 1, \"fixed_dt\": 16.667}: seeded random numbers and a fixed time step, so runs repeat." }"#,
             r#""level": { "type": "string", "enum": ["off", "observe"], "description": "off: hooks pass straight through. Default observe." }"#,
             r#""unmodified": { "type": "boolean", "description": "Change nothing the page can observe. Some readbacks stop working." }"#,
@@ -886,6 +886,8 @@ the host starts:
   SCANLINE_DENY=control,patch,files     switches tiers off. With files off, export, import
                                         and diff keep to the artefact directory.
   SCANLINE_ALLOW=remote-patch,navigate  patching and eval on any page; navigate anywhere.
+  SCANLINE_ALLOW=native-capture         launch(profile: \"native-capture\"): a browser whose GPU
+                                        process has no sandbox, for a native GPU debugger.
 
 What the boundaries are
   - The browser runs with a profile made for the session and thrown away after it: no

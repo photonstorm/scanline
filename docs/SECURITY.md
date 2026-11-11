@@ -42,7 +42,9 @@ What a client may do is fixed when the host starts. No command changes it.
 | Read | Looking, inventory, capture, analysis, the viewer | Always on |
 | Control | `pause`, `resume`, `step`, `run_until`, `input`, `request_human`, `take_control`, `debug`, `strip`, `replay_run`, `live_view`, and the `page` calls that change the game | On |
 | Patch and evaluate | `patch_*`, `experiment`, `eval`, `policy`, and an expression given to `run_until` or `capture(when)` | On for pages served from this machine (`localhost`, `127.x.x.x`, `[::1]`, `*.localhost`, files, `about:blank`). Off for every other origin |
-| Files and navigation | `export`, `import` and `diff` with files outside the artefact directory; `navigate` | Files on. `navigate` keeps to the origin the session was launched on, and a session launched on a file keeps to that file's directory |
+| Files and navigation | `export`, `import`, `diff`, `assert` baselines and `patch_texture` images outside the artefact directory; `navigate` | Files on. `navigate` keeps to the origin the session was launched on, and a session launched on a file keeps to that file's directory |
+| Live views and patches | `live_view` with one of Scanline's own views (overdraw, wireframe, draw_id, depth) is a patch, and is in the patch tier | As the patch tier |
+| The native-capture profile | `launch(profile: "native-capture")`: a browser whose GPU process runs with no sandbox and no watchdog, so that Xcode's Metal debugger or RenderDoc can attach to it | Off. A page that exploits the GPU process in such a browser has that much less to get through |
 
 The person changes these with two environment variables, read once when the host starts:
 
@@ -57,7 +59,8 @@ SCANLINE_ALLOW=remote-patch,navigate scanline serve
 - `SCANLINE_DENY` switches tiers off. With `files` off, `export`, `import` and `diff` read
   and write only inside the artefact directory.
 - `SCANLINE_ALLOW=remote-patch` lets the patch tier work on any page. `navigate` lets a
-  session go to any origin.
+  session go to any origin. `native-capture` lets a session be launched with that profile;
+  use it for pages you trust, and close the session when the native capture is taken.
 - A word that is not a tier stops the host from starting. A denial that was misspelt and
   quietly ignored would be worse than no host.
 - A host that is already running keeps the tiers it started with. `scanline stop`, then

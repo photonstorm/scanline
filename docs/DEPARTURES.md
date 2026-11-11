@@ -333,6 +333,10 @@ Built after milestone 7. The build plan names "CI assertions and baselines" for 
 
 Not built: baselines of anything but the canvas (a capture's draw list, a texture), and a report in a format a CI system reads (JUnit). `--json` gives every check as data.
 
+## The native-capture profile
+
+Built after milestone 7 (the architecture lists it as "later"). `launch(profile: "native-capture")` starts the browser with its GPU sandbox and GPU watchdog off, Metal capture allowed in its environment, and Dawn told to pass the page's labels to the native API unrenamed. The launch result names the GPU process and says what to do next in Xcode. It is refused unless the host was started with `SCANLINE_ALLOW=native-capture`, because such a browser is weaker than a normal one. Scanline's part ends at starting the browser and finding the process: attaching Xcode's Metal debugger has not been tried (see `docs/BY-HAND.md`), and RenderDoc and PIX are Windows tools, where nothing here runs.
+
 ## A recording as a video
 
 Built after milestone 7 ("frame sequences as video" in the build plan's list for after 1.0). `recording(recording, video: true)` writes the recording's frames as a WebM file beside its contact sheet, for the person to watch or to attach to a report. The frames are already made by replaying the recording; with `video` each is also given to the browser's own VP8 encoder (WebCodecs) in the replay page, and the WebM container is written by hand (`replay/src/video.ts`). 60 frames a second by default, scaled down by whole steps to at most 960 on the longest edge, opaque. The file says how the encoder turned colours into video (the matrix and range it reports), because a player that has to guess gets greens and reds visibly wrong on a small picture. A browser without the encoder still gets the contact sheet, and is told why there is no video.
