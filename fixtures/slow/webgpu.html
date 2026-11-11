@@ -1,0 +1,217 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Colonnade (WebGPU)</title>
+<style>body { margin: 0; background: #111; } canvas { display: block; width: 960px; height: 540px; }</style>
+<canvas id="game" width="1920" height="1080"></canvas>
+<script type="module">
+// The scene of webgl2.html in raw WebGPU: a row of columns against a low sun, with light
+// shafts between them. Three passes: a mask of the sun and what stands in front of it, the
+// scene, and the shafts added over the scene from the mask.
+
+const WIDTH = 1920;
+const HEIGHT = 1080;
+const canvas = document.getElementById('game');
+const adapter = await navigator.gpu.requestAdapter();
+const device = await adapter.requestDevice();
+const context = canvas.getContext('webgpu');
+const format = navigator.gpu.getPreferredCanvasFormat();
+
+context.configure({ device, format, alphaMode: 'opaque' });
+
+// One quad per instance: a rectangle in 0..1 space, a top colour and a bottom colour.
+const RECTS = device.createShaderModule({ label: 'rects', code: `
+    struct Rect { @location(0) rect: vec4f, @location(1) top: vec4f, @location(2) bottom: vec4f }
+    struct Out { @builtin(position) position: vec4f, @location(0) uv: vec2f, @location(1) top: vec4f, @location(2) bottom: vec4f }
+
+    @vertex fn vertex (@builtin(vertex_index) index: u32, r: Rect) -> Out
+    {
+        let corner = vec2f(f32(index & 1u), f32((index >> 1u) & 1u));
+        let at = r.rect.xy + corner * r.rect.zw;
+        var out: Out;
+        out.position = vec4f(at * 2.0 - 1.0, 0.0, 1.0);
+        out.uv = corner;
+        out.top = r.top;
+        out.bottom = r.bottom;
+        return out;
+    }
+
+    @fragment fn flat (in: Out) -> @location(0) vec4f
+    {
+        return mix(in.bottom, in.top, in.uv.y);
+    }
+
+    @fragment fn sun (in: Out) -> @location(0) vec4f
+    {
+        let glow = smoothstep(0.5, 0.15, length(in.uv - 0.5));
+        return vec4f(in.top.rgb * glow, 1.0);
+    }` });
+
+// The shafts: from each pixel, a march towards the sun through the mask.
+const SHAFTS = device.createShaderModule({ label: 'shafts', code: `
+    struct Frame { sun: vec2f }
+    @group(0) @binding(0) var<uniform> frame: Frame;
+    @group(0) @binding(1) var mask: texture_2d<f32>;
+    @group(0) @binding(2) var maskSampler: sampler;
+
+    const SAMPLES: i32 = 64;
+    const DENSITY: f32 = 0.9;
+
+    struct Out { @builtin(position) position: vec4f, @location(0) uv: vec2f }
+
+    @vertex fn vertex (@builtin(vertex_index) index: u32) -> Out
+    {
+        let corner = vec2f(f32(index & 1u), f32((index >> 1u) & 1u));
+        var out: Out;
+        out.position = vec4f(corner * 2.0 - 1.0, 0.0, 1.0);
+        out.uv = vec2f(corner.x, corner.y);
+        return out;
+    }
+
+    @fragment fn fragment (in: Out) -> @location(0) vec4f
+    {
+        let stride = (frame.sun - in.uv) * DENSITY / f32(SAMPLES);
+        var at = in.uv;
+        var light = vec3f(0.0);
+        var weight = 1.0;
+        for (var i = 0; i < SAMPLES; i++)
+        {
+            light += textureSampleLevel(mask, maskSampler, vec2f(at.x, 1.0 - at.y), 0.0).rgb * weight;
+            weight *= pow(0.02, 1.0 / f32(SAMPLES));
+            at += stride;
+        }
+        return vec4f(light * (3.0 / f32(SAMPLES)), 1.0);
+    }` });
+
+const instances = {
+    arrayStride: 48,
+    stepMode: 'instance',
+    attributes: [
+        { shaderLocation: 0, offset: 0, format: 'float32x4' },
+        { shaderLocation: 1, offset: 16, format: 'float32x4' },
+        { shaderLocation: 2, offset: 32, format: 'float32x4' }
+    ]
+};
+
+const additive = { color: { srcFactor: 'one', dstFactor: 'one' }, alpha: { srcFactor: 'one', dstFactor: 'one' } };
+const strip = { topology: 'triangle-strip' };
+
+const pipelines = {
+    maskFlat: device.createRenderPipeline({ label: 'mask flat', layout: 'auto', vertex: { module: RECTS, entryPoint: 'vertex', buffers: [instances] }, fragment: { module: RECTS, entryPoint: 'flat', targets: [{ format: 'rgba8unorm' }] }, primitive: strip }),
+    maskSun: device.createRenderPipeline({ label: 'mask sun', layout: 'auto', vertex: { module: RECTS, entryPoint: 'vertex', buffers: [instances] }, fragment: { module: RECTS, entryPoint: 'sun', targets: [{ format: 'rgba8unorm' }] }, primitive: strip }),
+    flat: device.createRenderPipeline({ label: 'scene flat', layout: 'auto', vertex: { module: RECTS, entryPoint: 'vertex', buffers: [instances] }, fragment: { module: RECTS, entryPoint: 'flat', targets: [{ format }] }, primitive: strip }),
+    sun: device.createRenderPipeline({ label: 'scene sun', layout: 'auto', vertex: { module: RECTS, entryPoint: 'vertex', buffers: [instances] }, fragment: { module: RECTS, entryPoint: 'sun', targets: [{ format, blend: additive }] }, primitive: strip }),
+    shafts: device.createRenderPipeline({ label: 'shafts', layout: 'auto', vertex: { module: SHAFTS, entryPoint: 'vertex' }, fragment: { module: SHAFTS, entryPoint: 'fragment', targets: [{ format, blend: additive }] }, primitive: strip })
+};
+
+const maskTexture = device.createTexture({ label: 'mask', size: [WIDTH, HEIGHT], format: 'rgba8unorm', usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING });
+const maskView = maskTexture.createView({ label: 'mask view' });
+const frameBuffer = device.createBuffer({ label: 'frame', size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+const shaftsGroup = device.createBindGroup({
+    label: 'shafts inputs',
+    layout: pipelines.shafts.getBindGroupLayout(0),
+    entries: [
+        { binding: 0, resource: { buffer: frameBuffer } },
+        { binding: 1, resource: maskView },
+        { binding: 2, resource: device.createSampler({ label: 'smooth', magFilter: 'linear', minFilter: 'linear' }) }
+    ]
+});
+
+const COLUMNS = 7;
+const MAX = 64;
+const rectBuffers = {
+    maskSun: device.createBuffer({ label: 'mask sun rects', size: MAX * 48, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST }),
+    maskColumns: device.createBuffer({ label: 'mask column rects', size: MAX * 48, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST }),
+    sky: device.createBuffer({ label: 'sky rect', size: MAX * 48, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST }),
+    sun: device.createBuffer({ label: 'sun rect', size: MAX * 48, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST }),
+    columns: device.createBuffer({ label: 'column rects', size: MAX * 48, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST })
+};
+
+const state = window.game = { frame: 0, time: 0, columns: COLUMNS, sun: [0.7, 0.62] };
+
+function write (buffer, rects)
+{
+    const data = new Float32Array(rects.length * 12);
+
+    rects.forEach(([x, y, width, height, top, bottom], index) =>
+    {
+        data.set([x, y, width, height, top[0], top[1], top[2], 1, bottom[0], bottom[1], bottom[2], 1], index * 12);
+    });
+
+    device.queue.writeBuffer(buffer, 0, data);
+
+    return rects.length;
+}
+
+// The columns, and the ground they stand on. Black in the mask, stone in the scene.
+function columns (stone, shade, ground)
+{
+    const rects = [[0, 0, 1, 0.22, ground, ground]];
+
+    for (let i = 0; i < COLUMNS; i++)
+    {
+        const x = 0.04 + i * 0.14 + 0.01 * Math.sin(state.time * 0.0004 + i);
+
+        rects.push([x, 0.2, 0.06, 0.68, stone, shade]);
+        rects.push([x - 0.012, 0.86, 0.084, 0.035, stone, stone]);
+    }
+
+    rects.push([0, 0.895, 1, 0.06, stone, shade]);
+
+    return rects;
+}
+
+function draw (pass, pipeline, buffer, count)
+{
+    pass.setPipeline(pipeline);
+    pass.setVertexBuffer(0, buffer);
+    pass.draw(4, count);
+}
+
+function frame (time)
+{
+    state.frame++;
+    state.time = time;
+    state.sun = [0.7 + 0.05 * Math.sin(time * 0.0003), 0.62];
+
+    const black = [0, 0, 0];
+    const sunRect = [[state.sun[0] - 0.14, state.sun[1] - 0.25, 0.28, 0.5, [1, 0.85, 0.6], black]];
+    const counts = {
+        maskSun: write(rectBuffers.maskSun, sunRect),
+        maskColumns: write(rectBuffers.maskColumns, columns(black, black, black)),
+        sky: write(rectBuffers.sky, [[0, 0, 1, 1, [0.1, 0.16, 0.35], [0.85, 0.5, 0.3]]]),
+        sun: write(rectBuffers.sun, sunRect),
+        columns: write(rectBuffers.columns, columns([0.5, 0.45, 0.42], [0.2, 0.17, 0.2], [0.16, 0.13, 0.12]))
+    };
+
+    device.queue.writeBuffer(frameBuffer, 0, new Float32Array([state.sun[0], state.sun[1], 0, 0]));
+
+    const encoder = device.createCommandEncoder({ label: 'frame' });
+
+    // The mask: the sun, and whatever stands in front of it.
+    const mask = encoder.beginRenderPass({ label: 'mask', colorAttachments: [{ view: maskView, clearValue: [0.03, 0.04, 0.07, 1], loadOp: 'clear', storeOp: 'store' }] });
+
+    draw(mask, pipelines.maskSun, rectBuffers.maskSun, counts.maskSun);
+    draw(mask, pipelines.maskFlat, rectBuffers.maskColumns, counts.maskColumns);
+    mask.end();
+
+    // The scene, then the shafts added over it.
+    const scene = encoder.beginRenderPass({ label: 'scene', colorAttachments: [{ view: context.getCurrentTexture().createView(), clearValue: [0, 0, 0, 1], loadOp: 'clear', storeOp: 'store' }] });
+
+    draw(scene, pipelines.flat, rectBuffers.sky, counts.sky);
+    draw(scene, pipelines.sun, rectBuffers.sun, counts.sun);
+    draw(scene, pipelines.flat, rectBuffers.columns, counts.columns);
+    scene.end();
+
+    const light = encoder.beginRenderPass({ label: 'godrays', colorAttachments: [{ view: context.getCurrentTexture().createView(), loadOp: 'load', storeOp: 'store' }] });
+
+    light.setPipeline(pipelines.shafts);
+    light.setBindGroup(0, shaftsGroup);
+    light.draw(4);
+    light.end();
+
+    device.queue.submit([encoder.finish()]);
+    requestAnimationFrame(frame);
+}
+
+requestAnimationFrame(frame);
+</script>

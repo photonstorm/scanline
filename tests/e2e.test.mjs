@@ -1161,6 +1161,98 @@ describe('live patches', () =>
         assert.equal(none.code, 1);
         assert.match(none.out, /needs a filter/);
     });
+
+    test('webgpu: pipelines are rebuilt with the change, and the page\'s own are put back', async () =>
+    {
+        // The slow scene: a mask (pip_1, pip_2), the scene (pip_3, pip_4) and the light
+        // shafts (pip_5), which sample the mask through a bind group made for pip_5 alone.
+        await scanline('launch', server.url('fixtures/slow/webgpu.html'), '--paused', '--headless');
+        await scanline('step', '4');
+        await scanline('resources', 'pipeline');
+        await scanline('resources', 'texture');
+
+        // In the sky beside the sun, where the shafts add most; and far from it. The scene drifts a
+        // little from frame to frame, so colours are compared loosely.
+        const glow = () => pixel(1340, 200);
+        const far = () => pixel(300, 300);
+        const near = (a, b) => a.every((channel, index) => Math.abs(channel - b[index]) <= 10);
+        const [glowBefore, farBefore] = [await glow(), await far()];
+        const settle = async () => { await scanline('patches', '--revert', 'all'); await scanline('step', '1'); assert.ok(near(await glow(), glowBefore), 'the page draws as before'); };
+
+        // Leaving the shafts out darkens the glow. Drawing only them loses the scene.
+        const skipped = await scanline('patch_draws', '--filter', '{"pipeline": "pip_5"}');
+
+        assert.match(skipped.out, /pat_\d+: draws that use pip_5 are not drawn/);
+        await scanline('step', '1');
+
+        const without = await glow();
+
+        assert.ok(without[0] < glowBefore[0] - 15, `without the shafts ${without}, with them ${glowBefore}`);
+        assert.match((await scanline('patches')).out, /draws that use pip_5 are not drawn {2}\(1 draw a frame\)/);
+        await settle();
+
+        await scanline('patch_draws', '--mode', 'isolate', '--filter', '{"pipeline": "pip_5"}');
+        await scanline('step', '1');
+        assert.ok(!near(await far(), farBefore), 'only the shafts are drawn');
+        await settle();
+
+        // State. The pipeline is rebuilt without blending, so the shafts replace the scene.
+        const unblended = await scanline('patch_state', '--state', '{"blend": false}', '--filter', '{"pipeline": "pip_5"}');
+
+        assert.match(unblended.out, /draws that use pip_5: blend off/);
+        await scanline('step', '1');
+        assert.ok(!near(await far(), farBefore), 'the shafts are no longer added to the scene');
+        await settle();
+
+        // A scissor box round every draw: the right half is left as it was cleared.
+        await scanline('patch_state', '--state', '{"scissor": [0, 0, 960, 1080]}');
+        await scanline('step', '1');
+        assert.deepEqual(await glow(), [0, 0, 0, 255]);
+        assert.ok(near(await far(), farBefore));
+        await settle();
+
+        // A shader module, for every pipeline that uses it: the sun turns green, in the
+        // scene and (through the mask) in the shafts.
+        const edited = await scanline('patch_shader', 'shd_1', '--edits', '[{"find": "in.top.rgb * glow", "replace": "vec3f(0.0, 1.0, 0.0) * glow"}]');
+
+        assert.match(edited.out, /pat_\d+: shd_1: «in\.top\.rgb \* glow» → «vec3f\(0\.0, 1\.0, 0\.0\) \* glow»/);
+        assert.match(edited.out, /It compiled, and the pipelines rebuilt with it are valid/);
+        await scanline('step', '1');
+
+        const sun = await pixel(1344, 410);
+
+        assert.ok(sun[1] > sun[0] + 100, `the sun is green: ${sun}`);
+
+        // Stacked on it, a stand-in for the mask the shafts sample, in a bind group
+        // remade for the rebuilt pipeline.
+        const stood = await scanline('patch_texture', 'tex_1', '--with', 'white');
+
+        assert.match(stood.out, /every draw: tex_1 replaced by a white texture/);
+        await scanline('step', '1');
+        assert.ok((await far())[0] > farBefore[0] + 60, 'the shafts march through white');
+
+        const listed = await scanline('patches', '--json');
+
+        assert.equal(listed.json.data.patches.length, 2);
+        assert.equal(listed.json.data.not_applied, null);
+        await settle();
+
+        // An edit that does not compile changes nothing, and says why.
+        const broken = await scanline('patch_shader', 'pip_5', '--edits', '[{"find": "SAMPLES: i32 = 64", "replace": "SAMPLES: i32 = oops"}]');
+
+        assert.equal(broken.code, 1);
+        assert.match(broken.out, /The edited shader does not compile, so nothing was changed\.\nerror at line \d+: unresolved value 'oops'/);
+        assert.match((await scanline('patches')).out, /No patches are in force/);
+
+        // What WebGPU patches do not do is said plainly.
+        assert.match((await scanline('patch_uniform', '--target', 'pip_5', '--name', 'sun', '--value', '1')).out, /patch_uniform is for WebGL/);
+        assert.match((await scanline('patch_draws', '--filter', '{"draws": [1, 2]}')).out, /On WebGPU a filter names a pipeline/);
+        assert.match((await scanline('patch_shader', 'pip_5', '--defines', '{"SAMPLES": 24}')).out, /WGSL has no #define/);
+        assert.match((await scanline('patch_state', '--state', '{"cull": true}')).out, /can be switched off here, not on/);
+
+        // No patch left the page with an error of its own making.
+        assert.doesNotMatch((await scanline('console', '--level', 'error')).out, /not compatible|is invalid/);
+    });
 });
 
 describe('runs: play it again', () =>

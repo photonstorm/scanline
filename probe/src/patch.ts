@@ -21,6 +21,7 @@
 import { onFrameBegin } from './clock/gate';
 import { allContexts, contextById, type ContextInfo } from './contexts';
 import { trackerFor, uniformWatch, type GlTracker, type UniformSlot } from './gl/tracker';
+import { gpuPatchAdd, gpuPatchFrame, gpuPatchList, gpuPatchRemove } from './gpu/patch';
 import type { Rec } from './hooks/hub';
 import { G, type Fn } from './natives';
 import { entryOf, find } from './registry';
@@ -722,6 +723,8 @@ export function installPatches (): void
 {
     onFrameBegin(() =>
     {
+        gpuPatchFrame();
+
         for (const state of patched.values())
         {
             state.seen = 0;
@@ -738,6 +741,12 @@ export function installPatches (): void
 
     expose('patch.add', (args: any) =>
     {
+        // A WebGPU page is patched through its pipelines (gpu/patch.ts).
+        if (contextById(args.context)?.api === 'webgpu' || (args.context === undefined && !allContexts().some((info) => trackerFor(info)) && allContexts().some((info) => info.api === 'webgpu')))
+        {
+            return gpuPatchAdd(args, nextId++);
+        }
+
         const { info, t } = context(args.context);
         const filter: Filter = {};
 
@@ -854,12 +863,14 @@ export function installPatches (): void
             }
         }
 
+        out.push(...gpuPatchList());
+
         return { patches: out };
     });
 
     expose('patch.remove', (args: { patch?: number; all?: boolean }) =>
     {
-        let removed = 0;
+        let removed = gpuPatchRemove(args);
 
         for (const state of patched.values())
         {

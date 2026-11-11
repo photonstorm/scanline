@@ -460,24 +460,24 @@ pub const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "patch_draws",
-        description: "Leave some of the running page's draws out (skip), or draw only them (isolate), from now on. To see what a draw contributes, or what is behind it. Returns a patch handle; patches(revert) undoes it. WebGL.",
+        description: "Leave some of the running page's draws out (skip), or draw only them (isolate), from now on. To see what a draw contributes, or what is behind it. Returns a patch handle; patches(revert) undoes it.",
         schema: schema!(
             "[]",
             session!(),
             context!(),
-            r#""filter": { "type": "object", "description": "Which draws: {\"program\": \"prg_2\"}, {\"texture\": \"tex_3\"} and/or {\"draws\": [6, 8]} (event numbers, as draw_list gives them).", "properties": { "program": { "type": "string" }, "texture": { "type": "string" }, "draws": {} } }"#,
+            r#""filter": { "type": "object", "description": "Which draws. WebGL: {\"program\": \"prg_2\"}, {\"texture\": \"tex_3\"} and/or {\"draws\": [6, 8]} (event numbers, as draw_list gives them). WebGPU: {\"pipeline\": \"pip_2\"}.", "properties": { "program": { "type": "string" }, "pipeline": { "type": "string" }, "texture": { "type": "string" }, "draws": {} } }"#,
             r#""mode": { "type": "string", "enum": ["skip", "isolate"], "description": "Default skip." }"#,
         ),
         read_only: false,
     },
     Tool {
         name: "patch_state",
-        description: "Override state for some or all of the running page's draws: blending, the depth test, depth writes, culling, the colour mask, the scissor box. To test whether a state is the cause before changing the code. Returns a patch handle. WebGL.",
+        description: "Override state for some or all of the running page's draws: blending, the depth test, depth writes, culling, the colour mask, the scissor box. To test whether a state is the cause before changing the code. Returns a patch handle. On WebGPU the pipeline is rebuilt with the change.",
         schema: schema!(
             r#"["state"]"#,
             session!(),
             context!(),
-            r#""filter": { "type": "object", "description": "Which draws, as for patch_draws. Left out: every draw.", "properties": { "program": { "type": "string" }, "texture": { "type": "string" }, "draws": {} } }"#,
+            r#""filter": { "type": "object", "description": "Which draws, as for patch_draws. Left out: every draw.", "properties": { "program": { "type": "string" }, "pipeline": { "type": "string" }, "texture": { "type": "string" }, "draws": {} } }"#,
             r#""state": { "type": "object", "description": "Any of blend, depth_test, depth_write, cull (true or false), color_mask ([r, g, b, a]), scissor ([x, y, w, h], or false for off)." }"#,
         ),
         read_only: false,
@@ -497,13 +497,14 @@ pub const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "patch_shader",
-        description: "Change a shader of the running page: find-and-replace edits, #defines, or whole new source. Draws that use the program then use a rebuilt copy; the page's own program is untouched. Returns a patch handle and the compile log; a shader that fails to compile changes nothing. WebGL.",
+        description: "Change a shader of the running page: find-and-replace edits, #defines (GLSL), or whole new source. Draws that use the program or pipeline then use a rebuilt copy; the page's own is untouched. Returns a patch handle and the compile log; a shader that fails to compile changes nothing.",
         schema: schema!(
             r#"["handle"]"#,
             session!(),
             context!(),
-            r#""handle": { "type": "string", "description": "The program, such as prg_1." }"#,
-            r#""shader": { "type": "string", "description": "Which of its shaders, such as shd_1. Default: the fragment shader." }"#,
+            r#""handle": { "type": "string", "description": "WebGL: the program, such as prg_1. WebGPU: a pipeline (pip_2), or a shader module (shd_3) for every pipeline that uses it." }"#,
+            r#""shader": { "type": "string", "description": "WebGL: which of the program's shaders, such as shd_1. Default: the fragment shader." }"#,
+            r#""stage": { "type": "string", "enum": ["vertex", "fragment"], "description": "WebGPU, with a pipeline: which stage's module. Default fragment." }"#,
             r#""edits": { "type": "array", "description": "[{\"find\": \"64\", \"replace\": \"24\"}]: each find must occur in the source; every occurrence is replaced.", "items": { "type": "object" } }"#,
             r#""defines": { "type": "object", "description": "{\"SAMPLES\": 24}: added as #define lines after #version." }"#,
             r#""source": { "type": "string", "description": "The whole new shader." }"#,
@@ -512,7 +513,7 @@ pub const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "patch_texture",
-        description: "Draw with a stand-in wherever one texture of the running page is bound: a checkerboard (are the texture coordinates right?), plain white or black, or a texture whose mip levels are each a different colour (which level is sampled?). Returns a patch handle. WebGL.",
+        description: "Draw with a stand-in wherever one texture of the running page is bound: a checkerboard (are the texture coordinates right?), plain white or black, or (WebGL) a texture whose mip levels are each a different colour (which level is sampled?). Returns a patch handle.",
         schema: schema!(
             r#"["handle"]"#,
             session!(),
@@ -531,7 +532,7 @@ pub const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "experiment",
-        description: "Try a change for a number of frames, measure GPU and CPU frame time with and without it, and take it away again. scissor_1px clips every draw to one pixel: if the frame gets much cheaper, the cost is in filling pixels. skip with a filter leaves draws out: what they cost. Says what the result implies. WebGL.",
+        description: "Try a change for a number of frames, measure GPU and CPU frame time with and without it, and take it away again. scissor_1px clips every draw to one pixel: if the frame gets much cheaper, the cost is in filling pixels. skip with a filter leaves draws out: what they cost. Says what the result implies.",
         schema: schema!(
             r#"["kind"]"#,
             session!(),
@@ -731,9 +732,9 @@ Not built yet (planned, in this order):
   - Analysis, beyond what is built (pixel history, compare, lint, shader_analysis, the
     overdraw and wireframe views, profile): depth, stencil, mip and NaN views, vertex data,
     and all of these but compare, lint and shader_analysis for WebGPU.
-  - Live patching for WebGPU, and for WebGL beyond what is built: debug views on the live
-    page, a solid-colour mode for draws, substituting a texture from a file, patches that
-    survive a reload.
+  - Live patching beyond what is built: debug views on the live page, a solid-colour mode
+    for draws, substituting a texture from a file, patches that survive a reload; and for
+    WebGPU, uniforms by name, filters by event number or texture, and draws in render bundles.
 
 Known limits
   - Page protocol: frame.begin and frame.end are counted, not used as frame boundaries; the
@@ -930,6 +931,14 @@ A filter names draws by {program: \"prg_2\"}, {texture: \"tex_3\"} and/or {draws
 The draw numbers are event numbers, the ones draw_list and pixel_history give. Left out,
 a filter means every draw.
 
+On WebGPU a draw's shader and state belong to its pipeline, which cannot be changed, so a
+patch builds the pipeline again with the change and swaps it in round each draw. A filter
+names a pipeline, {pipeline: \"pip_2\"}, or is left out. patch_shader takes a pipeline or a
+shader module (shd_3: every pipeline that uses it) and find-and-replace edits or whole
+source; an edit that does not compile, or a pipeline the browser refuses, changes nothing.
+patch_state can switch culling, the depth test, depth writes and blending off, set the
+colour mask, and set a scissor box. patch_uniform is not for WebGPU: edit the shader.
+
 The way to use it
   1. Find the suspect with a capture: the draw, its state, its uniforms.
   2. Patch what you think is wrong. step, then pixels or screenshot.
@@ -938,7 +947,7 @@ The way to use it
 
 Handles (prg_1, tex_3) have to have been listed first: resources(kind: \"program\").
 A reload removes every patch. A patched shader that does not compile changes nothing and
-returns the compiler's message. Patches are for WebGL.";
+returns the compiler's message.";
 
 const PAGE: &str = "\
 What the page and its engine say about themselves

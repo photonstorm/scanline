@@ -21,7 +21,7 @@ const BUFFER_MAP_READ = 0x0001;
 const BUFFER_COPY_SRC = 0x0004;
 
 // A view leads back to its texture; a device has a number, so its objects can be found.
-const viewTag: Tag<{ texture: Entry | undefined; descriptor: unknown }> = gpuViewTag;
+const viewTag: Tag<{ texture: Entry | undefined; descriptor: unknown; size?: [number, number] }> = gpuViewTag;
 const deviceTag: Tag<number> = gpuDeviceTag;
 
 let devices = 0;
@@ -49,7 +49,7 @@ function label (descriptor: any): string | null
 
 // A descriptor as plain data: page objects become references to their records, and
 // anything unreadable or too deep is left out. Never throws.
-export function viewOf (view: object): { texture: Entry | undefined; descriptor: unknown } | undefined
+export function viewOf (view: object): { texture: Entry | undefined; descriptor: unknown; size?: [number, number] } | undefined
 {
     return viewTag.get(view);
 }
@@ -128,6 +128,53 @@ export function snapshot (value: any, depth = 0): unknown
     }
 }
 
+// What a bind group or a pipeline was made from, as the page's own objects: its layout
+// and resources, or its layout and shader modules. A live patch makes the group or the
+// pipeline again from these (gpu/patch.ts).
+//
+// The page may let go of a texture and keep only a view of it, or drop a shader module
+// once its pipeline exists. The GPU keeps them for as long as the group or pipeline
+// lives; this keeps the page's handles on them for exactly as long, and no longer.
+const madeFrom = new G.WeakMap() as WeakMap<object, any>;
+
+export function madeFromOf (object: object): any
+{
+    return madeFrom.get(object);
+}
+
+function keepSources (object: any, descriptor: any, kind: 'group' | 'pipeline'): void
+{
+    if (!object || config.unmodified)
+    {
+        return;
+    }
+
+    try
+    {
+        if (kind === 'group')
+        {
+            const entries: unknown[] = [];
+
+            for (const entry of descriptor.entries)
+            {
+                const resource = entry.resource;
+
+                entries.push({ binding: entry.binding, resource: resource && resource.buffer ? { buffer: resource.buffer, offset: resource.offset, size: resource.size } : resource });
+            }
+
+            madeFrom.set(object, { label: descriptor.label, layout: descriptor.layout, entries });
+        }
+        else
+        {
+            madeFrom.set(object, { layout: descriptor.layout, modules: [descriptor.vertex?.module, descriptor.fragment?.module, descriptor.compute?.module].filter(Boolean) });
+        }
+    }
+    catch
+    {
+        // A descriptor the probe cannot read: the patch falls back on the copy kept as data.
+    }
+}
+
 function register (kind: Kind, device: object, object: object | null | undefined, p: Record<string, any>, descriptor: any): Entry | undefined
 {
     if (!object)
@@ -187,11 +234,13 @@ function pipeline (type: 'render' | 'compute', device: object, result: any, desc
         result.then((made: object) =>
         {
             register('pipeline', device, made, { ...p, async: true, started }, descriptor);
+            keepSources(made, descriptor, 'pipeline');
         }, () => undefined);
     }
     else
     {
         register('pipeline', device, result, p, descriptor);
+        keepSources(result, descriptor, 'pipeline');
     }
 }
 
@@ -269,6 +318,7 @@ const post: Record<string, Post> = {
     'GPUDevice.createBindGroup' (_c, device, group, descriptor)
     {
         register('bind_group', device, group, { descriptor: snapshot(descriptor) }, descriptor);
+        keepSources(group, descriptor, 'group');
     },
 
     'GPUDevice.createBindGroupLayout' (_c, device, layout, descriptor)
@@ -313,7 +363,14 @@ const post: Record<string, Post> = {
     {
         if (view)
         {
-            viewTag.set(view, { texture: entryOf(texture), descriptor: snapshot(descriptor ?? null) });
+            // The size of the level the view begins at: what a pass that draws to it covers.
+            const level = descriptor?.baseMipLevel ?? 0;
+
+            viewTag.set(view, {
+                texture: entryOf(texture),
+                descriptor: snapshot(descriptor ?? null),
+                size: [G.Math.max(1, texture.width >> level), G.Math.max(1, texture.height >> level)]
+            });
         }
     },
 

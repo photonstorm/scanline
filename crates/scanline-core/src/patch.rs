@@ -34,6 +34,21 @@ fn id_of(session: &Session, context: &ContextRef, handle: &str, kind: &str) -> R
 fn filter_of(session: &Session, context: &ContextRef, given: &Value) -> Result<Value> {
     let mut filter = json!({});
 
+    // A WebGPU draw's shader and state are its pipeline's, so a pipeline is what is named there.
+    if context.api == "webgpu" {
+        if let Some(pipeline) = given["pipeline"].as_str().or(given["program"].as_str()) {
+            filter["pipeline"] = json!(id_of(session, context, pipeline, "pipeline")?);
+        }
+
+        for key in given.as_object().into_iter().flatten().map(|entry| entry.0) {
+            if !["pipeline", "program"].contains(&key.as_str()) {
+                bail!("On WebGPU a filter names a pipeline ({{\"pipeline\": \"pip_2\"}}), or is left out to mean every draw. There is no \"{key}\" here yet.");
+            }
+        }
+
+        return Ok(filter);
+    }
+
     if let Some(program) = given["program"].as_str() {
         filter["program"] = json!(id_of(session, context, program, "program")?);
     }
@@ -78,7 +93,7 @@ async fn add(session: &Arc<Session>, context: &ContextRef, mut args: Value) -> R
 fn said(session: &Session, context: &ContextRef, text: &str) -> String {
     let mut out = text.to_string();
 
-    for (kind, word) in [("program", "program "), ("texture", "texture ")] {
+    for (kind, word) in [("program", "program "), ("texture", "texture "), ("pipeline", "pipeline "), ("shader", "shader ")] {
         let mut from = 0;
 
         while let Some(at) = out[from..].find(word) {
@@ -160,6 +175,12 @@ pub async fn patch_uniform(session: &Arc<Session>, params: &Value) -> Result<Val
         _ => bail!("patch_uniform needs value: a number, or a list of numbers as long as the uniform has components (4 for a vec4, 16 for a mat4)."),
     };
 
+    if context.api == "webgpu" {
+        bail!(
+            "patch_uniform is for WebGL. A WebGPU shader's inputs live in buffers, and overriding one by name needs WGSL reflection, which is not built. patch_shader can replace the value in the shader's source: edit the expression that reads it."
+        );
+    }
+
     let program = id_of(session, &context, target, "program")?;
     let (handle, made) = add(session, &context, json!({ "kind": "uniform", "program": program, "name": name, "value": value })).await?;
 
@@ -168,12 +189,33 @@ pub async fn patch_uniform(session: &Arc<Session>, params: &Value) -> Result<Val
 
 pub async fn patch_shader(session: &Arc<Session>, params: &Value) -> Result<Value> {
     let context = choose_context(session, params).await?;
-    let target = params["handle"].as_str().ok_or_else(|| anyhow!("patch_shader needs handle: the program whose shader to change, such as \"prg_1\"."))?;
-    let program = id_of(session, &context, target, "program")?;
-    let mut args = json!({ "kind": "shader", "program": program });
+    let target = params["handle"]
+        .as_str()
+        .ok_or_else(|| anyhow!("patch_shader needs handle: the program whose shader to change, such as \"prg_1\" (WebGL), or a pipeline or shader module, \"pip_2\" or \"shd_3\" (WebGPU)."))?;
+    let webgpu = context.api == "webgpu";
+    let mut args = json!({ "kind": "shader" });
 
-    if let Some(shader) = params["shader"].as_str() {
-        args["shader"] = json!(id_of(session, &context, shader, "shader")?);
+    if webgpu {
+        // A pipeline: its fragment module, or its vertex module if stage says so, for that
+        // pipeline alone. A module: every pipeline that uses it.
+        match session.object(target)?.kind {
+            "pipeline" => {
+                args["pipeline"] = json!(id_of(session, &context, target, "pipeline")?);
+                args["stage"] = json!(params["stage"].as_str().unwrap_or("fragment"));
+            }
+            "shader" => args["module"] = json!(id_of(session, &context, target, "shader")?),
+            other => bail!("{target} is a {}. On WebGPU patch_shader takes a pipeline (pip_2) or a shader module (shd_3).", other.replace('_', " ")),
+        }
+
+        if !params["defines"].is_null() {
+            bail!("defines are for GLSL. WGSL has no #define: use edits, for example [{{\"find\": \"SAMPLES = 64\", \"replace\": \"SAMPLES = 24\"}}].");
+        }
+    } else {
+        args["program"] = json!(id_of(session, &context, target, "program")?);
+
+        if let Some(shader) = params["shader"].as_str() {
+            args["shader"] = json!(id_of(session, &context, shader, "shader")?);
+        }
     }
 
     let mut given = 0;
@@ -201,11 +243,19 @@ pub async fn patch_shader(session: &Arc<Session>, params: &Value) -> Result<Valu
         &made,
         vec![
             if log.is_empty() {
-                "It compiled and linked with no messages.".to_string()
+                if webgpu {
+                    "It compiled, and the pipelines rebuilt with it are valid.".to_string()
+                } else {
+                    "It compiled and linked with no messages.".to_string()
+                }
             } else {
-                format!("It compiled and linked. The compiler said: «{}»", page_text(log, 600))
+                format!("It compiled{}. The compiler said: «{}»", if webgpu { "" } else { " and linked" }, page_text(log, 600))
             },
-            "The page's own program is untouched: a rebuilt copy is used for its draws, with every uniform the page sets passed on to it.".to_string(),
+            if webgpu {
+                "The page's own pipeline and module are untouched: a pipeline rebuilt with the edited module is swapped in for each of its draws, with bind groups remade for it where its layout is its own.".to_string()
+            } else {
+                "The page's own program is untouched: a rebuilt copy is used for its draws, with every uniform the page sets passed on to it.".to_string()
+            },
         ],
     ))
 }
@@ -262,9 +312,14 @@ pub async fn patches(session: &Arc<Session>, params: &Value) -> Result<Value> {
     let replies = session.probe_all("patch.list", json!({}), SHORT).await;
     let mut lines = Vec::new();
     let mut rows = Vec::new();
+    let mut failure: Option<String> = None;
 
     for (instance, reply) in &replies {
         for patch in reply["patches"].as_array().into_iter().flatten() {
+            if let Some(why) = patch["failure"].as_str() {
+                failure = Some(why.to_string());
+            }
+
             let Some((handle, _)) = known.iter().find(|(_, entry)| entry.0 == *instance && Some(entry.1) == patch["patch"].as_i64()) else { continue };
             let context = ContextRef { handle: String::new(), instance: instance.clone(), local: 0, api: String::new() };
             let description = said(session, &context, patch["description"].as_str().unwrap_or(""));
@@ -284,7 +339,7 @@ pub async fn patches(session: &Arc<Session>, params: &Value) -> Result<Value> {
     // Handles whose patches went with a reload.
     session.state.lock().unwrap().patches.retain(|handle, _| rows.iter().any(|row| row["patch"] == handle.as_str()));
 
-    let summary = if rows.is_empty() {
+    let mut summary = if rows.is_empty() {
         "No patches are in force: the page draws as its own code says.".to_string()
     } else {
         format!(
@@ -295,7 +350,12 @@ pub async fn patches(session: &Arc<Session>, params: &Value) -> Result<Value> {
         )
     };
 
-    Ok(result(summary, json!({ "patches": rows })))
+    // A draw the patches could not be applied to was issued as the page made it.
+    if let Some(why) = &failure {
+        summary.push_str(&format!("\nNOT APPLIED to at least one draw, which was drawn unpatched: {}.", page_text(why, 300)));
+    }
+
+    Ok(result(summary, json!({ "patches": rows, "not_applied": failure })))
 }
 
 /// GPU and CPU time a frame, the mean over the frames just stepped.

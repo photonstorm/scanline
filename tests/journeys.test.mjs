@@ -142,10 +142,89 @@ async function slowFrame (page, programs)
     assert.ok(reverted > afterMs * 1.25, `${reverted} ms a frame once reverted, ${afterMs} ms patched`);
 }
 
+// The same journey on WebGPU. The pass comes from the live per-pass GPU timings, and the
+// pipeline from a capture of the frame; the rest is the same commands.
+async function slowFrameGpu (page)
+{
+    const launched = await scanline('launch', server.url(page), '--headless', '--paused');
+
+    assert.match(launched.out, /Launched ses_1/, launched.out);
+
+    await scanline('step', 40);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+
+    // 1. Where does the GPU time go? One pass has most of it.
+    const stats = await scanline('stats', '--window_frames', 30, '--json');
+    const passes = [...stats.json.data.gpu.passes].sort((a, b) => b.mean - a.mean);
+
+    assert.equal(passes[0].label, 'godrays', stats.json.summary);
+    assert.ok(passes[0].mean > stats.json.data.gpu.ms.mean * 0.6, stats.json.summary);
+
+    // Which draw, and which pipeline, is that pass? Its label is the draw's group.
+    const taken = await scanline('capture');
+    const capture = /^(cap_\d+):/m.exec(taken.out)?.[1];
+
+    assert.ok(capture, taken.out);
+
+    const draws = await scanline('query', capture, "SELECT draw, program FROM draws WHERE kind = 'draw' AND path = 'godrays'", '--json');
+
+    assert.equal(draws.json.data.rows.length, 1, 'one draw in the pass');
+
+    const pipeline = draws.json.data.rows[0][1];
+
+    assert.match(pipeline, /^pip_\d+$/);
+
+    // 2. Is it fill?
+    const clipped = await scanline('experiment', 'scissor_1px', '--frames', 30, '--json');
+    const fill = clipped.json.data.gpu_ms;
+
+    assert.ok(fill.with < fill.without * 0.5, `clipped ${fill.with} ms against ${fill.without} ms`);
+
+    // 3. What does the shader do for each pixel?
+    const read = await scanline('shader_analysis', pipeline);
+
+    assert.match(read.out, /up to 64 samples every time the shader runs/, read.out);
+
+    // 4. Patch it live to 24 samples.
+    const beforeMs = await gpuTime();
+    const before = await scanline('screenshot', '--json');
+    const patched = await scanline('patch_shader', pipeline, '--edits', JSON.stringify([{ find: 'SAMPLES: i32 = 64', replace: 'SAMPLES: i32 = 24' }]));
+
+    assert.match(patched.out, /pat_\d+: .*It compiled, and the pipelines rebuilt with it are valid/s, patched.out);
+
+    // 5. The picture is all but the same, and the frame is much cheaper.
+    await scanline('step', 1);
+
+    const after = await scanline('screenshot', '--json');
+    const difference = await scanline('diff', '--a', before.json.images[0].original, '--b', after.json.images[0].original, '--json');
+
+    assert.ok(difference.json.data.mean < 6, `the picture barely moved: ${difference.json.summary}`);
+
+    const afterMs = await gpuTime();
+
+    assert.ok(afterMs < beforeMs * 0.75, `${afterMs} ms a frame after the patch, ${beforeMs} ms before`);
+
+    // 6. The change to make in the source.
+    const listed = await scanline('patches');
+
+    assert.match(listed.out, /SAMPLES: i32 = 64» → «SAMPLES: i32 = 24»/, listed.out);
+
+    await scanline('patches', '--revert', 'all');
+
+    const reverted = await gpuTime();
+
+    assert.ok(reverted > afterMs * 1.25, `${reverted} ms a frame once reverted, ${afterMs} ms patched`);
+}
+
 describe('J3, the slow frame', () =>
 {
     test('on WebGL 2', async () =>
     {
         await slowFrame('fixtures/slow/webgl2.html', { shafts: 'prg_3', find: 'SAMPLES = 64', replace: 'SAMPLES = 24' });
+    });
+
+    test('on WebGPU', async () =>
+    {
+        await slowFrameGpu('fixtures/slow/webgpu.html');
     });
 });

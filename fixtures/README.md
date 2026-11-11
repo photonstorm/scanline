@@ -33,7 +33,7 @@ Each page sets `window.fixture` (or posts it from a worker) to
 
 ## The slow frame (`slow/`)
 
-`slow/webgl2.html` is a row of columns against a low sun at 1920×1080, in three passes: a mask of the sun and what stands in front of it, the scene, and light shafts added over the scene from the mask. The shafts are one full-screen draw whose fragment shader samples the mask 64 times a pixel, and they take nearly all of the frame's GPU time. Twenty-four samples look the same. It is the page journey J3 is run on (`tests/journeys.test.mjs`).
+`slow/webgl2.html` is a row of columns against a low sun at 1920×1080, in three passes: a mask of the sun and what stands in front of it, the scene, and light shafts added over the scene from the mask. The shafts are one full-screen draw whose fragment shader samples the mask 64 times a pixel, and they take nearly all of the frame's GPU time. Twenty-four samples look the same. It is the page journey J3 is run on (`tests/journeys.test.mjs`). `slow/webgpu.html` is the same scene in raw WebGPU: three labelled passes (`mask`, `scene`, `godrays`), five pipelines with layout `auto`, and the shafts' inputs in one bind group.
 
 ## The page protocol (`protocol/`)
 

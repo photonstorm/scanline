@@ -11,6 +11,7 @@ import { currentFrame, onFrameBegin, onFrameEnd } from './clock/gate';
 import { allContexts, type ContextInfo } from './contexts';
 import { hub } from './hooks/hub';
 import { recordIntercepted } from './gpu/rec';
+import { gpuPassBegan } from './gpu/patch';
 import { noteTargets } from './gpu/tracker';
 import { natives, type Handlers } from './hooks/install';
 import { declare } from './mods';
@@ -357,6 +358,7 @@ function beginPass (kind: string): Fn
         if (kind === 'render')
         {
             noteTargets(args[0]);
+            gpuPassBegan(pass as object, args[0]);
         }
 
         // A capture records the pass as the page asked for it, without the timestamp writes.

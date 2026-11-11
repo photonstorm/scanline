@@ -163,6 +163,11 @@ export const GPU = {
         beginComputePass: { intercept: true }
     },
     GPURenderPassEncoder: {
+        // Followed while a live patch is in force, so that a draw's pipeline can be swapped
+        // for a rebuilt one and put back (gpu/patch.ts).
+        setPipeline: { post: true },
+        setBindGroup: { post: true },
+        setScissorRect: { post: true },
         draw: { draw: { mode: null, count: 0, instances: 1 } },
         drawIndexed: { draw: { mode: null, count: 0, instances: 1 } },
         drawIndirect: { draw: { mode: null, count: null, instances: null } },

@@ -18,6 +18,7 @@ import { config, type Level } from './config';
 import { allContexts, contextHandlers, describe, installContextDiscovery, knownAdapters } from './contexts';
 import { installErrors } from './errors';
 import { glHandlers, installGlTracking } from './gl/tracker';
+import { gpuPatchHandlers } from './gpu/patch';
 import { gpuHandlers, installGpuTracking } from './gpu/tracker';
 import { COUNTERS, IDL_VERSION } from './hooks/generated';
 import { hub, totals, type Counters } from './hooks/hub';
@@ -132,7 +133,7 @@ function boot (): void
     installClock();
     installTimers();
     installGate(config.startPaused);
-    installHooks({ ...contextHandlers, ...glHandlers, ...gpuHandlers, ...timingHandlers });
+    installHooks({ ...contextHandlers, ...glHandlers, ...gpuHandlers, ...gpuPatchHandlers, ...timingHandlers });
     installContextDiscovery();
     installGlTracking();
     installGpuTracking();
