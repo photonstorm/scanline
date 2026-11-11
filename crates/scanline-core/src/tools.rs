@@ -345,6 +345,36 @@ pub const TOOLS: &[Tool] = &[
         read_only: true,
     },
     Tool {
+        name: "pixel_history",
+        description: "Everything that happened to one pixel of a capture: each event that covered it, in order, with the value before and after, and for a draw that covered it without changing it, why: outside the scissor box, culled, failed the depth or stencil test, masked, or blended to the same value. Use it when something should be at a pixel and is not. WebGL captures.",
+        schema: schema!(
+            r#"["capture", "x", "y"]"#,
+            r#""capture": { "type": "string" }"#,
+            r#""x": { "type": "integer", "description": "Pixels from the left of the target." }"#,
+            r#""y": { "type": "integer", "description": "Pixels from the top of the target." }"#,
+            r#""target": { "type": "string", "description": "A texture the frame drew to, such as tex_4. Default: the canvas." }"#,
+            session!(),
+        ),
+        read_only: true,
+    },
+    Tool {
+        name: "shader_analysis",
+        description: "What a shader could cost, read from its source: texture samples and how many of them are inside loops, loop counts, branches, discard, derivatives, costly maths calls, and inputs declared but never used. For a shader, or every shader of a program or pipeline. Live, or from a capture's copy. Static figures, not measurements.",
+        schema: schema!(
+            r#"["handle"]"#,
+            r#""handle": { "type": "string", "description": "shd_2, prg_1 or pip_3." }"#,
+            r#""capture": { "type": "string", "description": "Read the copy this capture holds, instead of the live object." }"#,
+            session!(),
+        ),
+        read_only: true,
+    },
+    Tool {
+        name: "lint",
+        description: "What is worth a look, most serious first. For a capture: rejected calls, draws that changed nothing, suspect viewports and scissor boxes, translucent draws out of order, textures that cannot be sampled, what the frame created. For a live session: likely leaks, objects made and destroyed over and over, logged errors.",
+        schema: schema!("[]", r#""capture": { "type": "string" }"#, session!()),
+        read_only: true,
+    },
+    Tool {
         name: "compare",
         description: "Two captures against each other: events one has and the other lacks, events that have moved in the order, differences in state and in uniform values between events that line up, what each used that the other did not, and how their final pictures differ, with a heat map. For a frame that looks wrong against one that looks right.",
         schema: schema!(
@@ -437,7 +467,7 @@ pub const TOOLS: &[Tool] = &[
     Tool {
         name: "help",
         description: "How to use Scanline: the workflow, input events, and what is not built yet. Matches this version exactly.",
-        schema: schema!("[]", r#""topic": { "type": "string", "enum": ["workflow", "input", "capture", "handoff", "sql", "limits"] }"#),
+        schema: schema!("[]", r#""topic": { "type": "string", "enum": ["workflow", "input", "capture", "analysis", "handoff", "sql", "limits"] }"#),
         read_only: true,
     },
 ];
@@ -465,7 +495,8 @@ Looking inside
   stats()                                frame times and draw counts: is it actually slow?
   region_stats(region: {…})             is this area blank, clipped, one colour?
   diff(a, b)                             what changed between two screenshots
-  capture()                              a whole frame to take apart: see help(topic: \"capture\")
+  capture()                              a whole frame to take apart: see help(topic: \"capture\"),
+                                         and help(topic: \"analysis\") for pixel history and compare
 
 Principles
   - Numbers before images. Ask pixels for a value; ask screenshot when you have to look.
@@ -550,8 +581,8 @@ Not built yet (planned, in this order):
     key, the flight recorder, runs, one owner of the input): a Debug hotkey that works when
     some other application has the keyboard, annotation by clicking on the frozen frame, a
     gamepad, and pointer lock.
-  - Analysis: pixel history, overdraw and other views, per-draw GPU time. A first set of
-    lints is built: the capture's \"Worth a look\" list.
+  - Analysis, beyond what is built (pixel history, compare, lint, shader_analysis): views
+    such as overdraw and wireframe, vertex data, GPU time per draw, pixel history for WebGPU.
   - Live patching: shader replacement, uniform and state overrides.
 
 Known limits
@@ -564,8 +595,8 @@ Known limits
   - Draw and triangle counts are per frame as issued; WebGPU triangle counts are not known yet.
   - Texture readback: compressed, depth and stencil formats are not read yet, nor multisampled
     textures. A capture that uses one replays it empty, and its replay check says so.
-  - pixel_source lists the events that changed a pixel. Fragments a test rejected are not listed;
-    draw says which test rejected a draw that changed nothing at all.
+  - pixel_source lists the events that changed a pixel; pixel_history adds the draws that
+    covered it and were rejected (WebGL 2). Neither reads depth values: WebGL cannot.
   - What each event changed is measured when a capture is taken, by reading its target back
     around every event. A frame too large for that (many events on large targets) goes without.
   - \"Last used\" is tracked for WebGL objects only.
@@ -683,6 +714,33 @@ Examples
   select command, method from commands where args like '%SCISSOR_TEST%'
   select draw, viewport, pixels_changed, changed_box from draws where pixels_changed = 0";
 
+const ANALYSIS: &str = "\
+Going deeper into a capture
+
+  pixel_history(capture, x, y)           everything that happened to one pixel: each event that
+                                         covered it, the value before and after, and for a draw
+                                         that covered it and changed nothing, which test turned
+                                         it away (scissor, cull, depth, stencil, colour mask)
+  compare(a, b)                          two captures: events only one has, events that moved in
+                                         the order, state and uniforms that differ, and how the
+                                         final pictures differ
+  lint(capture)                          what is worth a look in the frame, most serious first
+  lint()                                 the same for the live page: leaks, churn, logged errors
+  shader_analysis(handle)                what a shader could cost, read from its source: samples,
+                                         samples in loops, branches, discard. capture: \"cap_1\"
+                                         reads the capture's copy
+
+Which to reach for
+  Something should be at a pixel and is not        pixel_history at that pixel
+  It is right in one frame and wrong in another    compare the two captures
+  It was right before a change                     capture before and after, then compare
+  A pass is slow                                   shader_analysis of the pipeline or program
+                                                   its draws use
+
+pixel_history is for WebGL captures (WebGL 2 for rejected fragments). A draw whose shader
+discards every fragment at the pixel cannot be told from one that never covered it.
+shader_analysis reads text: it says what a shader could cost, not what it did.";
+
 const HANDOFF: &str = "\
 Working with the person at the keyboard
 
@@ -725,6 +783,7 @@ replay against; the others say so and rest on that one check.";
 pub fn help(topic: Option<&str>) -> String {
     match topic {
         Some("handoff") => HANDOFF.to_string(),
+        Some("analysis") => ANALYSIS.to_string(),
         Some("input") => INPUT.to_string(),
         Some("capture") => CAPTURE.to_string(),
         Some("sql") => SQL.to_string(),

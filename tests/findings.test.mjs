@@ -26,7 +26,14 @@ function scanline (...args)
     {
         execFile(binary, args.map(String), { env, timeout: 60000 }, (error, stdout, stderr) =>
         {
-            resolve({ code: error ? error.code ?? 1 : 0, out: (stdout + stderr).trim() });
+            let json = null;
+
+            if (args.includes('--json'))
+            {
+                try { json = JSON.parse(stdout); } catch { /* an error message, not JSON */ }
+            }
+
+            resolve({ code: error ? error.code ?? 1 : 0, out: (stdout + stderr).trim(), json });
         });
     });
 }
@@ -256,6 +263,123 @@ describe('what a capture says about each planted bug', () =>
         const draw = await scanline('draw', capture, 1, '--session', session);
 
         assert.match(draw.out, /It is a feedback loop: tex_3 is the target being drawn to and is also bound on texture unit 0/);
+    });
+});
+
+describe('the history of a pixel', () =>
+{
+    const history = async (capture, session, x, y) => (await scanline('pixel_history', capture, x, y, '--session', session, '--json'));
+    const events = (reply) => reply.json.data.history.map((row) => [row.draw, row.changed]);
+
+    test('b00: a crate seen through the glass was cleared, drawn, then tinted', async () =>
+    {
+        const { capture, session } = await captured('b00');
+        const reply = await history(capture, session, 250, 210);
+
+        assert.equal(reply.code, 0, reply.out);
+        assert.deepEqual(events(reply), [[4, true], [7, true], [9, true]]);
+        assert.deepEqual(reply.json.data.history[1].after, [185, 129, 74, 255]);
+        assert.deepEqual(reply.json.data.history[2].after, [131, 118, 146, 255]);
+        assert.match(reply.json.summary, /Its final value \(131, 118, 146, 255\) was produced by event 9/);
+        assert.match(reply.json.summary, /18 other draws on this target did not reach the pixel/);
+
+        // The ground is under none of that: only the clear and the ground touch a pixel of it.
+        assert.deepEqual(events(await history(capture, session, 30, 320)), [[4, true], [5, true]]);
+
+        // The minimap's texture has a history of its own.
+        const map = await scanline('pixel_history', capture, 13, 24, '--target', 'tex_3', '--session', session, '--json');
+
+        assert.equal(map.code, 0, map.out);
+        assert.ok(map.json.data.history.length >= 2, map.json.summary);
+    });
+
+    test('b01: where a crate should be, its draw was culled', async () =>
+    {
+        const { capture, session } = await captured('b01');
+        const reply = await history(capture, session, 100, 220);
+
+        assert.deepEqual(events(reply), [[4, true], [6, false]]);
+        assert.deepEqual(reply.json.data.history[1].passes, { scissor: true, cull: false, depth: true, stencil: null });
+        assert.match(reply.json.summary, /event {4}6 {2}REJECTED: its triangle is culled \(cull BACK, front face CW\)/);
+    });
+
+    test('b05: the ground failed the depth test', async () =>
+    {
+        const { capture, session } = await captured('b05');
+        const reply = await history(capture, session, 30, 320);
+
+        assert.deepEqual(events(reply), [[4, true], [5, false]]);
+        assert.match(reply.json.summary, /event {4}5 {2}REJECTED: it fails the depth test \(LESS\)/);
+    });
+
+    test('b06: the crate was drawn over the glass', async () =>
+    {
+        const { capture, session } = await captured('b06');
+
+        assert.deepEqual(events(await history(capture, session, 250, 210)), [[4, true], [6, true], [8, true]]);
+    });
+
+    test('b07: everything in the middle of the canvas fell outside the scissor box', async () =>
+    {
+        const { capture, session } = await captured('b07');
+        const reply = await history(capture, session, 240, 200);
+
+        assert.ok(reply.json.data.history.length >= 3);
+        assert.ok(reply.json.data.history.every((row) => !row.changed && row.passes.scissor === false), reply.json.summary);
+        assert.match(reply.json.summary, /REJECTED: it is outside the scissor box \(12, 336, 150, 12\)/);
+    });
+});
+
+describe('lint and shader analysis', () =>
+{
+    test('lint gathers what is worth a look, for a capture and for a live session', async () =>
+    {
+        const { capture, session } = await captured('b10', 30);
+        const frame = await scanline('lint', '--capture', capture, '--session', session, '--json');
+
+        assert.equal(frame.json.data.findings.length, 1);
+        assert.match(frame.json.summary, /1 thing worth a look/);
+        assert.match(frame.json.summary, /The frame itself created 1 texture and deleted nothing/);
+
+        const live = await scanline('lint', '--session', session, '--json');
+
+        assert.match(live.json.data.findings[0], /^LIKELY LEAK: \d+ textures still alive/);
+
+        // A frame with nothing wrong, and a page with nothing wrong.
+        const good = await captured('b00');
+
+        assert.match((await scanline('lint', '--capture', good.capture, '--session', good.session)).out, /nothing stands out/);
+        assert.match((await scanline('lint', '--session', good.session)).out, /nothing stands out in the page's objects or its console/);
+
+        // A rejected call comes first.
+        const loop = await captured('b12');
+        const rejected = await scanline('lint', '--capture', loop.capture, '--session', loop.session, '--json');
+
+        assert.match(rejected.json.data.findings[0], /^The browser rejected call \d+ \(gl\.drawArrays\): INVALID_OPERATION/);
+    });
+
+    test('a shader is read for what it could cost, live and from a capture', async () =>
+    {
+        const { capture, session } = await captured('b00');
+
+        await scanline('resources', 'program', '--session', session);
+
+        const live = await scanline('shader_analysis', 'prg_1', '--session', session, '--json');
+
+        assert.equal(live.code, 0, live.out);
+        assert.deepEqual(live.json.data.shaders.map((shader) => shader.stage), ['vertex shader', 'fragment shader']);
+        assert.equal(live.json.data.shaders[1].figures.samples, 1);
+        assert.equal(live.json.data.shaders[1].figures.samples_per_run, 1);
+        assert.match(live.json.summary, /Texture samples: 1 call site, none in a loop/);
+        assert.match(live.json.summary, /static, not measured/);
+
+        const kept = await scanline('shader_analysis', 'prg_1', '--capture', capture, '--json');
+
+        assert.deepEqual(kept.json.data.shaders.map((shader) => shader.figures), live.json.data.shaders.map((shader) => shader.figures));
+
+        const wrong = await scanline('shader_analysis', 'tex_1', '--session', session);
+
+        assert.equal(wrong.code, 1);
     });
 });
 

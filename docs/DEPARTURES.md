@@ -142,6 +142,27 @@ Over budget on both. Most of it is the row of state built at every draw (WebGL c
 
 A frame taken from a recording is replayed from the recording's first frame. That is simple and exact, and it makes questions about late frames of a heavy scene slow: a keyframe every so often would fix it.
 
+## Milestone 5 so far
+
+"Pixel history is correct on hand-checked fixtures including `discard`, written depth and MSAA. The planted performance and memory bugs are diagnosed by an agent."
+
+| Criterion | Standing |
+|---|---|
+| Pixel history correct on hand-checked fixtures | Correct on the planted bugs, where the answer is known: the culled crates, the depth clear, the scissor left on, the glass before and after the crates. **Not checked on a shader that discards, one that writes depth, or a multisampled target.** A draw whose every fragment is discarded at the pixel is reported as not reaching it. |
+| The planted performance and memory bugs are diagnosed by an agent | Met in both evaluation rounds (b10, b11). |
+
+Built: `pixel_history` (WebGL; rejected fragments need WebGL 2), `compare`, `lint`, `shader_analysis`.
+
+| The specification says | The code does | Why |
+|---|---|---|
+| Pixel history finds candidates with a draw-ID pass, then replays each candidate about six times. | One replay of the frame. Before each draw the same draw is issued again with every write masked and the scissor box shrunk to the pixel, inside an occlusion query: once with all tests off, then with culling, depth and stencil on one at a time. | Nothing is written, so the frame carries on untouched and every draw is tested in one pass. No shader is rewritten. |
+| Pixel history gives depth before and after. | Colour only. | WebGL cannot read a depth buffer back. |
+| `discard` is detected by replaying with a constant fragment shader. | Not detected. | Needs the shader replacement of milestone 6. |
+| Static shader analysis uses a parser (`naga`, ANGLE's translator). | A reading of the text: words and braces. It counts sample calls, loops with constant bounds, branches, `discard`, and inputs never mentioned again. | Enough for "64 samples in a loop". It does not follow function calls, so a sample inside a helper called from a loop is counted once. |
+| `gfx_compare` gives per-target image differences. | The final pictures only. | Intermediate targets are not stored; they come from replay. |
+
+Not built from the milestone's list: the views (overdraw, wireframe, depth, stencil, mip, NaN), geometry and vertex stage output, per-draw GPU time, translated shaders in a capture, the GPU process's real memory, exact error attribution beyond what a capture's rejected calls give, and tracing.
+
 ## WebGPU capture: what it does not do
 
 - Which test rejected a draw that changed nothing. The tests are part of the pipeline, so trying a draw without one means building the pipeline again without it.

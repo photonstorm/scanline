@@ -1040,7 +1040,7 @@ async fn memory_diff(session: &Arc<Session>, params: &Value) -> Result<Value> {
 
 /// Counts by kind (alive, bytes, created in all), the lines of code many live objects came
 /// from, and the frame the page is on.
-async fn overview(session: &Arc<Session>) -> Result<(BTreeMap<String, (u64, f64, u64)>, Vec<Value>, u64)> {
+pub(crate) async fn overview(session: &Arc<Session>) -> Result<(BTreeMap<String, (u64, f64, u64)>, Vec<Value>, u64)> {
     let reports = session.probe_all("registry.summary", json!({}), SHORT).await;
 
     if reports.is_empty() {
@@ -1070,7 +1070,7 @@ async fn overview(session: &Arc<Session>) -> Result<(BTreeMap<String, (u64, f64,
 }
 
 /// What the counts say about objects made again and again: kept (a leak) or thrown away (churn).
-fn growth(kinds: &BTreeMap<String, (u64, f64, u64)>, sites: &[Value]) -> Vec<String> {
+pub(crate) fn growth(kinds: &BTreeMap<String, (u64, f64, u64)>, sites: &[Value]) -> Vec<String> {
     let mut lines = Vec::new();
 
     for site in sites.iter().take(3) {

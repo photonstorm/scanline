@@ -4,12 +4,17 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use anyhow::{Context, Result, bail};
+use std::time::Duration;
+
+use anyhow::{Context, Result, anyhow, bail};
 use scanline_image::Image;
 use serde_json::{Value, json};
 
-use crate::capture::{describe_event, draw_state, flatten, rows_as_objects, runs};
+use scanline_store::Sql;
+
+use crate::capture::{LONG, about, describe_event, draw_state, flatten, load_into, rows_as_objects, runs, target_of, the_capture};
 use crate::commands::page_text;
+use crate::inventory::{gl_name, list};
 use crate::{Host, result};
 
 const COLUMNS: &str = "draw, kind, method, pass, target, mode, count, instances, indexed, program, blend, blend_src, blend_dst, depth_test, depth_write, depth_func, stencil_test, cull, scissor, viewport, textures, gl_error, target_width, target_height, pixels_changed, changed_box";
@@ -340,4 +345,724 @@ pub fn compare(host: &Arc<Host>, params: &Value) -> Result<Value> {
     value["images"] = images;
 
     Ok(value)
+}
+
+/// The history of a pixel: every event that covered it, in order, whether or not it
+/// changed it, and for a draw that did not, which test turned its fragments away.
+pub async fn pixel_history(host: &Arc<Host>, params: &Value) -> Result<Value> {
+    let (handle, meta) = the_capture(host, params)?;
+    let (Some(x), Some(y)) = (params["x"].as_i64(), params["y"].as_i64()) else {
+        bail!("pixel_history needs x and y, in pixels from the top-left of the target.")
+    };
+    let (target, target_name) = target_of(host, &handle, params)?;
+    let session = host.replayer(params)?;
+
+    load_into(host, &session, &handle).await?;
+
+    let reply = session.replay("history", &json!({ "key": handle, "x": x, "y": y, "target": target }), LONG).await?;
+
+    if reply["unsupported"].is_string() {
+        bail!(
+            "pixel_history is built for WebGL captures. For a WebGPU capture, pixel_source lists the events that changed a pixel, and draw_list marks events that changed nothing."
+        );
+    }
+
+    let float = reply["float"] == true;
+    let show = |value: &Value| match value.as_array() {
+        Some(channels) => format!(
+            "({})",
+            channels
+                .iter()
+                .map(|channel| if float { format!("{}", (channel.as_f64().unwrap_or(0.0) * 1e4).round() / 1e4) } else { channel.to_string() })
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        None => "(nothing)".to_string(),
+    };
+
+    let rows = reply["rows"].as_array().cloned().unwrap_or_default();
+    let queries = reply["queries"] == true;
+    let mut lines = vec![format!("{} pixel ({x}, {y}) of {target_name}: its history through the frame. gpu-measured.", about(host, params, &handle, &meta))];
+    let mut out = Vec::new();
+    let (mut shown, mut missed) = (0, 0);
+
+    for row in &rows {
+        let index = row["draw"].as_i64().unwrap_or(0);
+        let state = draw_state(host, &handle, &json!(index))?;
+        let changed = row["before"] != row["after"];
+        let what = host
+            .store
+            .query(&handle, "SELECT kind, mode, count, program, blend FROM draws WHERE draw = ?1", &[Sql::Integer(index)], 1)?
+            .rows
+            .first()
+            .map(|event| {
+                if event[0] == "draw" {
+                    format!(
+                        "{} ×{} with {}{}",
+                        event[1].as_str().unwrap_or(""),
+                        event[2],
+                        event[3].as_str().unwrap_or("?"),
+                        if event[4] == 1 { ", blended" } else { "" }
+                    )
+                } else {
+                    event[0].as_str().unwrap_or("").to_string()
+                }
+            })
+            .unwrap_or_default();
+
+        // What became of it.
+        let outcome = if changed {
+            format!("{} → {}", show(&row["before"]), show(&row["after"]))
+        } else if row["kind"] != "draw" {
+            if row["scissor"] == false { "left it alone: the pixel is outside the scissor box".to_string() } else { "left it as it was".to_string() }
+        } else if row["covered"] == false {
+            // No fragment landed on the pixel, or the shader discarded every one that did.
+            missed += 1;
+            continue;
+        } else if row["covered"].is_null() {
+            // No occlusion queries: all that is known is that the value did not change.
+            missed += 1;
+            continue;
+        } else {
+            let mut reasons = Vec::new();
+
+            if row["scissor"] == false {
+                reasons.push(format!("it is outside the scissor box ({})", list(&state["scissor"])));
+            }
+
+            if row["cull"] == false {
+                reasons.push(format!("its triangle is culled (cull {}, front face {})", gl_name(&state["cull"]), gl_name(&state["frontFace"])));
+            }
+
+            if row["stencil"] == false {
+                reasons.push("it fails the stencil test".to_string());
+            }
+
+            if row["depth"] == false {
+                reasons.push(format!("it fails the depth test ({})", gl_name(&state["depth"]["func"])));
+            }
+
+            if state["colorMask"].as_array().is_some_and(|mask| mask.iter().all(|channel| channel == false)) {
+                reasons.push("the colour mask lets nothing through".to_string());
+            }
+
+            if !state["glError"].is_null() {
+                reasons.push(format!("the browser rejected the call ({})", page_text(state["glError"].as_str().unwrap_or(""), 80)));
+            }
+
+            if reasons.is_empty() {
+                "covered the pixel and passed every test, but left its value as it was (blending, or it wrote the same colour)".to_string()
+            } else {
+                format!("REJECTED: {}", reasons.join("; "))
+            }
+        };
+
+        shown += 1;
+        lines.push(format!("  event {index:>4}  {outcome}   [{what}]"));
+        out.push(json!({
+            "draw": index,
+            "kind": row["kind"],
+            "before": row["before"],
+            "after": row["after"],
+            "changed": changed,
+            "covered": row["covered"],
+            "passes": { "scissor": row["scissor"], "cull": row["cull"], "depth": row["depth"], "stencil": row["stencil"] },
+        }));
+    }
+
+    if shown == 0 {
+        lines.push("  No event on this target touched the pixel.".into());
+    }
+
+    lines.push(if queries {
+        format!(
+            "{missed} other draw{} on this target did not reach the pixel: no fragment of theirs landed on it, or their shader discarded every one that did (the two cannot be told apart).",
+            if missed == 1 { "" } else { "s" }
+        )
+    } else {
+        "This is a WebGL 1 capture, which has no occlusion queries: only events that changed the pixel are listed, and a draw a test rejected is not.".to_string()
+    });
+
+    if let Some(last) = out.iter().rev().find(|row| row["changed"] == true) {
+        lines.push(format!(
+            "Its final value {} was produced by event {}. draw(capture: \"{handle}\", draw: {}) gives that event in full.",
+            show(&last["after"]),
+            last["draw"],
+            last["draw"]
+        ));
+    }
+
+    if meta["replay_matches"] != true {
+        lines.push("Warning: this capture's replay did not match the original frame, so this may be wrong.".into());
+    }
+
+    Ok(result(
+        lines.join("\n"),
+        json!({ "capture": handle, "x": x, "y": y, "target": target_name, "history": out, "not_reaching": missed, "provenance": "gpu-measured", "ms": reply["ms"] }),
+    ))
+}
+
+// ---- Reading a shader ----
+
+const SAMPLERS: &[&str] = &[
+    // GLSL
+    "texture",
+    "texture2D",
+    "textureCube",
+    "textureLod",
+    "texture2DLod",
+    "textureCubeLod",
+    "textureGrad",
+    "texelFetch",
+    "textureProj",
+    "texture2DProj",
+    "textureOffset",
+    "textureLodOffset",
+    "textureProjLod",
+    "texelFetchOffset",
+    "textureGather",
+    // WGSL
+    "textureSample",
+    "textureSampleLevel",
+    "textureSampleBias",
+    "textureSampleGrad",
+    "textureSampleCompare",
+    "textureSampleCompareLevel",
+    "textureLoad",
+    "textureSampleBaseClampToEdge",
+    "textureGatherCompare",
+];
+
+const MATHS: &[&str] = &[
+    "pow",
+    "exp",
+    "exp2",
+    "log",
+    "log2",
+    "sin",
+    "cos",
+    "tan",
+    "asin",
+    "acos",
+    "atan",
+    "atan2",
+    "sqrt",
+    "inversesqrt",
+    "inverseSqrt",
+    "normalize",
+    "length",
+    "distance",
+    "reflect",
+    "refract",
+    "smoothstep",
+];
+
+const DERIVATIVES: &[&str] = &["dFdx", "dFdy", "fwidth", "dpdx", "dpdy", "dpdxFine", "dpdyFine", "dpdxCoarse", "dpdyCoarse", "fwidthFine", "fwidthCoarse"];
+
+/// A shader's text as words and punctuation, comments left out.
+fn tokens(source: &str) -> Vec<String> {
+    let bytes: Vec<char> = source.chars().collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+
+    while i < bytes.len() {
+        let c = bytes[i];
+
+        if c == '/' && bytes.get(i + 1) == Some(&'/') {
+            while i < bytes.len() && bytes[i] != '\n' {
+                i += 1;
+            }
+        } else if c == '/' && bytes.get(i + 1) == Some(&'*') {
+            i += 2;
+
+            while i + 1 < bytes.len() && !(bytes[i] == '*' && bytes[i + 1] == '/') {
+                i += 1;
+            }
+
+            i += 2;
+        } else if c.is_alphanumeric() || c == '_' {
+            let start = i;
+
+            while i < bytes.len() && (bytes[i].is_alphanumeric() || bytes[i] == '_' || bytes[i] == '.') {
+                i += 1;
+            }
+
+            out.push(bytes[start..i].iter().collect());
+        } else {
+            if !c.is_whitespace() {
+                out.push(c.to_string());
+            }
+
+            i += 1;
+        }
+    }
+
+    out
+}
+
+/// What can be said of a shader from its text alone: how much it samples, loops and branches.
+fn read_shader(source: &str) -> Value {
+    let words = tokens(source);
+    let is_call = |index: usize| words.get(index + 1).is_some_and(|next| next == "(");
+    let wgsl = words.iter().any(|word| word == "fn") && !words.iter().any(|word| word == "void");
+
+    // Loops, each with the braces that hold its body and what is sampled inside.
+    let mut loops: Vec<Value> = Vec::new();
+    let mut open: Vec<(usize, usize)> = Vec::new(); // (brace depth of the body, index into loops)
+    let mut pending: Option<usize> = None;
+    let mut depth = 0usize;
+    let (mut samples, mut samples_in_loops, mut branches, mut discards, mut derivatives) = (0, 0, 0, 0, 0);
+    let mut maths: BTreeMap<String, u64> = BTreeMap::new();
+
+    for (index, word) in words.iter().enumerate() {
+        match word.as_str() {
+            "for" | "while" | "loop" if word == "loop" || is_call(index) => {
+                // The header, as written, and a count if it is a plain counted loop.
+                let header: Vec<&str> = words[index..].iter().take_while(|next| *next != "{").take(24).map(String::as_str).collect();
+                let bound =
+                    header.windows(2).find(|pair| pair[0] == "<" || pair[0] == "<=").and_then(|pair| pair[1].trim_end_matches(['u', 'i']).parse::<u64>().ok());
+
+                loops.push(json!({ "header": header.join(" "), "passes": bound, "samples": 0 }));
+                pending = Some(loops.len() - 1);
+            }
+            "{" => {
+                depth += 1;
+
+                if let Some(which) = pending.take() {
+                    open.push((depth, which));
+                }
+            }
+            "}" => {
+                if open.last().is_some_and(|entry| entry.0 == depth) {
+                    open.pop();
+                }
+
+                depth = depth.saturating_sub(1);
+            }
+            "if" => branches += 1,
+            "discard" => discards += 1,
+            name if is_call(index) && SAMPLERS.contains(&name) => {
+                samples += 1;
+
+                if !open.is_empty() {
+                    samples_in_loops += 1;
+
+                    for (_, which) in &open {
+                        loops[*which]["samples"] = json!(loops[*which]["samples"].as_u64().unwrap_or(0) + 1);
+                    }
+                }
+            }
+            name if is_call(index) && DERIVATIVES.contains(&name) => derivatives += 1,
+            name if is_call(index) && MATHS.contains(&name) => *maths.entry(name.to_string()).or_default() += 1,
+            _ => {}
+        }
+    }
+
+    // Inputs that are declared and then never mentioned again.
+    let mut unused = Vec::new();
+
+    for (index, word) in words.iter().enumerate() {
+        let name = match word.as_str() {
+            // GLSL: uniform [precision] type name
+            "uniform" | "attribute" | "varying" if !wgsl => words[index + 1..].iter().take_while(|next| *next != ";" && *next != "{" && *next != "[").last(),
+            // WGSL: var<uniform> name, or var name after a binding
+            "var" if wgsl && depth_at(&words, index) == 0 => {
+                let mut at = index + 1;
+
+                if words.get(at).is_some_and(|next| next == "<") {
+                    while at < words.len() && words[at] != ">" {
+                        at += 1;
+                    }
+
+                    at += 1;
+                }
+
+                words.get(at)
+            }
+            _ => None,
+        };
+
+        if let Some(name) = name.filter(|name| name.chars().next().is_some_and(|c| c.is_alphabetic() || c == '_')) {
+            let root = name.split('.').next().unwrap_or(name);
+            let uses = words.iter().filter(|other| other.split('.').next() == Some(root)).count();
+
+            if uses <= 1 {
+                unused.push(format!("{word} {name}"));
+            }
+        }
+    }
+
+    // The most samples one run of the shader could make, where loop counts can be read.
+    let mut estimate = samples - samples_in_loops;
+    let mut bounded = true;
+
+    for entry in &loops {
+        match entry["passes"].as_u64() {
+            Some(passes) => estimate += entry["samples"].as_u64().unwrap_or(0) * passes,
+            None if entry["samples"].as_u64().unwrap_or(0) > 0 => bounded = false,
+            None => {}
+        }
+    }
+
+    json!({
+        "language": if wgsl { "WGSL" } else { "GLSL" },
+        "lines": source.lines().filter(|line| !line.trim().is_empty()).count(),
+        "samples": samples,
+        "samples_in_loops": samples_in_loops,
+        "samples_per_run": if bounded { json!(estimate) } else { Value::Null },
+        "loops": loops,
+        "branches": branches,
+        "discards": discards,
+        "derivatives": derivatives,
+        "maths": maths,
+        "unused": unused,
+    })
+}
+
+/// How deep in braces a word is.
+fn depth_at(words: &[String], index: usize) -> usize {
+    words[..index].iter().fold(0usize, |depth, word| match word.as_str() {
+        "{" => depth + 1,
+        "}" => depth.saturating_sub(1),
+        _ => depth,
+    })
+}
+
+fn describe_reading(name: &str, what: &str, figures: &Value) -> Vec<String> {
+    let mut lines = vec![format!("{name}: {what}, {}, {} lines.", figures["language"].as_str().unwrap_or(""), figures["lines"])];
+    let samples = figures["samples"].as_u64().unwrap_or(0);
+
+    lines.push(match (samples, figures["samples_in_loops"].as_u64().unwrap_or(0)) {
+        (0, _) => "  Samples no textures.".to_string(),
+        (count, 0) => format!("  Texture samples: {count} call site{}, none in a loop: {count} a run at most.", if count == 1 { "" } else { "s" }),
+        (count, looped) => format!(
+            "  Texture samples: {count} call site{}, {looped} inside a loop: {}.",
+            if count == 1 { "" } else { "s" },
+            match figures["samples_per_run"].as_u64() {
+                Some(most) => format!("up to {most} samples every time the shader runs"),
+                None => "how many times it loops cannot be read from the text".to_string(),
+            }
+        ),
+    });
+
+    for entry in figures["loops"].as_array().into_iter().flatten() {
+        lines.push(format!(
+            "    loop «{}»{}{}",
+            page_text(entry["header"].as_str().unwrap_or(""), 70),
+            match entry["passes"].as_u64() {
+                Some(passes) => format!(": up to {passes} passes"),
+                None => String::new(),
+            },
+            match entry["samples"].as_u64().unwrap_or(0) {
+                0 => String::new(),
+                count => format!(", {count} sample{} each pass", if count == 1 { "" } else { "s" }),
+            }
+        ));
+    }
+
+    let maths: Vec<String> = figures["maths"].as_object().into_iter().flatten().map(|(name, count)| format!("{name} {count}")).collect();
+
+    lines.push(format!(
+        "  Branches: {}. discard: {}. Derivatives: {}. Costly maths calls: {}.",
+        figures["branches"],
+        if figures["discards"].as_u64().unwrap_or(0) > 0 { "yes" } else { "no" },
+        figures["derivatives"],
+        if maths.is_empty() { "none".to_string() } else { maths.join(", ") }
+    ));
+
+    let unused: Vec<&str> = figures["unused"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+
+    if !unused.is_empty() {
+        lines.push(format!("  Declared and never used: {}.", unused.join("; ")));
+    }
+
+    lines
+}
+
+/// Static figures for a shader, or for each shader of a program or pipeline. From a live
+/// object, or from a capture's copy of it.
+pub async fn shader_analysis(host: &Arc<Host>, params: &Value) -> Result<Value> {
+    let handle =
+        params["handle"].as_str().ok_or_else(|| anyhow!("shader_analysis needs handle: a shader (shd_2), a program (prg_1) or a pipeline (pip_3)."))?;
+    let mut sources: Vec<(String, String, String)> = Vec::new(); // (handle, what, source)
+
+    if let Some(capture) = params["capture"].as_str() {
+        // The capture's own copy: still there when the page has gone.
+        let detail = |name: &str| -> Result<Option<(String, Value, Option<String>)>> {
+            let rows = host.store.query(capture, "SELECT kind, detail, source FROM objects WHERE handle = ?1", &[Sql::Text(name.to_string())], 1)?;
+
+            Ok(rows.rows.first().map(|row| {
+                (
+                    row[0].as_str().unwrap_or("").to_string(),
+                    serde_json::from_str(row[1].as_str().unwrap_or("{}")).unwrap_or(Value::Null),
+                    row[2].as_str().map(str::to_string),
+                )
+            }))
+        };
+
+        let (kind, object, source) = detail(handle)?
+            .ok_or_else(|| anyhow!("{handle} is not an object of {capture}. query(capture, \"select handle, kind from objects\") lists them."))?;
+        let suffix = handle.split('_').nth(2).map(|tag| format!("_{tag}")).unwrap_or_default();
+
+        // The shaders an object is made of, by ID.
+        let mut wanted: Vec<i64> = Vec::new();
+
+        match kind.as_str() {
+            "shader" => sources.push((handle.to_string(), stage(&object), source.unwrap_or_default())),
+            "program" => wanted.extend(object["shaders"].as_array().into_iter().flatten().filter_map(Value::as_i64)),
+            "pipeline" => {
+                for part in ["vertex", "fragment", "compute"] {
+                    if let Some(id) = object["descriptor"][part]["module"]["id"].as_i64() {
+                        if !wanted.contains(&id) {
+                            wanted.push(id);
+                        }
+                    }
+                }
+            }
+            other => bail!("{handle} is a {other}. shader_analysis reads shaders, programs and pipelines."),
+        }
+
+        for id in wanted {
+            let name = format!("shd_{id}{suffix}");
+
+            if let Some((_, object, source)) = detail(&name)? {
+                sources.push((name, stage(&object), source.unwrap_or_default()));
+            }
+        }
+    } else {
+        let session = host.session(params)?;
+
+        session.check_alive()?;
+
+        let object = session.object(handle)?;
+        let detail = session.probe(&object.instance, "registry.get", json!({ "kind": object.kind, "id": object.id }), Duration::from_secs(20)).await?;
+
+        let mut wanted: Vec<i64> = Vec::new();
+
+        match object.kind {
+            "shader" => sources.push((handle.to_string(), stage(&detail), detail["source"].as_str().unwrap_or("").to_string())),
+            "program" => wanted.extend(detail["shaders"].as_array().into_iter().flatten().filter_map(Value::as_i64)),
+            "pipeline" => {
+                for part in ["vertex", "fragment", "compute"] {
+                    if let Some(id) = detail["descriptor"][part]["module"]["id"].as_i64() {
+                        if !wanted.contains(&id) {
+                            wanted.push(id);
+                        }
+                    }
+                }
+            }
+            other => bail!("{handle} is a {}. shader_analysis reads shaders, programs and pipelines.", other.replace('_', " ")),
+        }
+
+        for id in wanted {
+            let shader = session.probe(&object.instance, "registry.get", json!({ "kind": "shader", "id": id }), Duration::from_secs(20)).await?;
+
+            sources.push((session.object_handle(&object.instance, "shader", id), stage(&shader), shader["source"].as_str().unwrap_or("").to_string()));
+        }
+    }
+
+    if sources.is_empty() {
+        bail!("{handle} has no shader source to read.");
+    }
+
+    let mut lines = Vec::new();
+    let mut data = Vec::new();
+
+    for (name, what, source) in &sources {
+        let figures = read_shader(source);
+
+        lines.extend(describe_reading(name, what, &figures));
+        data.push(json!({ "handle": name, "stage": what, "figures": figures }));
+    }
+
+    lines.push("These figures are read from the source text: static, not measured. They say what a shader could cost, not what it did.".into());
+
+    Ok(result(lines.join("\n"), json!({ "handle": handle, "shaders": data, "provenance": "static" })))
+}
+
+fn stage(object: &Value) -> String {
+    // A capture holds WebGL's number for the stage; the live registry gives the word.
+    match (object["type"].as_u64(), object["type"].as_str()) {
+        (Some(0x8B31), _) | (_, Some("vertex")) => "vertex shader".to_string(),
+        (Some(0x8B30), _) | (_, Some("fragment")) => "fragment shader".to_string(),
+        _ => "shader module".to_string(),
+    }
+}
+
+/// What is worth a look, worst first: for a capture, the facts found when it was taken; for
+/// a live session, what its objects and its console say.
+pub async fn lint(host: &Arc<Host>, params: &Value) -> Result<Value> {
+    if params["capture"].is_string() {
+        let (handle, meta) = the_capture(host, params)?;
+        let mut found: Vec<String> = Vec::new();
+        let errors = meta["counts"]["gl_errors"].as_u64().unwrap_or(0);
+
+        if errors > 0 {
+            let rows = host.store.query(
+                &handle,
+                "SELECT command, method, gl_error FROM commands WHERE gl_error IS NOT NULL AND gl_error NOT LIKE 'dropped with%' ORDER BY command",
+                &[],
+                8,
+            )?;
+
+            for row in &rows.rows {
+                found.push(format!(
+                    "The browser rejected call {} ({}): {}. Such a call does nothing.",
+                    row[0],
+                    row[1].as_str().unwrap_or(""),
+                    page_text(row[2].as_str().unwrap_or(""), 200)
+                ));
+            }
+        }
+
+        if meta["replay_matches"] != true {
+            found.push(format!(
+                "Replaying this capture did not give the frame's own image ({}), so what replay says of it may be wrong.",
+                meta["replay"].as_str().unwrap_or("?")
+            ));
+        }
+
+        found.extend(meta["findings"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_string));
+
+        let mut lines = vec![format!(
+            "{}: {}.",
+            about(host, params, &handle, &meta),
+            match found.len() {
+                0 => "nothing stands out".to_string(),
+                1 => "1 thing worth a look".to_string(),
+                count => format!("{count} things worth a look, the most serious first"),
+            }
+        )];
+
+        lines.extend(found.iter().map(|finding| format!("  • {finding}")));
+        lines.push("These are facts about the frame, not verdicts. What is checked: rejected calls, draws that changed nothing, a viewport that is not its target's size, clears clipped by a scissor box, blended draws under opaque ones, blending off on a translucent colour, textures that cannot be sampled, and what the frame created and deleted.".into());
+
+        return Ok(result(lines.join("\n"), json!({ "capture": handle, "findings": found })));
+    }
+
+    let session = host.session(params)?;
+
+    session.check_alive()?;
+
+    let (kinds, sites, _) = crate::inventory::overview(&session).await?;
+    let mut found = crate::inventory::growth(&kinds, &sites);
+
+    session.settle().await;
+
+    let errors: Vec<String> = {
+        let state = session.state.lock().unwrap();
+
+        state.console.iter().filter(|line| crate::commands::is_error(&line.level, &line.text)).map(|line| page_text(&line.text, 160)).collect()
+    };
+
+    if !errors.is_empty() {
+        let mut distinct: Vec<&String> = Vec::new();
+
+        for error in &errors {
+            if !distinct.contains(&error) {
+                distinct.push(error);
+            }
+        }
+
+        found.insert(
+            0,
+            format!(
+                "{} error{} logged ({} distinct). The first: «{}». console(level: \"error\") has them all.",
+                errors.len(),
+                if errors.len() == 1 { "" } else { "s" },
+                distinct.len(),
+                distinct[0]
+            ),
+        );
+    }
+
+    let mut lines = vec![format!(
+        "{}: {}.",
+        session.id,
+        match found.len() {
+            0 => "nothing stands out in the page's objects or its console".to_string(),
+            1 => "1 thing worth a look".to_string(),
+            count => format!("{count} things worth a look"),
+        }
+    )];
+
+    lines.extend(found.iter().map(|finding| format!("  • {finding}")));
+    lines.push("For what a frame itself does wrong, take a capture: its summary, and lint(capture), list what stands out in it.".into());
+
+    Ok(result(lines.join("\n"), json!({ "session": session.id, "findings": found })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_glsl_shader_is_read_for_what_it_could_cost() {
+        let figures = read_shader(
+            r#"#version 300 es
+            precision mediump float;
+            uniform sampler2D scene;
+            uniform sampler2D unusedMap;   // never sampled
+            uniform vec2 direction;
+            in vec2 uv;
+            out vec4 colour;
+
+            void main () {
+                vec4 sum = texture(scene, uv);
+
+                /* a blur: 64 taps */
+                for (int i = 0; i < 64; i++) {
+                    sum += texture(scene, uv + direction * float(i));
+
+                    if (sum.a > 4.0) { discard; }
+                }
+
+                colour = vec4(pow(sum.rgb / 65.0, vec3(2.2)), 1.0);
+            }"#,
+        );
+
+        assert_eq!(figures["language"], "GLSL");
+        assert_eq!(figures["samples"], 2);
+        assert_eq!(figures["samples_in_loops"], 1);
+        assert_eq!(figures["samples_per_run"], 65, "one outside the loop, 64 passes of one inside");
+        assert_eq!(figures["loops"][0]["passes"], 64);
+        assert_eq!(figures["branches"], 1);
+        assert_eq!(figures["discards"], 1);
+        assert_eq!(figures["maths"]["pow"], 1);
+        assert_eq!(figures["unused"], json!(["uniform unusedMap"]));
+    }
+
+    #[test]
+    fn a_wgsl_module_is_read_too() {
+        let figures = read_shader(
+            r#"
+            @group(0) @binding(0) var colourMap: texture_2d<f32>;
+            @group(0) @binding(1) var smooth: sampler;
+            @group(0) @binding(2) var<uniform> settings: vec4f;
+            @group(0) @binding(3) var<uniform> spare: vec4f;
+
+            @fragment fn fs (@location(0) uv: vec2f) -> @location(0) vec4f {
+                var total = vec4f(0.0);
+
+                for (var i = 0u; i < 8u; i++) {
+                    total += textureSample(colourMap, smooth, uv + settings.xy * f32(i));
+                }
+
+                return total / 8.0;
+            }"#,
+        );
+
+        assert_eq!(figures["language"], "WGSL");
+        assert_eq!(figures["samples"], 1);
+        assert_eq!(figures["samples_per_run"], 8);
+        assert_eq!(figures["unused"], json!(["var spare"]));
+    }
+
+    #[test]
+    fn events_are_lined_up_in_order() {
+        let a: Vec<String> = ["clear", "ground", "glass", "crate", "crate", "hud"].iter().map(|s| s.to_string()).collect();
+        let b: Vec<String> = ["clear", "ground", "crate", "crate", "glass", "hud"].iter().map(|s| s.to_string()).collect();
+
+        assert_eq!(align(&a, &b), vec![(0, 0), (1, 1), (3, 2), (4, 3), (5, 5)]);
+    }
 }

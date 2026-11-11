@@ -27,9 +27,9 @@ fn positional(command: &str) -> &'static [&'static str] {
         "draw_list" | "pass_tree" => &["capture"],
         "draw" => &["capture", "draw"],
         "draw_diff" => &["capture", "a", "b"],
-        "pixel_source" => &["capture", "x", "y"],
+        "pixel_source" | "pixel_history" => &["capture", "x", "y"],
         "query" => &["capture", "sql"],
-        "resource" => &["handle"],
+        "resource" | "shader_analysis" => &["handle"],
         "request_human" => &["instruction"],
         "recording" => &["recording"],
         "replay_run" => &["run"],
@@ -74,7 +74,7 @@ pub fn usage() -> String {
         String::new(),
         "Exit status: 0 done, 1 error, 2 ran but found nothing (a wait that timed out, a run_until not met).".into(),
         String::new(),
-        "`scanline help` explains the workflow; `scanline help capture`, `handoff`, `input`, `sql` and `limits` the rest.".into(),
+        "`scanline help` explains the workflow; `scanline help capture`, `analysis`, `handoff`, `input`, `sql` and `limits` the rest.".into(),
         "`scanline <command> --help` lists one command's arguments, with an example.".into(),
         format!("Files are kept in {} (set SCANLINE_HOME to move them).", scanline_core::default_home().display()),
     ]);
@@ -150,6 +150,7 @@ pub fn command_usage(name: &str) -> Option<String> {
         "draw" => "scanline draw cap_1 7",
         "draw_diff" => "scanline draw_diff cap_1 6 7",
         "pixel_source" => "scanline pixel_source cap_1 240 200",
+        "pixel_history" => "scanline pixel_history cap_1 240 200",
         "query" => "scanline query cap_1 \"select draw, viewport from draws\"",
         "resources" => "scanline resources texture --sort created",
         "resource" => "scanline resource tex_3 --preview",
@@ -163,6 +164,8 @@ pub fn command_usage(name: &str) -> Option<String> {
         "debug" => "scanline debug --x 412 --y 288 --note \"this corner\"",
         "recording" => "scanline recording rec_1",
         "compare" => "scanline compare cap_2 cap_3",
+        "shader_analysis" => "scanline shader_analysis prg_1",
+        "lint" => "scanline lint --capture cap_1",
         "strip" => "scanline strip --open",
         "take_control" => "scanline take_control",
         "save_run" => "scanline save_run",
@@ -294,7 +297,7 @@ pub async fn run(args: Vec<String>) -> Result<ExitCode> {
     } else if parsed.command == "help" {
         // A command's name is a topic too.
         let topic = parsed.params["topic"].as_str();
-        let is_topic = |topic: &str| ["workflow", "input", "capture", "handoff", "sql", "limits", "help"].contains(&topic);
+        let is_topic = |topic: &str| ["workflow", "input", "capture", "analysis", "handoff", "sql", "limits", "help"].contains(&topic);
         let text = match topic.filter(|topic| !is_topic(topic)).and_then(|topic| command_usage(&topic.replace('-', "_"))) {
             Some(usage) => usage,
             None => format!("{}\n\n{CALLS}", scanline_core::help(topic)),

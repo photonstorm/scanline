@@ -27,6 +27,7 @@ Early. The first three milestones of the build plan ("eyes and hands", "inventor
 - What a capture volunteers: draws that changed nothing, calls the browser rejected, a viewport that is not its target's size, a clear clipped by a scissor box left on, translucent draws in the wrong order or with blending off, a bound texture that cannot be sampled, and what the frame created and deleted. For a draw that changed nothing, which test rejected it, found by replaying it with each test off in turn. For each uniform at a draw, the call that set it.
 - Leaks and churn: many live objects from one line of code, or objects made and destroyed every frame, are flagged by `resources` and `memory`.
 - Planted bugs: one scene with twelve known bugs (`fixtures/bugs/`), tests that pin down what Scanline says about each, and an evaluation in which agents diagnose them with nothing but Scanline (`evals/`).
+- Analysis of a capture: the history of a pixel (every draw that covered it, and for one that changed nothing, the test that rejected it); two captures compared (events moved, added or removed, state that differs, the pictures' difference); a lint; and what a shader could cost, read from its source.
 - Working with a person: the agent asks them to play and press Debug (F9 in the page) when the bug shows. The press freezes the page and captures the frame there and then, and the flight recorder has kept the frames before it (120 by default). A recording says which of its frames draw something different from the rest, gives a contact sheet of every frame, and any frame can be made a capture.
 - The control strip: a small window under the game's, in the same browser, that shows the person who is driving, what the agent asked of them, the frame number and whether frames are being recorded, with Debug, Pause and Step buttons. This is the only interface there is so far.
 - One owner of the input: when the agent takes control, the person's keys and mouse are kept out of the page; when the person has it, the agent may look but not act.
@@ -38,7 +39,7 @@ Early. The first three milestones of the build plan ("eyes and hands", "inventor
 
 - For WebGPU captures: which test rejected a draw, uniform values by name (WGSL reflection), render bundles built before the frame, external textures.
 - A runner that starts the evaluation's agents by itself (the bugs, prompts and scorer exist: see `evals/`).
-- Full pixel history (rejected fragments, pixel by pixel), overdraw and other views, per-draw GPU time.
+- Overdraw, wireframe and the other views, vertex data, per-draw GPU time, and pixel history for WebGPU.
 - Live patching of shaders, uniforms and state.
 - The rest of the interface: the capture viewer, live graphs and the activity log. A Debug hotkey that works when another application has the keyboard. Recorded network responses and gamepad input for runs.
 - The browser's real GPU memory. WGSL reflection. Readback of compressed, depth and multisampled textures.

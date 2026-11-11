@@ -1515,6 +1515,207 @@ const api = {
         return { unchanged, tried, together, ms: performance.now() - started };
     },
 
+    // The history of one pixel: every event on its target, with the pixel's value before and
+    // after, and for draws whether the pixel was covered at all and which tests it passed.
+    //
+    // Coverage and the tests are found with occlusion queries (WebGL 2). Just before each
+    // draw, the same draw is issued again with every write masked off and the scissor box
+    // shrunk to the one pixel: first with all tests off (did any fragment land here?), then
+    // with one test on at a time (did it survive culling, the depth test, the stencil
+    // test?). Nothing is written, so the frame goes on as if the extra draws never happened.
+    async history (args: { key: string; x: number; y: number; target?: Json }): Promise<Json>
+    {
+        const item = capture(args.key);
+
+        if (isGpu(item))
+        {
+            return { unsupported: 'webgpu' };
+        }
+
+        const run = new Run(item);
+        const gl = run.gl;
+        const started = performance.now();
+
+        try
+        {
+            const byCommand = new Map<number, number>();
+
+            item.data.draws.forEach((row, index) => byCommand.set(row.command, index));
+
+            const rows: Json[] = [];
+            const queries: Array<{ row: Json; test: string; query: any }> = [];
+
+            let geometry: { framebuffer: any; width: number; height: number; float: boolean; scratch: any } | null = null;
+            let current: Json | null = null;
+
+            const value = (): number[] => Array.from(run.read(geometry!.framebuffer, args.x, geometry!.height - 1 - args.y, 1, 1, geometry!.float));
+
+            const ask = (row: Json, test: string, command: Json): void =>
+            {
+                const query = gl.createQuery();
+
+                gl.beginQuery(0x8C2F, query);
+                run.execute(command);
+                gl.endQuery(0x8C2F);
+                queries.push({ row, test, query });
+            };
+
+            run.play(item.data.commands.length, (index) =>
+            {
+                if (current !== null && byCommand.get(index) === current.draw)
+                {
+                    current.after = value();
+                    rows.push(current);
+                    current = null;
+                }
+            },
+            (index) =>
+            {
+                const draw = byCommand.get(index);
+
+                if (draw === undefined || !sameTarget(item.data.draws[draw], args.target))
+                {
+                    return;
+                }
+
+                const event = item.data.draws[draw];
+
+                if (geometry === null)
+                {
+                    // The target exists by now: an event is about to draw to it.
+                    try
+                    {
+                        geometry = run.targetFramebuffer(args.target);
+                    }
+                    catch
+                    {
+                        return;
+                    }
+
+                    if (args.x < 0 || args.y < 0 || args.x >= geometry.width || args.y >= geometry.height)
+                    {
+                        throw new Error(`(${args.x}, ${args.y}) is outside the target, which is ${geometry.width}×${geometry.height}.`);
+                    }
+                }
+
+                const bottom = geometry.height - 1 - args.y;
+                const box: number[] | null = event.scissor ?? null;
+
+                current = {
+                    draw,
+                    kind: event.kind,
+                    before: value(),
+                    after: null,
+                    scissor: box === null || (args.x >= box[0] && args.x < box[0] + box[2] && bottom >= box[1] && bottom < box[1] + box[3]),
+                    covered: null,
+                    cull: null,
+                    depth: null,
+                    stencil: null
+                };
+
+                // A query of the page's own, or transform feedback, would be disturbed by the extra draws.
+                if (event.kind !== 'draw' || !run.gl2 || gl.getQuery(0x8C2F, 0x8865) || gl.getQuery(0x8D6A, 0x8865) || gl.getParameter(0x8E24))
+                {
+                    return;
+                }
+
+                const enabled: number[] = event.enabled ?? [];
+                const saved = {
+                    scissor: gl.isEnabled(0x0C11),
+                    box: gl.getParameter(0x0C10),
+                    depth: gl.isEnabled(0x0B71),
+                    stencil: gl.isEnabled(0x0B90),
+                    cull: gl.isEnabled(0x0B44),
+                    mask: gl.getParameter(0x0C23),
+                    depthMask: gl.getParameter(0x0B72),
+                    front: gl.getParameter(0x0B98),
+                    back: gl.getParameter(0x8CA5)
+                };
+
+                const only = (test: number | null): void =>
+                {
+                    for (const cap of [0x0B71, 0x0B90, 0x0B44])
+                    {
+                        if (cap === test) { gl.enable(cap); } else { gl.disable(cap); }
+                    }
+                };
+
+                gl.colorMask(false, false, false, false);
+                gl.depthMask(false);
+                gl.stencilMask(0);
+                gl.enable(0x0C11);
+                gl.scissor(args.x, bottom, 1, 1);
+
+                const command = item.data.commands[index];
+
+                only(null);
+                ask(current, 'covered', command);
+
+                if (enabled.includes(0x0B44))
+                {
+                    only(0x0B44);
+                    ask(current, 'cull', command);
+                }
+
+                if (enabled.includes(0x0B71))
+                {
+                    only(0x0B71);
+                    ask(current, 'depth', command);
+                }
+
+                if (enabled.includes(0x0B90))
+                {
+                    only(0x0B90);
+                    ask(current, 'stencil', command);
+                }
+
+                // As it was.
+                for (const [cap, on] of [[0x0B71, saved.depth], [0x0B90, saved.stencil], [0x0B44, saved.cull], [0x0C11, saved.scissor]] as Array<[number, boolean]>)
+                {
+                    if (on) { gl.enable(cap); } else { gl.disable(cap); }
+                }
+
+                gl.scissor(saved.box[0], saved.box[1], saved.box[2], saved.box[3]);
+                gl.colorMask(saved.mask[0], saved.mask[1], saved.mask[2], saved.mask[3]);
+                gl.depthMask(saved.depthMask);
+                gl.stencilMaskSeparate(0x0404, saved.front);
+                gl.stencilMaskSeparate(0x0405, saved.back);
+            });
+
+            // Query results arrive once the browser has had a turn.
+            const deadline = performance.now() + 3000;
+
+            while (queries.some((entry) => !gl.getQueryParameter(entry.query, 0x8867)) && performance.now() < deadline)
+            {
+                gl.flush();
+                await new Promise((resolve) => setTimeout(resolve, 2));
+            }
+
+            for (const entry of queries)
+            {
+                if (gl.getQueryParameter(entry.query, 0x8867))
+                {
+                    entry.row[entry.test] = Boolean(gl.getQueryParameter(entry.query, 0x8866));
+                }
+
+                gl.deleteQuery(entry.query);
+            }
+
+            return {
+                rows,
+                queries: run.gl2,
+                float: Boolean(geometry && (geometry as { float: boolean }).float),
+                error: gl.getError(),
+                notes: run.notes,
+                ms: performance.now() - started
+            };
+        }
+        finally
+        {
+            run.dispose();
+        }
+    },
+
     // A recording of several frames, played through once: the canvas at the end of each
     // frame, as a hash of its pixels and a small picture for a contact sheet.
     async frames (args: { key: string; edge?: number }): Promise<Json>
