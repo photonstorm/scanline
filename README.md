@@ -8,7 +8,7 @@ Scanline runs any page in a Chromium it launches and supervises, with instrument
 
 ## Status
 
-Every milestone of the build plan up to 1.0 has been worked through on macOS (Apple silicon). What each one's exit criteria asked for, and where this build falls short of them, is in [docs/DEPARTURES.md](docs/DEPARTURES.md). What only a person at the machine can confirm, and what needs the maintainer's own accounts (signing, a licence, a release host), is in [docs/BY-HAND.md](docs/BY-HAND.md). What to do next, starting with the Windows build, is in [docs/HANDOVER.md](docs/HANDOVER.md).
+Every milestone of the build plan up to 1.0 has been worked through on macOS (Apple silicon), and the result builds and passes its tests on Windows 11 (x64) as well. What each one's exit criteria asked for, and where this build falls short of them, is in [docs/DEPARTURES.md](docs/DEPARTURES.md). What only a person at the machine can confirm, and what needs the maintainer's own accounts (signing, a licence, a release host), is in [docs/BY-HAND.md](docs/BY-HAND.md). What to do next is in [docs/HANDOVER.md](docs/HANDOVER.md).
 
 **Works**
 
@@ -29,12 +29,12 @@ Every milestone of the build plan up to 1.0 has been worked through on macOS (Ap
 - Planted bugs: one scene, in WebGL 2 with fourteen known bugs and in WebGPU with fifteen (`fixtures/bugs/`), tests that pin down what Scanline says about each, and an evaluation in which agents diagnose them with nothing but Scanline (`evals/`).
 - Analysis of a capture, for WebGL and WebGPU: the history of a pixel (every draw that covered it, and for one that changed nothing, what turned it away: a test, or its own shader discarding it); a draw's geometry (its vertex attributes, where its vertex shader puts the vertices, and how many triangles would be rasterised at all); two captures compared (events moved, added or removed, state that differs, the pictures' difference); a lint; what a shader could cost, read from its source; views by replay (overdraw, wireframe, which draw owns each pixel, the depth and stencil buffers, which mip level was sampled, NaN in a float target); and GPU time per draw, shader or pass. For a WebGPU draw, what each bind group holds by the names its shaders give them, with the values in its buffers.
 - A browser trace for a window of frames: how long the GPU process was busy decoding and validating the page's commands, on which threads, doing what, with the whole trace kept for Perfetto.
-- Memory that is measured: the GPU process's footprint as the operating system counts it, set beside the estimates, so a leak found by counting is confirmed by the process growing.
+- Memory that is measured: what the GPU process holds as the operating system counts it (its footprint on macOS, its private bytes on Windows), set beside the estimates, so a leak found by counting is confirmed by the process growing.
 - Live patches, for WebGL and WebGPU: override state, edit a shader, leave draws out or draw only some, stand a checkerboard in for a texture, and (WebGL) hold a uniform, all in the running page and all undone at will. On WebGPU the pipeline is built again with the change and swapped in round each draw. Each patch says in words the change to make in source. An experiment measures the frame with and without a change and puts it back. A patch made with `keep` is made again after a reload and before a run is replayed, so a fix can be tried from the first frame.
 - The slow-frame journey end to end, on WebGL 2 and on WebGPU: find the pass and the shader that cost the frame its time, confirm the cost is in filling pixels, read the shader, patch it live, compare the picture and the timing, and get the change to make in source (`tests/journeys.test.mjs`).
 - The page protocol: a page can name its GPU objects and group its draws, declare the game objects they belong to, mark points on its timeline, offer its state (returned with every step), and register controls and debug views, through a global that exists only inside Scanline. `packages/scanline-hooks` wraps it; the `scanline-debuggable-rendering` skill says how to write a page this way.
 - Engine adapters: with no change to the page, every draw on three.js (both renderers), PixiJS 8 (both renderers) and Phaser 4 resolves to the engine's own objects. On three.js that is the `Object3D`, with shadow passes and render targets as groups. PixiJS and Phaser batch, so a draw's object is its batch: which sprites went into it, and why it ended there.
-- Working with a person: the agent asks them to play and press Debug (F9 in the page) when the bug shows. The press freezes the page and captures the frame there and then, and the flight recorder has kept the frames before it (120 by default). A recording says which of its frames draw something different from the rest, gives a contact sheet of every frame, and any frame can be made a capture.
+- Working with a person: the agent asks them to play and press Debug (F9, which is held system-wide while they are asked, so it works whichever window has the keyboard) when the bug shows. The press freezes the page and captures the frame there and then, and the flight recorder has kept the frames before it (120 by default). A recording says which of its frames draw something different from the rest, gives a contact sheet of every frame, and any frame can be made a capture.
 - Marking the frozen frame: after a Debug press the person can click the picture to point at something, drag a box, or type a note in the strip, and each reaches the agent as an event in canvas pixels.
 - Capture when something happens: `capture(when)` runs the page until it raises an error, a frame runs long, the page marks an event or an expression becomes true, and captures that frame with the frames before it.
 - A virtual gamepad, relative mouse moves under a pointer-lock shim, and policies: a function the agent writes that runs in the page once a frame and answers with the input to give.
@@ -60,16 +60,16 @@ Every milestone of the build plan up to 1.0 has been worked through on macOS (Ap
 - The wireframe view on a running WebGPU page (a capture has it). Readback of multisampled textures, and of stencil.
 - An adapter for PlayCanvas (installing it was not allowed where this was built).
 - The fast binary channel for bulk data.
-- Windows and Linux. A WebKit or Firefox mode. WebXR. A single window that holds both the game and the strip.
-- Signed and notarised installers, and updates: these need the maintainer's Apple Developer identity and somewhere to publish releases. The packaging script has the steps and they have not been run.
+- Linux. A WebKit or Firefox mode. WebXR. A single window that holds both the game and the strip.
+- Signed and notarised installers, and updates: these need the maintainer's Apple Developer identity, a code-signing certificate for Windows, and somewhere to publish releases. The packaging script has the steps and they have not been run.
 
-It has been run only on macOS (Apple silicon) with the installed Google Chrome 157. Most runs were headless; sessions with a visible window have been checked by hand for the Debug key and the flight recorder, and the rest of what needs eyes is listed in [docs/BY-HAND.md](docs/BY-HAND.md). No licence has been chosen for the code yet.
+It has been run on two machines, each with the installed Google Chrome 157: a Mac (Apple silicon, where the browser draws through Metal) and a PC (Windows 11, x64, an NVIDIA GPU, where it draws through Direct3D). Most runs were headless; sessions with a visible window have been checked by hand for the Debug key and the flight recorder, and the rest of what needs eyes is listed in [docs/BY-HAND.md](docs/BY-HAND.md). No licence has been chosen for the code yet.
 
 ## Requirements
 
-- macOS on Apple silicon
+- macOS on Apple silicon, or Windows 11 on x64
 - Google Chrome, Microsoft Edge or Chromium (set `SCANLINE_BROWSER` to pick a binary)
-- Rust 1.90 or later
+- Rust 1.90 or later. On Windows, the MSVC toolchain and the Visual Studio Build Tools with "Desktop development with C++": SQLite, zstd and BLAKE3 are compiled from C
 - Node.js 24 or later
 
 ## Build
@@ -88,7 +88,7 @@ cargo build --release
 
 The probe and the replay page are built first because the binary embeds them: a host and the scripts it injects are always the same version.
 
-To make a release archive for this machine (the binary, the skills, the plugin files and an install script, in `dist/`):
+To make a release archive for this machine (the binary, the skills, the plugin files and an install script, in `dist/`: a `.tar.gz` with `install.sh`, or on Windows a `.zip` with `install.ps1`):
 
 ```bash
 npm run package
@@ -150,6 +150,8 @@ scanline query cap_1 "select program, count(*) from draws group by program"
 scanline run_until --until '{"expr": "game.scene === \"level2\""}'
 ```
 
+(In a Windows shell: `scanline run_until --until "{'expr': 'game.level === 2'}"`. See "On Windows" below.)
+
 ```bash
 scanline request_human "Play until the water flickers, then press Debug"
 ```
@@ -180,7 +182,15 @@ scanline stop
 
 `scanline --help` lists every command and `scanline <command> --help` one command's arguments. `scanline help` explains the workflow, `scanline help capture` taking a frame apart, `scanline help input` the input events, and `scanline help security` what a client may do, and `scanline help limits` what is not built. `scanline skill` lists the skills and `scanline skill wrong-pixels` prints one. Add `--json` to any command for the whole result.
 
-The first command starts a background host that holds the browsers; `scanline stop` ends it and closes them. Images and the host's log are kept under `~/Library/Application Support/Scanline` (set `SCANLINE_HOME` to move them).
+The first command starts a background host that holds the browsers; `scanline stop` ends it and closes them. Images and the host's log are kept under `~/Library/Application Support/Scanline`, or `%LOCALAPPDATA%\Scanline` on Windows (set `SCANLINE_HOME` to move them).
+
+### On Windows
+
+The commands are the same. Three things differ in a Windows shell:
+
+- **JSON arguments.** `cmd` does not treat single quotes as quotes, and Windows PowerShell drops the double quotes inside them. Write JSON with single quotes inside double quotes, which every shell passes on whole and Scanline reads as JSON: `scanline patch_draws --filter "{'draws': [6, 8]}"`. `scanline <command> --help` shows its example this way on Windows.
+- **Characters outside ASCII.** Scanline writes UTF-8 (`« »` round text from the page, `×`, `µ`, `→`). A console shows it rightly, and so does a pipe to a program that reads bytes. PowerShell decodes what it captures or pipes with the console's code page, so run `[Console]::OutputEncoding = [Text.Encoding]::UTF8` once in a session before piping Scanline's output into another command.
+- **The host's lifetime.** The first command starts the host in the background, and it outlives the terminal. A terminal or agent client that kills everything it started when a command ends takes the host with it; run `scanline serve` in a window of its own to keep one.
 
 ## Use it in a test run
 

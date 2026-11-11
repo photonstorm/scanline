@@ -1,15 +1,17 @@
 # Handover: what to do next
 
-Written on 11 November 2026, at the end of the work on the Mac, for whoever carries on: a person, or an agent in a new session on another machine. A new session has none of the earlier conversation, so everything it needs is here or in a file this names.
+Written on 11 November 2026, first at the end of the work on the Mac and then again the same day at the end of the Windows build on the PC, for whoever carries on: a person, or an agent in a new session on either machine. A new session has none of the earlier conversation, so everything it needs is here or in a file this names.
 
 Read this first, then [DEPARTURES.md](DEPARTURES.md) (what was built and how it differs from the specification) and [BY-HAND.md](BY-HAND.md) (what only a person can check).
 
 ## Where things stand
 
 - Everything is on `main` at github.com/photonstorm/scanline.
-- The full suite passed on the last build: 259 tests in ten groups, none failing (`npm test`, about 13 minutes on the Mac).
+- It builds and runs on two machines: the Mac (Apple silicon, Chrome 157, Metal) and the PC (Windows 11, x64, an NVIDIA RTX 3080 Ti, Chrome 157, Direct3D).
+- On the PC the full suite passed on the last build: 261 tests in ten groups and 40 Rust unit tests, none failing (`npm test`, about 12 minutes there). Both slow-frame journeys passed with their timing comparison reported and not asserted: see "Things learned the hard way".
+- **On the Mac the suite has not been run since the Windows build**, and the shared code changed: see section 1.
 - Every milestone of the build plan up to 1.0 is worked through, and from the list for after 1.0: the Babylon.js adapter, the native-capture profile, assertions for a test run, a recording as a video, and "Send to agent".
-- It has only ever been built and run on macOS (Apple silicon, Chrome 157, Metal). **Nothing has been compiled or run on Windows or Linux.**
+- **Nothing has been compiled or run on Linux.**
 - The specification is not in this repository. It is in the `render-debugger/` folder of the `render-debugger-spec` branch of the `v3-gameblocks` repository, which is pushed. Read it there. Do not edit it and do not copy it here.
 
 ## How to work in this repository
@@ -20,118 +22,77 @@ These are the owner's standing instructions. They were given in conversation on 
 - **Carry on without stopping to ask.** Work through the list below. Decide the small things yourself, including overhead budgets.
 - **What you cannot check yourself goes in `docs/BY-HAND.md`**, as a step for a person with what should happen. What differs from the specification goes in `docs/DEPARTURES.md`, with why.
 - **Documentation is in plain British English.** No licence has been chosen: do not add one.
-- **Ask before fetching code from outside.** On the Mac, `npm install --save-dev playcanvas` and the Chrome for Testing download were both left for the owner. On a new machine the first `npm install` and `cargo build` download every dependency, which needs the owner's go-ahead there.
+- **Ask before fetching code from outside.** On the Mac, `npm install --save-dev playcanvas` and the Chrome for Testing download were both left for the owner. On a new machine the first `npm install` and `cargo build` download every dependency, which needs the owner's go-ahead there. (On the PC the owner gave it, for what the lock files name.)
 - **Keep the owner's name, email and project names out of requests to outside services.**
 - **A test run must not take over the machine.** Run the suite at low priority, one run at a time.
 
 Things learned the hard way:
 
-- Build order: `npm run build` (the probe and the replay page), then `cargo build`. The binary holds both scripts. If it seems stale after a script change, touch `crates/scanline-core/build.rs` and build again.
+- Build order: `npm run build` (the probe and the replay page), then `cargo build`. The binary holds both scripts, and the skills. If it seems stale after a script or a skill changes, touch `crates/scanline-core/build.rs` and build again.
 - After editing `probe/tools/method-table.mjs`, run `npm run gen:hooks`. Never print `probe/src/hooks/generated.ts` with context: its lines are enormous.
 - Do not rebuild the binary or the scripts while a test run or an evaluation round is using them.
 - Run `cargo fmt` before committing. A tool's description in `crates/scanline-core/src/tools.rs` must stay under 420 characters (a unit test checks). A new help topic is also listed in `crates/scanline/src/cli.rs`.
 - Tests give every file its own `SCANLINE_HOME`. By hand, set one yourself so that you do not disturb a host the owner is using.
 - A fixture's canvas has `id="game"`, so `window.game` is the canvas until the page's script replaces it. Test for `window.game.frame`, not for `window.game`.
+- `tests/host.mjs` is where the tests keep what differs between machines: the binary's name, whether a host is running for a home (`runtime.json`, since Windows has no socket file), `assertPixel` for a pixel that Metal and Direct3D round apart, and `windowsRule` for who a file or a pipe lets in.
+- A page's WebGPU set-up is asynchronous and slow through Direct3D. A test that looks at a WebGPU page waits for the page to be ready; it does not sleep and hope.
+- GPU time is not steady on the PC: its graphics card slows its clock when it has little to do, and the same frame can read several times higher a few seconds later. A test that compares GPU time before and after a change takes several readings of each, turn about, and compares the middle ones. One of each is a coin-toss there. Even so the slow-frame journey on WebGL cannot be relied on there, and says "GPU time was not steady on this machine, so it was not compared" where it would have asserted: look for that line in a run on the Mac, where it should not appear.
 
-## 1. The Windows build
+On the PC in particular:
 
-This is the next piece of work, and the reason for the move to the PC. The specification asks for Windows 11 and macOS. The code was written with Windows in mind in places (paths, the default home, where Chrome lives) but the parts that touch the operating system are Unix-only, and each has a stub that says so.
+- **The owner's npm configuration there has `os=linux`** (in their own `.npmrc`, for their own reasons: leave it). With it, `npm install` fetches the Linux builds of TypeScript and esbuild, and `npm run typecheck` fails. Install with:
 
-### Setting the PC up
+```bash
+npm ci --os=win32
+```
 
-1. Git for Windows. This repository has a `.gitattributes` that keeps every text file at LF: the tests compare text line by line and the binary holds the skills and scripts as text.
-2. Rust, stable, 1.90 or later (the Mac used 1.99.1), with the MSVC toolchain. The Visual Studio Build Tools with "Desktop development with C++" are needed: SQLite, zstd and BLAKE3 are compiled from C.
-3. Node 24 or later (the Mac used 26.13).
-4. Google Chrome, installed in the usual place, or `SCANLINE_BROWSER` set to a Chromium binary.
-5. Clone this repository, and `v3-gameblocks` at `render-debugger-spec` beside it for the specification.
-6. Then, in this repository:
+- Low priority in PowerShell: `(Get-Process -Id $PID).PriorityClass = 'BelowNormal'` before `npm test`. A process started from one at that priority keeps it.
+- An agent's shell tool there halves doubled backslashes in a here-document, and turns `\t` and `\b` into control characters. Edit any file that holds backslashes (Windows paths, regular expressions) with the editing tool, and look at what was written.
+- Every text file is LF on every machine (`.gitattributes`). The install script for Windows is given CRLF when a release is packed, not in the repository.
+
+## 1. Back on the Mac: run the whole suite
+
+The Windows build changed code both platforms share, and none of it has been run on the Mac since:
+
+- `crates/scanline/src/control.rs` was rewritten round a `channel` module with a Unix form and a Windows form. The Unix form is the old code moved, but it has only been read, not run.
+- `crates/scanline/src/http.rs` (`bind` and `new_token`), `crates/scanline/src/hotkey.rs` (its usage text became a constant) and `crates/scanline-browser/src/lib.rs` (`process_memory_measure`) have small changes on the Unix side.
+- The probe changed in four places that are not about Windows: a WebGPU pass whose two timestamps are equal now counts as zero and not as missing (`probe/src/timing.ts`); `status` says how far the page has got towards WebGPU (`webgpuStarting` in `probe/src/contexts.ts`); a texture view's record keeps its texture's handle (`probe/src/gpu/tracker.ts`); and `step` and `run_until` wait for the WebGPU queue before they answer (`gpuWorkDone` in `probe/src/timing.ts`), which adds a little to every step of a WebGPU page.
+- `launch` waits differently (`crates/scanline-core/src/commands.rs`): only a WebGL or WebGPU context ends the wait early, where any context did, and a page that has asked for a WebGPU adapter is waited on for up to 4 s. On the Mac this should cost nothing for a page that draws, and a page with only a 2D canvas now takes the full 1.2 s to launch.
+- The command line reads `"{'draws': [6, 8]}"` as JSON (`value` in `crates/scanline/src/cli.rs`).
+- The tests take either of two values where Metal and Direct3D round apart. The values for Metal are the ones the tests had; check none was mistyped.
+- The slow-frame journeys take seven GPU readings where they took three (`turnAbout` in `tests/journeys.test.mjs`), so they run longer.
+
+So, on the Mac:
+
+```bash
+git pull
+```
 
 ```bash
 npm install
 ```
 
 ```bash
-npm run build
+npm test
 ```
 
-```bash
-cargo build
-```
+Expect it to pass. If `stats` on a WebGPU page now reports a lower GPU time than before, that is the timing change, and it is the truer figure: `DEPARTURES.md`, "Windows", says why.
 
-Expect the first `cargo build` to fail or warn: this has never been compiled for Windows. Fix what it says before anything else.
+## 2. What the Windows build left
 
-### What is Unix-only, file by file
+It is described in `DEPARTURES.md` under "Windows". Not done:
 
-**`crates/scanline-browser/src/lib.rs`: starting the browser.** `spawn_with_pipe` has a Unix body and a stub for everything else. Chrome is driven over `--remote-debugging-pipe`. On Unix it reads commands on file descriptor 3 and writes replies on 4, which the Unix code arranges with `dup2` between fork and exec. On Windows there are no numbered descriptors to hand over from Rust, so:
+- **A person has looked at nothing on the PC.** `BY-HAND.md`, "On Windows": the control strip, the viewer, a real F9 press, the host outliving its terminal, JSON in each shell, a release and its installer, the pinned browser's real download, a native debugger, and a second user of the PC.
+- **Signing on Windows.** `tools/package.mjs` packs an unsigned `scanline.exe`. It needs the owner's certificate.
+- **The installer for Windows has not been run.** `npm run package` was run on the PC: it writes `dist/scanline-0.0.1-windows-x64.zip` (6.1 MB), which unpacks to the binary, the seven skills, the plugin files and `install.ps1`, and the binary in it answers `--version`. `install.ps1` was checked for syntax and line endings and no further, because running it adds a folder to the owner's own `PATH`: it is in `BY-HAND.md`.
+- **A host started inside a job dies with the job.** Some terminals and agent clients run a command in a job that kills everything the command started. The host is started in its own process group with its own hidden console, which survives a closed terminal, but not that. `CREATE_BREAKAWAY_FROM_JOB` would escape a job that allows it; it fails outright in one that does not, so it would need trying and falling back.
+- **PowerShell garbles `« » µ →` in output it captures or pipes**, on a PC whose console code page is not UTF-8. The README says what to type. An option to print ASCII only (`<<` and `>>`, `x`, `us`, `->`) would spare an agent that drives the command line through PowerShell; MCP is not affected.
+- **`experiment` measures a change once with and once without.** On a card whose clock moves with its load that can mislead (`DEPARTURES.md`, "Windows"). Measuring turn about inside `experiment` (in `crates/scanline-core/src/patch.rs`), and saying how far the readings of each kind spread, would make its answer one an agent can trust on any GPU. This is the most useful small piece of work the PC turned up.
+- **The security of the Windows side has been tested and not reviewed.** `docs/SECURITY.md` says what it relies on.
+- **An evaluation round through Direct3D** has not been run: every round so far was on the Mac.
+- **Edge.** `find_browser` lists Edge's usual paths on Windows, and nothing has been run in it.
 
-- Make two anonymous pipes (`CreatePipe`). Mark the browser's two ends inheritable (`SetHandleInformation` with `HANDLE_FLAG_INHERIT`) and leave the host's two ends not inheritable.
-- Pass the browser its ends by value: `--remote-debugging-io-pipes=<read handle>,<write handle>`, the two handles as unsigned integers, alongside `--remote-debugging-pipe`. This is from memory of Chromium's source (`content/browser/devtools/devtools_pipe_handler.cc`): check it against the Chrome on the PC before building on it.
-- Rust's `Command` starts a child with handle inheritance on, so the two inheritable handles reach it. Close the host's copies of them after the spawn.
-- Wrap the host's ends as files (`from_raw_handle`) and give them to `scanline_cdp::Client::new`, as the Unix code does. Anonymous pipes cannot do overlapped I/O; `tokio::fs::File` reads on a blocking thread, which is fine.
-- Two browsers launched at the same moment could each inherit the other's handles. Hold a lock around the launch, or pass an explicit handle list.
-- The messages are the same as on Unix: JSON, each ended by a zero byte.
-
-`spikes/lib/cdp.mjs` is a second, independent client in Node that the lower-level tests use (`probe/test`, `tests/bugs.test.mjs`). It opens the pipe as `stdio[3]` and `stdio[4]`. Node passes extra descriptors to a child in the way Chrome on Windows understands, so it may work as it is. Run `npm run test:probe` early: if it passes, the browser side of the pipe is proven before any Rust is written.
-
-`process_memory` in the same file returns nothing on Windows. `K32GetProcessMemoryInfo` gives a process's private bytes; say in the text what the figure is, as the macOS and Linux branches do.
-
-`find_browser` already lists the usual Windows paths. Add the per-user install (`%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe`).
-
-**`crates/scanline/src/control.rs`: the host and its clients.** The host listens on a Unix socket in its home directory, private to the user, and every other mode (`scanline <command>`, `scanline mcp`, the hotkey helper) connects to it. All of it is `#[cfg(unix)]`, with stubs that say "macOS only for now". For Windows:
-
-- Use a named pipe (`tokio::net::windows::named_pipe`). Derive its name from the home directory (a hash of the path), so that each `SCANLINE_HOME` has its own: the tests run many homes.
-- The Unix socket is private because of its file mode. A named pipe's default security lets other users of the machine read it, so create it with a security descriptor that names only the current user, and refuse remote clients. `docs/SECURITY.md` describes the boundary this has to keep.
-- `first_pipe_instance(true)` tells a second host that one is already running, which is what the connect-first check does on Unix.
-- `Link` holds the two halves of a `UnixStream`. Make it hold any reader and writer (`tokio::io::split`) so that one body serves both platforms.
-- `running_host` asks whether a process is alive with `kill(pid, 0)`. On Windows: `OpenProcess` and `GetExitCodeProcess`.
-- `start_host` detaches the host with `setsid` so that closing the terminal does not take it down. On Windows: `creation_flags` with `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP`.
-- The host stops on SIGINT and SIGTERM. On Windows: `tokio::signal::ctrl_c` and `tokio::signal::windows` (`ctrl_break`, `ctrl_close`).
-- The home directory is set to mode 700 and the socket to 600. Neither means anything on Windows. `%LOCALAPPDATA%\Scanline` (the default home there, already in `scanline_core::default_home`) is private to the user by inheritance; a `SCANLINE_HOME` somewhere else may not be, and the host should say so.
-- `runtime.json` records the socket's path. Record the pipe's name there instead.
-
-**`crates/scanline/src/http.rs`: MCP over loopback HTTP.** Only `bind` is Unix-only: it creates the token file with mode 600. Write the file without the mode on Windows. The rest is plain TCP.
-
-**`crates/scanline/src/hotkey.rs`: the system-wide Debug key.** macOS only, through Carbon. On Windows: `RegisterHotKey` (with `MOD_NOREPEAT`) and a `GetMessageW` loop waiting for `WM_HOTKEY`; F1 to F24 are virtual keys `0x70` to `0x87`. Its `press` connects to the host with a Unix socket: on Windows open the named pipe as a file. Then remove the macOS-only condition in `hold_debug_key` (`crates/scanline-core/src/handoff.rs`) and in the test that is skipped off macOS (`tests/e2e.test.mjs`, "a Debug key held system-wide").
-
-**`crates/scanline-browser/src/pinned.rs`: the pinned Chrome for Testing.** The platform table has `win64`. It unpacks with `ditto` on macOS and `unzip` elsewhere; Windows has no `unzip`, but has `tar`, which reads zip archives (`tar -xf`). `curl` is there on Windows 10 and later.
-
-**`tools/package.mjs`: the release.** It names the archive for the platform and knows the binary is `scanline.exe`, but:
-
-- It runs `npm` with `execFileSync`, which on Windows cannot start `npm.cmd` without a shell.
-- It writes `install.sh`. Windows needs its own (a PowerShell script that copies `scanline.exe` somewhere under `%LOCALAPPDATA%` and adds that to the user's `PATH`), and a `.zip` is what a Windows user expects.
-- Signing is written for macOS only. Signing on Windows needs the owner's certificate, as on the Mac.
-
-**The native-capture profile** sets Metal's capture variables and its text names Xcode. On Windows the same switches apply and the debugger is RenderDoc or PIX. Lower priority: make the text say the right thing for the platform.
-
-### What the tests will need
-
-The suite was written against one machine. On the PC expect:
-
-- **The binary's name.** Every test file runs `target/debug/scanline`. Windows usually finds `scanline.exe` from that, but check.
-- **File modes.** `tests/security.test.mjs` checks that the token file is mode 600 and looks for `control.sock`. Those checks need a Windows form, not removal: the thing they protect still has to be true.
-- **Exact pixel values.** Many tests compare pixels exactly, and were measured through Metal on an Apple GPU. Flat colours will match. Values that come from filtering, mipmaps or blending may differ by one through Direct3D on another GPU. Where one does, measure what the PC gives and allow for both; do not loosen a test that is checking a flat colour.
-- **Timing thresholds.** The profile and experiment tests ask for a share of GPU time (the haze takes 80% or more; a flat colour takes the frame below 60%). They should hold on any GPU, but the margins were set on one.
-- **Text that is about the Mac.** `profile` explains that a tile-based GPU shades only the last of several opaque draws, and `stats` quotes the step the browser rounds WebGPU timestamps to. Both are true of the Mac's GPU and browser; check what is true on the PC and make the text depend on what was measured.
-- **Shader translations.** `resource` on a shader gives the browser's translation: Metal's language on the Mac, HLSL on Windows. One test already allows for both.
-- **Extensions.** The live wireframe view on WebGL uses `WEBGL_polygon_mode`; the WebGL 1 depth replay uses `EXT_frag_depth`; the compressed-texture fixture uses S3TC and says so when it is missing. Check each is there through Direct3D.
-- **Paths in output** use backslashes on Windows. A test that matches a path with `/` will need both.
-- **Quoting on the command line.** Help shows JSON arguments in single quotes (`--events '[{"pointer": "down"}]'`), which `cmd` and PowerShell do not treat as the Mac's shell does. The tests are not affected (they pass arguments as a list), but the help text and the skills should show a form that works on Windows.
-- **Output encoding.** Results contain characters outside ASCII (`«»`, `×`, `→`, `µ`). They are UTF-8. Check that they survive a Windows console and a pipe.
-
-### A good order
-
-1. Compile. Fix what the first build says.
-2. `npm run test:wgsl` and `npm run test:probe`: no Rust involved, and they prove Node, the scripts and the browser on the PC.
-3. The pipe launch in `scanline-browser`.
-4. The control channel in `control.rs`. After this, `scanline launch` works and most of the suite can run.
-5. `npm test`, group by group, fixing what is about the platform and noting what is about the GPU.
-6. The hotkey, the pinned browser, the packaging.
-7. Update what says "macOS only": the stubs' messages, `help limits` (`LIMITS` in `tools.rs`), `README.md`, the "Windows 11 and macOS" row and the milestone 8 table in `DEPARTURES.md`, "Not possible on this machine" in `BY-HAND.md`, and `docs/SECURITY.md` for the named pipe.
-8. Back on the Mac, run the whole suite again: the shared code will have changed.
-
-A person will need to check on the PC what a person checked on the Mac: the control strip, the viewer, a real F9 press. Add those to `BY-HAND.md` under Windows.
-
-## 2. The PlayCanvas adapter
+## 3. The PlayCanvas adapter
 
 Blocked only on an install the owner has to run or allow:
 
@@ -146,7 +107,7 @@ Then:
 - Fixtures in `fixtures/engines/`, tests in `tests/protocol.test.mjs` beside Babylon's.
 - Then take PlayCanvas out of the "not built" lists: `README.md`, `DEPARTURES.md` (the milestone 8 table), `BY-HAND.md`, `LIMITS` in `tools.rs`, and the skills.
 
-## 3. A Firefox mode, and WebKit
+## 4. A Firefox mode, and WebKit
 
 Not started. Everything drives Chromium through its debugging protocol, so this is a second back end, not a switch. What depends on the protocol today: starting the browser and the pipe; putting the probe in before the page's first script, in every frame and worker; the binding the probe reports through; trusted keyboard, mouse and touch input; screenshots of the page; window bounds for the control strip; tracing; and intercepting the network for runs that replay.
 
@@ -157,17 +118,17 @@ Not started. Everything drives Chromium through its debugging protocol, so this 
 
 WebKit is further off: Safari's automation is narrower, and it would have to be done on the Mac.
 
-## 4. Linux
+## 5. Linux
 
-Probably the nearest of the unbuilt platforms: the pipe launch is plain Unix, and the browser paths, the pinned browser and process memory each have a Linux branch. None of it has been run. The hotkey helper has no Linux form, and the packaging has not been tried. WSL 2 on the PC may be enough to try it, if a GPU is visible there.
+Probably the nearest of the unbuilt platforms: the pipe launch is plain Unix, the control channel is the Unix one, and the browser paths, the pinned browser and process memory each have a Linux branch. None of it has been run. The hotkey helper has no Linux form, and the packaging has not been tried. WSL 2 on the PC may be enough to try it, if a GPU is visible there.
 
-## 5. The rest of the list for after 1.0
+## 6. The rest of the list for after 1.0
 
 - **WebXR.** An immersive session draws to the headset's framebuffer on the headset's clock. Needs a device or an emulator.
 - **Single-window builds.** The game runs in the browser's own window and the control strip in a second that follows it. One window holding both means a native shell around an embedded browser: a different application.
-- **Signed installers and updates.** Need the owner's signing identity on each platform, and somewhere for releases to live. `tools/package.mjs` has the macOS steps, never run.
+- **Signed installers and updates.** Need the owner's signing identity on each platform, and somewhere for releases to live. `tools/package.mjs` has the macOS steps, never run, and nothing for Windows.
 
-## 6. Smaller things not built
+## 7. Smaller things not built
 
 Each is described where it bites, in `scanline help limits` and in `DEPARTURES.md`.
 
@@ -180,19 +141,20 @@ Each is described where it bites, in `scanline help limits` and in `DEPARTURES.m
 - External (video) textures in a WebGPU capture.
 - The fast binary channel for bulk data. Images travel as compressed base64 over the protocol; spike S2 was never run.
 - The engines the specification's content matrix lists and the repository lacks: PlayCanvas, a Unity WebGL build, an Emscripten build.
+- What the GPU keeps alive and the page has let go of. A texture is now kept on record for as long as a view of it is. The same question for other pairs (a buffer or a sampler that only a bind group holds, a bind group the page dropped after its last use) has not been asked: the record of such an object ends when the collector takes the page's handle, though the GPU may hold the object longer.
 
-## 7. The evaluation
+## 8. The evaluation
 
-- Four rounds have been run, all by hand with one sub-agent per bug: 14 of 14 WebGL bugs in round 3, 15 of 15 WebGPU bugs in round 4 (`evals/results/README.md`).
+- Four rounds have been run, all by hand with one sub-agent per bug, all on the Mac: 14 of 14 WebGL bugs in round 3, 15 of 15 WebGPU bugs in round 4 (`evals/results/README.md`).
 - **Read round 4 with its caveat.** The WebGPU bugs and the findings that name their causes were written together, so it shows those causes are found, not how Scanline does on a mistake nobody planted.
 - The runner (`evals/run.mjs`) has only been run with a stand-in for the agent. A real round spends the agent's tokens 29 times, so it is the owner's to start.
-- Not covered: a bug that is right on one API and wrong on the other, large frames, engines. A round on Windows would be the first through Direct3D.
+- Not covered: a bug that is right on one API and wrong on the other, large frames, engines. A round on the PC would be the first through Direct3D.
 - The skills have never been in front of an agent: every round gave `scanline help` and nothing else.
 
-## 8. For the owner
+## 9. For the owner
 
 In `BY-HAND.md`, and not something an agent can do:
 
-- Look at what nobody has seen on a screen: the control strip, the viewer, "Send to agent", pointer lock by a real click, a real F9 press from another application, Xcode attaching to the native-capture profile.
+- Look at what nobody has seen on a screen: the control strip, the viewer, "Send to agent", pointer lock by a real click, a real F9 press from another application (made on the Mac, not yet on the PC), Xcode attaching to the native-capture profile, and PIX or RenderDoc doing the same on the PC.
 - Decide: a licence, the name, who the plugin is by, where releases live, the version.
 - Run or allow: the PlayCanvas install, the pinned Chrome for Testing download, the Claude Code plugin's first install, signing.
