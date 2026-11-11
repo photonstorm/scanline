@@ -759,7 +759,13 @@ Think you know the fix? Try it in the running page first: help(topic: \"patch\")
 Cannot reproduce it yourself? request_human(instruction) asks the person to play and press
 Debug when it happens; the frames before the press are kept. See help(topic: \"handoff\").
 
-See help(topic: \"input\") for playing a game and help(topic: \"limits\") for what is not built yet.";
+Sending a frame to someone: export(capture) writes it to one file; import(path) reads one in.
+
+A whole recipe for one kind of job (a wrong pixel, a slow frame, growing memory, working
+with the person, playing a game): help(topic: \"skills\") lists them, help(skill: \"…\") prints one.
+
+See help(topic: \"input\") for playing a game, help(topic: \"security\") for what you may
+do, and help(topic: \"limits\") for what is not built.";
 
 const INPUT: &str = "\
 Input events (for input.events and step.events)
