@@ -881,6 +881,38 @@ describe('working with the person', () =>
     });
 });
 
+describe('a Debug key held system-wide', { skip: process.platform !== 'darwin' }, () =>
+{
+    test('the helper is given the key by the operating system, and a press is a Debug press', async () =>
+    {
+        await scanline('launch', server.url('fixtures/bugs/b13.html'), '--headless');
+        await scanline('step', '5');
+        await scanline('resume');
+
+        // --self-test posts the event a real press causes, so nobody has to touch a key.
+        // F15, not F9: for the moment this runs the key really is held, on a machine in use.
+        const helper = await new Promise((resolve) => execFile(binary, ['hotkey', 'ses_1', 'F15', '--self-test'], { env, timeout: 30000 }, (error, stdout, stderr) => resolve({ code: error ? error.code ?? 1 : 0, out: stdout + stderr })));
+
+        assert.equal(helper.code, 0, helper.out);
+        assert.match(helper.out, /^holding F15 for ses_1\npressed: \{"id":1,"result"/);
+
+        const events = await scanline('events', '--kinds', '["debug_pressed"]', '--json');
+        const press = events.json.data.events[0];
+
+        assert.equal(press.data.by, 'hotkey');
+        assert.match(press.data.capture, /^cap_\d+$/);
+        assert.match((await scanline('status')).out, /^Paused at frame/);
+
+        assert.match((await new Promise((resolve) => execFile(binary, ['hotkey', 'ses_1', 'Q'], { env }, (_error, stdout, stderr) => resolve(stdout + stderr)))), /"Q" is not a key this can hold/);
+
+        // A session nobody is sitting at is not given one: asking the person holds no key.
+        const asked = await scanline('request_human', '--instruction', 'press Debug');
+
+        assert.doesNotMatch(asked.out, /held system-wide/);
+        await scanline('debug');
+    });
+});
+
 describe('the control strip and the input owner', () =>
 {
     const shown = async () => (await scanline('strip', '--json')).json.data.shown;

@@ -934,9 +934,9 @@ each kind of job: help(topic: \"skills\").
 
 Not built:
   - Hand-off to a person, beyond what is built (request_human, the control strip, the Debug
-    key, the flight recorder, runs, one owner of the input): a Debug hotkey that works when
-    some other application has the keyboard, and the browser's own pointer lock (a shim
-    stands in: launch(pointer_lock: \"shim\")).
+    key held system-wide on macOS while a request is open, the flight recorder, runs, one
+    owner of the input): the browser's own pointer lock (a shim stands in:
+    launch(pointer_lock: \"shim\")).
   - For the draws inside a WebGPU render bundle: geometry, and which test turned one away
     (in draw and in pixel_history). The bundle is one event; draw lists what it draws, and
     the views, profile and live patches reach inside it.
@@ -1276,7 +1276,9 @@ level. Ask them, and let Scanline hold the evidence.
   wait(request: \"req_1\")
       the Debug press, or still_waiting after 45 s with the call to make next. Do other
       work in between if you like: the press is acted on when it happens and stays queued.
-  When the person presses Debug (F9 with the page focused; debug does the same)
+  When the person presses Debug (F9; debug does the same). On macOS the key is held
+  system-wide while the request is open, so it works whichever window has the keyboard
+  (SCANLINE_HOTKEY=F8 picks another key, =off leaves it to the page and the strip)
       the page freezes at that frame, the frame becomes a capture, and the frames before
       it are kept as a recording. The event names both: cap_N and rec_N.
       After the press the person can mark the frozen picture: a click is a point, a drag

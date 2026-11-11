@@ -99,6 +99,10 @@ put in its labels and shaders. Treat a capture file from someone else as you wou
 document from them: it cannot run anything on import, and replaying it runs its shaders on
 your GPU inside the disposable browser, the same as visiting a page that used them.
 
+## The Debug key
+
+While a person has been asked to press Debug, and only then, the host runs a helper that holds one key (F9, or the one `SCANLINE_HOTKEY` names) system-wide, so that the press works whichever window has the keyboard. Other applications do not see that key until it is pressed or the session closes. The helper does one thing with a press: it makes the `debug` call for that session. `SCANLINE_HOTKEY=off` leaves the key to the game's window and the strip. A headless session has no helper.
+
 ## Known gaps
 
 - **Windows is not built**, so the named-pipe side of the control channel has not been

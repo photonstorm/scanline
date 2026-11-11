@@ -130,6 +130,8 @@ pub struct State {
     pub actions: VecDeque<String>,
     /// What the strip says when nothing has been asked of the person: how the last press went.
     pub strip_note: Option<String>,
+    /// The helper that holds the Debug key system-wide while a request is open (handoff.rs).
+    pub hotkey: Option<std::process::Child>,
     /// Live patches made in this session: the handle shown, and the probe and number behind it.
     pub patches: std::collections::BTreeMap<String, (Instance, i64)>,
     /// Patches asked to outlast a reload: the command that made each, its arguments, and
@@ -1060,7 +1062,16 @@ impl Session {
     }
 
     pub async fn close(&self) {
+        self.release_hotkey();
         self.browser.close().await;
+    }
+
+    /// Stops the helper that holds the Debug key system-wide, if one is running.
+    pub fn release_hotkey(&self) {
+        if let Some(mut helper) = self.state.lock().unwrap().hotkey.take() {
+            let _ = helper.kill();
+            let _ = helper.wait();
+        }
     }
 }
 

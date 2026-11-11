@@ -32,6 +32,7 @@ scanline request_human "Watch the glass panel, then press Debug"
 
 - [ ] A small dark window appears directly under the game's window, about as wide as it, with no tabs. It reads "You are driving", the instruction, a red REC light and a frame number that counts up.
 - [ ] The game's window still has the keyboard: F9 freezes the picture without clicking on the game first.
+- [ ] F9 from another application: start the request again, click on some other application's window (a text editor), and press F9 there. The game freezes all the same, and the editor does not see the key. After the press F9 belongs to the editor again. (The key is held system-wide only while the request is open; the test suite proves the path with a made-up press, not a real one.)
 - [ ] The strip's Debug button does the same as F9. Pause stops the picture and turns into Resume; Step moves one frame while paused.
 - [ ] After a press the strip reads "Nobody is driving" and "Frozen at frame N. The agent has this frame and the M before it."
 - [ ] Does it matter that the strip stays where it was when the game's window is moved?
@@ -233,7 +234,6 @@ These are not tests. They are choices that were not mine to make, and each is a 
 
 - Windows: nothing has been run there, and the browser launch for Windows is not written.
 - Pointer lock and fullscreen: `node spikes/s4-input.mjs --headed` checks them and has not been run. The pointer-lock shim (`--pointer_lock shim`) is tested; the browser's own lock is not.
-- A Debug hotkey that works while another application has the keyboard: nothing registers one with the operating system. F9 works while the game's window or the strip has the keyboard.
 - A PlayCanvas adapter. `npm install --save-dev playcanvas` was refused by the permission system where this was built (code from outside), so there is no PlayCanvas to write an adapter against. Run that install yourself and say so, and the adapter can be written the way Babylon's was (`probe/src/adapters/babylon.ts`).
 - PlayCanvas, a Unity WebGL build and an Emscripten build, which the specification's content matrix lists: none is in the repository, and fetching them needed your say-so. Put a build in `fixtures/engines/`, launch it, run `scanline capture`, and read the "Replay check" line.
 - A WebGPU device in a worker: there is no fixture for it.

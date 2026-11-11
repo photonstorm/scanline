@@ -55,6 +55,10 @@ pub async fn request_human(session: &Arc<Session>, params: &Value) -> Result<Val
     // The person has to be able to see what was asked of them.
     let strip = session.open_strip().await;
 
+    // And to press Debug whichever window has the keyboard: the key is held system-wide
+    // while the request is open. Not for a session nobody is sitting at.
+    let held = hold_debug_key(session);
+
     session.probe_all("resume", json!({}), SHORT).await;
     refresh(session).await;
 
@@ -65,6 +69,10 @@ pub async fn request_human(session: &Arc<Session>, params: &Value) -> Result<Val
         Err(error) => lines.push(format!(
             "The flight recorder could not be started ({error}), so Debug will capture the frame after the press instead of the frames before it."
         )),
+    }
+
+    if let Some(key) = &held {
+        lines.push(format!("{key} is held system-wide until they press it, so it works whichever window has the keyboard."));
     }
 
     lines.push(match &strip {
@@ -323,7 +331,37 @@ pub async fn strip(session: &Arc<Session>, params: &Value) -> Result<Value> {
 }
 
 /// Debug: freeze, keep the recording, capture the frozen frame, and tell whoever is listening.
+/// Starts the helper that holds the Debug key system-wide (`scanline hotkey`), and returns
+/// the key's name. None when there is nobody at the machine (a headless session), the
+/// person has switched it off (SCANLINE_HOTKEY=off), or the platform has no such helper.
+fn hold_debug_key(session: &Arc<Session>) -> Option<String> {
+    let wanted = std::env::var("SCANLINE_HOTKEY").unwrap_or_default();
+
+    if session.headless || !cfg!(target_os = "macos") || wanted.eq_ignore_ascii_case("off") {
+        return None;
+    }
+
+    let key = if wanted.is_empty() { "F9".to_string() } else { wanted.to_ascii_uppercase() };
+
+    session.release_hotkey();
+
+    let helper = std::process::Command::new(std::env::current_exe().ok()?)
+        .args(["hotkey", &session.id, &key])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+
+    session.state.lock().unwrap().hotkey = Some(helper);
+
+    Some(key)
+}
+
 pub async fn debug(host: &Arc<Host>, session: &Arc<Session>, params: &Value) -> Result<Value> {
+    // The key is given back as soon as it has done its job.
+    session.release_hotkey();
+
     let stopped = session.probe_all("pause", json!({}), SHORT).await;
     let frame = primary(&stopped)?["frame"].clone();
 

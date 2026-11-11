@@ -10,6 +10,7 @@
 
 mod cli;
 mod control;
+mod hotkey;
 mod http;
 
 use std::process::ExitCode;
@@ -67,6 +68,12 @@ async fn run(args: Vec<String>) -> Result<ExitCode> {
 
         Some("browser") => {
             cli::say(&format!("{}\n", cli::browser(&args[1..])?));
+            Ok(ExitCode::SUCCESS)
+        }
+
+        // Run by the host while a person has been asked to press Debug: see hotkey.rs.
+        Some("hotkey") => {
+            hotkey::run(&args[1..])?;
             Ok(ExitCode::SUCCESS)
         }
 

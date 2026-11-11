@@ -58,7 +58,6 @@ Every milestone of the build plan up to 1.0 has been worked through on macOS (Ap
 
 - For WebGPU captures: external (video) textures; geometry and "which test rejected it" for a draw inside a render bundle.
 - An adapter for PlayCanvas (installing it was not allowed where this was built).
-- A Debug hotkey that works when another application has the keyboard.
 - Readback of compressed and depth textures in the live page.
 - The fast binary channel for bulk data.
 - Windows and Linux.
