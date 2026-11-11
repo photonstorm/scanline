@@ -301,6 +301,179 @@ describe('what a capture says about each planted bug', () =>
     });
 });
 
+describe('what a capture says about each planted WebGPU bug', () =>
+{
+    // The same scene in raw WebGPU (fixtures/bugs/scene-webgpu.js), with the mistakes a
+    // WebGPU page makes. Events: 0 the minimap's clear, 1–3 its dots, 4 the scene's clear,
+    // 5 the ground, 6–8 the crates, 9 the glass, 10–21 the sparks, 22–24 the HUD.
+    test('w00, the correct scene, raises nothing', async () =>
+    {
+        const { summary, capture, session } = await captured('w00');
+
+        assert.doesNotMatch(summary, /Worth a look/);
+        assert.doesNotMatch(summary, /raised a validation error/);
+
+        const list = await scanline('draw_list', capture, '--limit', 40, '--session', session);
+
+        assert.match(list.out, /25 events/);
+        assert.equal(list.out.match(/⇒ \d+ px at/g).length, 25);
+        assert.match(list.out, / 5 {2}triangle-strip ×4 {2}pip_1 → canvas .*⇒ 48000 px at 0, 260, 480, 100/);
+    });
+
+    test('w01: the crates are culled, and draw says so', async () =>
+    {
+        const { summary, capture, session } = await captured('w01');
+
+        assert.match(summary, /3 draws changed no pixels: events 6–8\. draw\(draw: 6\) says which test rejected it/);
+
+        const draw = await scanline('draw', capture, 6, '--session', session);
+
+        assert.match(draw.out, /sprite\.rect \(vec4f, byte 0\) = 140, 180, -80, 80/);
+        assert.match(draw.out, /Why: With face culling off it changes 6400 pixels: every triangle is culled \(cull back, front face cw\)/);
+    });
+
+    test('w02: the crate texture has mip levels nothing ever wrote', async () =>
+    {
+        const { summary, session } = await captured('w02');
+
+        assert.match(summary, /tex_2 has 9 mip levels, but only level 0 has ever been written: the others have never been written and hold zeros\. Events 6–8 sample it/);
+        assert.match((await scanline('resources', 'texture', '--session', session)).out, /tex_2 «crate» {2}256×256 rgba8unorm, 9 levels \(only level 0 written\)/);
+    });
+
+    test('w03: the glass is written without blending, to a canvas that hides alpha', async () =>
+    {
+        const { summary, capture, session } = await captured('w03');
+
+        assert.match(summary, /\d+ pixels of the canvas end the frame with alpha below 1 \(as low as 0\.4\), within x 150 y 120 220×160\..*a pipeline with no blend state/);
+
+        const draw = await scanline('draw', capture, 9, '--session', session);
+
+        assert.match(draw.out, /pipeline pip_2 {2}\(render pipeline «glass»\)/);
+        assert.match(draw.out, /sprite\.tint \(vec4f, byte 32\) = 0\.2, 0\.4, 1, 0\.4/);
+        assert.match(draw.out, /blend: off \(the draw replaces what is there\)/);
+    });
+
+    test('w04: the ground\'s buffer is written in another layout than the struct\'s', async () =>
+    {
+        const { summary, capture, session } = await captured('w04');
+
+        // Its alpha comes out as 0, which the opaque canvas hides: that is the first sign.
+        assert.match(summary, /48000 pixels of the canvas end the frame with alpha below 1 \(as low as 0\), within x 0 y 260 480×100/);
+
+        const draw = await scanline('draw', capture, 5, '--session', session);
+
+        assert.match(draw.out, /sprite\.depth \(f32, byte 24\) = 0\.9/);
+        assert.match(draw.out, /sprite\.tint \(vec4f, byte 32\) = 0\.5, 0\.2, 1, 0/);
+        assert.match(draw.out, /The page has only ever written bytes 0–48 of buf_2, and the shader reads it as far as byte 52.*a vec4f or a matrix starts on a multiple of 16 bytes/);
+
+        // The same draw in the correct scene carries no such line.
+        const right = await captured('w00');
+
+        assert.doesNotMatch((await scanline('draw', right.capture, 5, '--session', right.session)).out, /has only ever written/);
+    });
+
+    test('w05: the depth clear makes every depth test fail', async () =>
+    {
+        const { summary, capture, session } = await captured('w05');
+
+        assert.match(summary, /17 draws changed no pixels: events 5–21/);
+
+        const draw = await scanline('draw', capture, 5, '--session', session);
+
+        assert.match(draw.out, /Why: With the depth test off it changes 48000 pixels: every fragment fails the depth test \(less\)\. The depth buffer was last cleared to 0 by event 4, and nothing can pass/);
+    });
+
+    test('w06: the glass is drawn before the crates', async () =>
+    {
+        const { summary } = await captured('w06');
+
+        assert.match(summary, /Event 6 blends, but opaque depth-written events 8–9 are drawn after it on the same pixels/);
+    });
+
+    test('w07: the scissor box is left where the health bar put it', async () =>
+    {
+        const { summary, capture, session } = await captured('w07');
+
+        assert.match(summary, /1 draw changed no pixels: event 24/);
+
+        const draw = await scanline('draw', capture, 24, '--session', session);
+
+        assert.match(draw.out, /Why: With the scissor test off it changes 4096 pixels: it falls outside the scissor box \(12, 12, 150, 12\)/);
+    });
+
+    test('w08: the crates are drawn with the health bar\'s bind group', async () =>
+    {
+        const { capture, session } = await captured('w08');
+        const draw = await scanline('draw', capture, 6, '--session', session);
+
+        assert.match(draw.out, /bind group 1: bgr_\d+ {2}\(2 bindings «health bar»\)\n\s+binding 0: a view of tex_\d+ {2}\(32×1 rgba8unorm «health bar»\)/);
+    });
+
+    test('w09: the scene is drawn through the minimap\'s viewport', async () =>
+    {
+        const { summary } = await captured('w09');
+
+        assert.match(summary, /Every draw on canvas \(events 5–24\) uses viewport 0, 0, 64, 64, but canvas is 480×360\. The viewport was last set at call \d+/);
+    });
+
+    test('w10: a texture is created every frame and never destroyed', async () =>
+    {
+        const { summary } = await captured('w10');
+
+        assert.match(summary, /The frame itself created 1 texture and deleted nothing\. It created more than it deleted: if every frame does, they pile up \(a leak\)/);
+    });
+
+    test('w11: a shader module and a pipeline are made every frame', async () =>
+    {
+        const { summary } = await captured('w11');
+
+        assert.match(summary, /The frame itself created 1 pipeline, 1 shader module and deleted nothing\. Compiling shader modules and building pipelines are slow: a page that does this every frame stutters/);
+    });
+
+    test('w12: the minimap pass throws away what it drew, and the replay does too', async () =>
+    {
+        // captured() checks that the replay is identical: it empties the target as the browser does.
+        const { summary, capture, session } = await captured('w12');
+
+        assert.match(summary, /Pass 0 draws to tex_5 and ends with storeOp "discard", which throws away what it drew\. Event 24 then samples tex_5 and reads zeros\. Use storeOp: "store"/);
+
+        // Inside the pass the dots are there; once it has ended they are gone.
+        const during = await scanline('pixels', 13, 39, '--capture', capture, '--target', 'tex_5', '--at_draw', 3, '--session', session, '--json');
+        const after = await scanline('pixels', 13, 39, '--capture', capture, '--target', 'tex_5', '--session', session, '--json');
+
+        assert.deepEqual(during.json.data.rgba8, [255, 204, 51, 255], during.out);
+        assert.deepEqual(after.json.data.rgba8, [0, 0, 0, 0], after.out);
+    });
+
+    test('w14: one draw takes nearly all the GPU time, and its shader samples 64 times a pixel', async () =>
+    {
+        const { capture, session } = await captured('w14');
+        const profile = await scanline('profile', capture, '--session', session, '--json');
+
+        assert.equal(profile.code, 0, profile.out);
+        const top = /\n {2}event\s+(\d+)\s+[\d.]+ µs\s+(\d+)%/.exec(profile.json.summary);
+
+        assert.equal(top?.[1], '10', 'the haze is the costliest draw');
+        assert.ok(Number(top[2]) >= 80, profile.json.summary);
+
+        await scanline('resources', 'shader', '--session', session);
+
+        const haze = await scanline('shader_analysis', 'shd_2', '--session', session);
+
+        assert.match(haze.out, /1 inside a loop: up to 65 samples every time the shader runs/);
+        assert.match(haze.out, /up to 64 passes, 1 sample each pass/);
+    });
+
+    test('w15: a texture is drawn to and sampled in one pass, and the whole frame is dropped', async () =>
+    {
+        const { summary } = await captured('w15');
+
+        assert.match(summary, /2 calls raised a validation error when replayed\. WebGPU drops the whole command buffer such a call is encoded in, so none of its passes drew/);
+        assert.match(summary, /\[Texture "minimap"\] usage \(TextureBinding\|RenderAttachment\) includes writable usage and another usage in the same synchronization scope/);
+        assert.match(summary, /So events 0–24 did not run in the page/);
+    });
+});
+
 describe('the history of a pixel', () =>
 {
     const history = async (capture, session, x, y) => (await scanline('pixel_history', capture, x, y, '--session', session, '--json'));

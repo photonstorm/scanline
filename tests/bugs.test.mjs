@@ -35,6 +35,14 @@ async function look (id, body)
 
     try
     {
+        // The WebGPU scene asks for its device before it draws: wait until it has one, or
+        // the frames would be stepped past a page that is not ready to draw them.
+        // (window.game is the canvas itself, by its id, until the scene puts its state there.)
+        for (let tries = 0; tries < 200 && !(await session.evaluate('typeof window.game?.frame === "number"')); tries++)
+        {
+            await new Promise((done) => setTimeout(done, 25));
+        }
+
         await session.probe('step', { frames: 20 });
 
         await body({
@@ -70,6 +78,25 @@ describe('the planted bugs', () =>
 
             assert.equal(await textures(), before, 'no textures are created as it runs');
             assert.equal((await stats()).counters.compiles.max, 0, 'and no shaders are compiled');
+        });
+    });
+
+    test('the WebGPU reference scene is right', async () =>
+    {
+        await look('w00', async ({ pixel, stats, textures, step }) =>
+        {
+            assert.deepEqual(await pixel([100, 220]), [188, 132, 75, 255], 'a crate');
+            assert.deepEqual(await pixel([30, 320]), [64, 128, 51, 255], 'the ground');
+            assert.deepEqual(await pixel([250, 210]), [133, 120, 147, 255], 'a crate through the glass');
+            assert.deepEqual(await pixel([419, 49]), [255, 204, 51, 255], 'a dot on the minimap');
+            assert.deepEqual(await pixel([60, 18]), [255, 84, 40, 255], 'the health bar');
+
+            const before = await textures();
+
+            await step(30);
+
+            assert.equal(await textures(), before, 'no textures are created as it runs');
+            assert.equal((await stats()).counters.compiles.max, 0, 'and no shader modules are compiled');
         });
     });
 
@@ -113,7 +140,7 @@ describe('the planted bugs', () =>
                 }
                 else if (check.counter)
                 {
-                    assert.ok((await stats()).counters[check.counter].last >= 2, 'shaders are compiled in every frame');
+                    assert.ok((await stats()).counters[check.counter].last >= (check.least ?? 2), 'shaders are compiled in every frame');
                 }
             });
         });

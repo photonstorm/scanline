@@ -174,7 +174,9 @@ export const GPU = {
         beginComputePass: { intercept: true },
         // Counted as events while a live patch names draws by number (gpu/patch.ts).
         copyTextureToTexture: { post: true },
-        copyBufferToTexture: { post: true }
+        copyBufferToTexture: { post: true },
+        // Followed for what it writes: the destination counts as written whole.
+        copyBufferToBuffer: { post: true }
     },
     GPURenderPassEncoder: {
         // Followed while a live patch is in force, so that a draw's pipeline can be swapped

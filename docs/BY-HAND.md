@@ -218,14 +218,14 @@ SCANLINE_ALLOW=native-capture scanline launch http://127.0.0.1:8765/fixtures/mat
 
 ## An evaluation round with the runner
 
-The runner (`evals/run.mjs`) is tested with a stand-in for the agent. A real round spends the agent's tokens, fourteen times over, so it was left for you. With Claude Code installed and an MCP configuration that starts `scanline mcp`:
+The runner (`evals/run.mjs`) is tested with a stand-in for the agent. A real round spends the agent's tokens, once for each of the twenty-nine bugs, so it was left for you. With Claude Code installed and an MCP configuration that starts `scanline mcp`:
 
 ```bash
 node evals/run.mjs --agent 'claude -p --mcp-config /path/to/mcp.json --allowedTools "mcp__scanline"' --bugs b03
 ```
 
 - [ ] One answer is written to `evals/results/<today>/b03.txt`, and the line printed says whether it was correct and in how many calls.
-- [ ] Without `--bugs`, all fourteen run, one after another, and `scores.json` holds the round.
+- [ ] Without `--bugs`, all twenty-nine run, one after another, and `scores.json` holds the round. The fifteen WebGPU bugs (`w01` to `w15`) have never been given to an agent: this would be their first round.
 
 ## Yours to decide
 

@@ -126,6 +126,156 @@
       "fix": "Take far fewer samples in the loop (the haze is smooth, so a dozen or two look the same), or draw the haze at a lower resolution.",
       "expect": [["64", "loop", "samples", "sampl"], ["fragment", "shader", "full-screen", "fullscreen", "full screen", "every pixel", "per pixel"], ["haze", "shaft", "prg_2", "event 10", "draw 10", "SAMPLES"]],
       "check": { "pixel": [100, 150], "reference": [89, 153, 230, 255] }
+    },
+    {
+      "id": "w01",
+      "api": "webgpu",
+      "class": "nothing drawn",
+      "symptom": "The three crates are missing.",
+      "diagnosis": "The crates are drawn with a negative width, which reverses their winding. The pipeline culls back faces (cullMode back, frontFace cw), so every crate is culled: the three crate draws change no pixels.",
+      "fix": "Do not flip a sprite with a negative size while the pipeline culls: use cullMode none for sprites, or flip the texture coordinates instead.",
+      "expect": [["cull"], ["winding", "negative", "flip", "mirror", "front.?face", "back.?fac", "revers"]],
+      "check": { "pixel": [100, 220], "is": "not", "reference": [188, 132, 75, 255] }
+    },
+    {
+      "id": "w02",
+      "api": "webgpu",
+      "class": "sampling",
+      "symptom": "The crates are drawn black.",
+      "diagnosis": "The crate texture has nine mip levels but only level 0 was ever written: the other eight are empty. The crates are drawn smaller than the texture, with a sampler whose mipmapFilter is linear, so they sample the empty levels.",
+      "fix": "Write every mip level, or create the texture with one level.",
+      "expect": [["mip"], ["never written", "not written", "unwritten", "empty", "only level 0", "only the first", "only its first", "level 0 (was|is)", "zero", "no data", "uninitiali", "never (filled|uploaded|generated)", "not (filled|uploaded|generated)", "missing"]],
+      "check": { "pixel": [100, 220], "is": "exactly", "value": [0, 0, 0, 0] }
+    },
+    {
+      "id": "w03",
+      "api": "webgpu",
+      "class": "wrong pixels",
+      "symptom": "The glass panel is opaque. The crates behind it cannot be seen through it.",
+      "diagnosis": "The glass's pipeline has no blend state on its colour target, so the glass's colour replaces what is behind it instead of mixing with it.",
+      "fix": "Give the glass pipeline's colour target a blend state: src-alpha, one-minus-src-alpha.",
+      "expect": [["blend"], ["off", "disabled", "not enabled", "no blend", "not set", "without", "missing", "undefined", "none", "lacks", "has no", "replaces"]],
+      "check": { "pixel": [250, 210], "is": "exactly", "value": [51, 102, 255, 102] }
+    },
+    {
+      "id": "w04",
+      "api": "webgpu",
+      "class": "wrong pixels",
+      "symptom": "The ground is the wrong colour. It should be green.",
+      "diagnosis": "The ground's uniform buffer is written without the padding the Sprite struct has. tint is a vec4f, so it sits at byte 32, after four bytes of padding that follow depth at byte 24. The ground's numbers are packed with tint straight after depth, at byte 28, so the shader reads tint one float late: (0.5, 0.2, 1, 0) instead of (0.25, 0.5, 0.2, 1).",
+      "fix": "Write the ground's buffer with the layout every other sprite uses: one float of padding between depth and tint.",
+      "expect": [["tint"], ["align", "padding", "padded", "\\bpad\\b", "offset", "layout", "shift", "one float", "4 bytes", "four bytes", "byte 28", "byte 32", "packed", "late", "off by"]],
+      "check": { "pixel": [30, 320], "is": "exactly", "value": [128, 51, 255, 0] }
+    },
+    {
+      "id": "w05",
+      "api": "webgpu",
+      "class": "nothing drawn",
+      "symptom": "Only the sky and the HUD are drawn. The ground, the crates, the glass and the sparks are missing.",
+      "diagnosis": "The scene pass clears its depth buffer to 0 (depthClearValue 0). Every pipeline that tests depth uses less, and nothing is nearer than 0, so every such draw fails the depth test.",
+      "fix": "Clear depth to 1.",
+      "expect": [["depth"], ["clear"], ["\\b0\\b", "zero"]],
+      "check": { "pixel": [100, 220], "is": "not", "reference": [188, 132, 75, 255] }
+    },
+    {
+      "id": "w06",
+      "api": "webgpu",
+      "class": "wrong order",
+      "symptom": "The glass panel does not tint the crates: they look as if they are in front of it.",
+      "diagnosis": "The glass panel is drawn before the crates. It is blended and does not write depth, so the crates, drawn afterwards, cover it.",
+      "fix": "Draw the glass after the crates.",
+      "expect": [["order", "before", "after", "first", "earlier", "later"], ["glass", "blend", "transparent", "translucent"]],
+      "check": { "pixel": [250, 210], "is": "not", "reference": [133, 120, 147, 255] }
+    },
+    {
+      "id": "w07",
+      "api": "webgpu",
+      "class": "wrong pixels",
+      "symptom": "The minimap is missing from the top-right corner.",
+      "diagnosis": "The scissor rectangle set for the health bar (12, 12, 150×12) is never set back, so the minimap, drawn next in the same pass, is clipped away entirely.",
+      "fix": "Set the scissor rectangle back to the whole target after drawing the health bar.",
+      "expect": [["scissor"], ["not reset", "never reset", "left", "still", "remain", "stays", "not restored", "never restored", "set back", "persist", "carried", "clip", "outside", "kept out", "rejected"]],
+      "check": { "pixel": [419, 49], "is": "not", "reference": [255, 204, 51, 255] }
+    },
+    {
+      "id": "w08",
+      "api": "webgpu",
+      "class": "wrong pixels",
+      "symptom": "The crates have the wrong picture on them: an orange gradient instead of wooden planks.",
+      "diagnosis": "The crates are drawn with the health bar's texture bind group in group 1 instead of the crate's own.",
+      "fix": "Set the crate's bind group for the crates.",
+      "expect": [["health bar", "\\bbar\\b"], ["bind group", "bgr_", "group 1", "texture", "tex_"]],
+      "check": { "pixel": [100, 220], "is": "not", "reference": [188, 132, 75, 255] }
+    },
+    {
+      "id": "w09",
+      "api": "webgpu",
+      "class": "targets",
+      "symptom": "The whole scene is squashed into the top-left corner of the canvas.",
+      "diagnosis": "The scene pass sets its viewport to 64×64, the minimap's size, so everything it draws lands in that corner of the 480×360 canvas.",
+      "fix": "Do not set the viewport in the scene pass, or set it to the canvas size.",
+      "expect": [["viewport"], ["64"]],
+      "check": { "pixel": [100, 220], "is": "not", "reference": [188, 132, 75, 255] }
+    },
+    {
+      "id": "w10",
+      "api": "webgpu",
+      "class": "memory",
+      "symptom": "Memory use keeps growing for as long as the page runs.",
+      "diagnosis": "A new 256×256 texture is created every frame for the minimap (makeMapTarget, called from renderMap) and the old one is never destroyed.",
+      "fix": "Create the minimap texture once, or destroy the old one before replacing it.",
+      "expect": [["texture"], ["every frame", "each frame", "per frame", "per-frame", "never (deleted|destroyed|freed|released)", "not (deleted|destroyed|freed|released)", "leak"], ["makeMapTarget", "renderMap", "minimap", "256"]],
+      "check": { "growth": "texture" }
+    },
+    {
+      "id": "w11",
+      "api": "webgpu",
+      "class": "performance",
+      "symptom": "The page stutters: frames take much longer than they should.",
+      "diagnosis": "The sparks' shader module and render pipeline are created again every frame.",
+      "fix": "Create the module and the pipeline once and reuse them.",
+      "expect": [["compil", "shader module", "pipeline", "createShaderModule", "createRenderPipeline"], ["every frame", "each frame", "per frame", "per-frame", "recompil", "re-compil", "recreat", "re-creat"]],
+      "check": { "counter": "compiles", "least": 1 }
+    },
+    {
+      "id": "w12",
+      "api": "webgpu",
+      "class": "targets",
+      "symptom": "The minimap is an empty black square: its yellow dots are missing.",
+      "diagnosis": "The minimap pass ends with storeOp discard, so what it drew to the minimap texture is thrown away. The HUD then samples an empty texture.",
+      "fix": "End the minimap pass with storeOp: 'store'.",
+      "expect": [["store.?op", "discard"], ["minimap", "tex_", "pass"]],
+      "check": { "pixel": [419, 49], "is": "not", "reference": [255, 204, 51, 255] }
+    },
+    {
+      "id": "w13",
+      "api": "webgpu",
+      "class": "intermittent",
+      "symptom": "The glass panel flickers: now and then, for a single frame, the crates behind it look as if they are in front of it.",
+      "diagnosis": "On one frame in forty the glass panel is drawn before the crates instead of after them. It is blended and does not write depth, so on that frame the crates, drawn afterwards, cover it.",
+      "fix": "Draw the glass after the crates on every frame: the order must not depend on the frame number.",
+      "expect": [["order", "before", "after", "first", "earlier", "later", "swap"], ["glass", "blend", "transparent", "translucent"], ["frame", "intermittent", "sometimes", "every", "one in", "occasion", "40", "forty"]],
+      "check": { "flicker": { "pixel": [250, 210], "reference": [133, 120, 147, 255], "every": 40 } }
+    },
+    {
+      "id": "w14",
+      "api": "webgpu",
+      "class": "performance",
+      "symptom": "This build adds a soft haze of sunlight over the whole scene. Since it went in, the frame costs many times the GPU time it did, and far more than a scene this simple should.",
+      "diagnosis": "The haze is one full-screen draw whose fragment shader samples a texture 64 times in a loop for every pixel of the canvas. That draw takes nearly all of the frame's GPU time.",
+      "fix": "Take far fewer samples in the loop (the haze is smooth, so a dozen or two look the same), or draw the haze at a lower resolution.",
+      "expect": [["64", "loop", "samples", "sampl"], ["fragment", "shader", "full-screen", "fullscreen", "full screen", "every pixel", "per pixel"], ["haze", "shaft", "pip_", "event", "draw", "SAMPLES"]],
+      "check": { "pixel": [100, 150], "is": "not", "reference": [89, 153, 229, 255] }
+    },
+    {
+      "id": "w15",
+      "api": "webgpu",
+      "class": "validation",
+      "symptom": "Nothing is drawn at all: the canvas is black.",
+      "diagnosis": "The minimap pass draws its dots with the minimap's own bind group set in group 1, so the minimap texture is the pass's colour attachment and is bound for sampling in the same pass. WebGPU rejects that, the frame's command encoder becomes invalid, and none of the frame's commands run.",
+      "fix": "Set the plain white texture group for the dots, as the other untextured sprites do.",
+      "expect": [["minimap", "tex_\\d", "attachment", "render target"], ["same pass", "both", "usage", "sampled", "bound", "binding", "TextureBinding", "RenderAttachment", "conflict"], ["invalid", "validation", "reject", "error"]],
+      "check": { "pixel": [100, 220], "is": "exactly", "value": [0, 0, 0, 0] }
     }
   ]
 }

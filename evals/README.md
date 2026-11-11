@@ -4,7 +4,7 @@ Scanline's interface is tuned by giving agents pages with planted rendering bugs
 
 ## The bugs
 
-`fixtures/bugs/` is one small game scene in raw WebGL 2 (`scene.js`) and fifteen pages that run it. `b00.html` is correct. Each of `b01.html` to `b14.html` has exactly one thing wrong.
+`fixtures/bugs/` is one small game scene, written twice: in raw WebGL 2 (`scene.js`) and in raw WebGPU (`scene-webgpu.js`). `b00.html` and `w00.html` are correct. Each of `b01.html` to `b14.html` (WebGL) and `w01.html` to `w15.html` (WebGPU) has exactly one thing wrong.
 
 `bugs.json` says, for each bug:
 
@@ -37,7 +37,31 @@ b12 was not planted. It was a real mistake in the first version of the scene, fo
 
 b13 is the one a single capture is unlikely to catch: it needs the flight recorder, which keeps the frames before Debug is pressed.
 
-Not covered yet: back-end differences (right on WebGPU, wrong on WebGL), and anything on WebGPU. WebGPU frames can be captured now, so a WebGPU version of the scene is the next set of bugs to plant.
+The WebGPU bugs are the same scene with the mistakes a WebGPU page makes:
+
+| Bug | Class | Symptom |
+|---|---|---|
+| w01 | nothing drawn | The three crates are missing. |
+| w02 | sampling | The crates are drawn black. |
+| w03 | wrong pixels | The glass panel is opaque. |
+| w04 | wrong pixels | The ground is the wrong colour. |
+| w05 | nothing drawn | Only the sky and the HUD are drawn. |
+| w06 | wrong order | The glass panel does not tint the crates. |
+| w07 | wrong pixels | The minimap is missing. |
+| w08 | wrong pixels | The crates have the wrong picture on them. |
+| w09 | targets | The whole scene is squashed into a corner. |
+| w10 | memory | Memory keeps growing. |
+| w11 | performance | The page stutters. |
+| w12 | targets | The minimap is an empty black square. |
+| w13 | intermittent | The glass panel flickers for one frame now and then. |
+| w14 | performance | A haze of sunlight was added and the frame's GPU time went up many times over. |
+| w15 | validation | Nothing is drawn at all. |
+
+Several have no WebGL counterpart: mip levels that were never written (w02), a uniform buffer written in another layout than its struct's (w04), a pass that ends with `storeOp: "discard"` (w12), and a texture drawn to and sampled in one pass, which loses the whole frame (w15).
+
+The WebGPU bugs have not been given to agents yet: `tests/findings.test.mjs` holds Scanline to stating the cause of each, and the next round is the first to include them.
+
+Not covered yet: back-end differences (right on WebGPU, wrong on WebGL).
 
 ## Running an evaluation
 
@@ -59,7 +83,7 @@ node evals/serve.mjs 8765
 node evals/run.mjs --agent 'claude -p --mcp-config /path/to/mcp.json --allowedTools "mcp__scanline"'
 ```
 
-`--bugs b03,b13` runs some of them, `--out` names the results folder, `--timeout` is the seconds one agent may take (900), and `--how` is what the prompt calls the tools. A round of fourteen costs whatever fourteen runs of that agent cost: the runner does not know or limit it.
+`--bugs b03,b13` runs some of them, `--out` names the results folder, `--timeout` is the seconds one agent may take (900), and `--how` is what the prompt calls the tools. A full round is twenty-nine runs of that agent and costs what they cost: the runner does not know or limit it.
 
 By hand instead: print a prompt, give it to an agent, save its final answer as `bNN.txt` in a folder under `results/`, then score the folder.
 

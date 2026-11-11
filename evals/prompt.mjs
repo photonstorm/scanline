@@ -18,7 +18,7 @@ export function promptFor (id, origin = 'http://127.0.0.1:8765', how = 'the `gfx
     }
 
     return [
-        `A WebGL page has a rendering bug. Find its cause.`,
+        `A ${bug.api === 'webgpu' ? 'WebGPU' : 'WebGL'} page has a rendering bug. Find its cause.`,
         ``,
         `The page: ${origin}/fixtures/bugs/${bug.id}.html`,
         `What it should show: ${manifest.scene}`,

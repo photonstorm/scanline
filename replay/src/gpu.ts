@@ -185,6 +185,7 @@ export interface Open
     kind: 'render' | 'compute';
     descriptor: Json;       // as given to the browser
     state: Setting[];       // the calls that set its state, in order
+    discards?: any[];       // views of the colour targets the page's pass throws away when it ends
 }
 
 // What a render bundle resets when it has run.
@@ -933,6 +934,15 @@ export class GpuRun
             this.register(made, pass);
             this.open = { key: this.keyOf(made), encoderKey: this.keyOf(self), kind: name === 'beginRenderPass' ? 'render' : 'compute', descriptor, state: [] };
 
+            // The replay keeps what every pass draws, so that it can be read. What the page's
+            // pass throws away is emptied when the pass ends, as the browser leaves it.
+            if (name === 'beginRenderPass')
+            {
+                this.open.discards = Array.from(args[0]?.colorAttachments ?? [])
+                    .filter((attachment: any) => attachment && attachment.storeOp === 'discard' && !attachment.resolveTarget)
+                    .map((attachment: any) => attachment.view);
+            }
+
             return;
         }
 
@@ -998,7 +1008,14 @@ export class GpuRun
             {
                 if (this.open?.kind === 'render')
                 {
-                    this.onEnd?.(this.open, this.objects.get(this.open.encoderKey));
+                    const encoder = this.objects.get(this.open.encoderKey);
+
+                    this.onEnd?.(this.open, encoder);
+
+                    for (const view of this.open.discards ?? [])
+                    {
+                        encoder.beginRenderPass({ colorAttachments: [{ view, clearValue: [0, 0, 0, 0], loadOp: 'clear', storeOp: 'store' }] }).end();
+                    }
                 }
 
                 this.open = null;

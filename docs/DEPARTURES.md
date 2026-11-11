@@ -68,7 +68,7 @@ Built for WebGL 1, WebGL 2 and WebGPU: the capture, the store (BLAKE3-named, zst
 |---|---|
 | Replay matches on every matrix page | Met for the pages there are: eight on WebGL, and on WebGPU the two raw pages, three.js and PixiJS. At milestone 7 a Babylon.js scene with a shadow map was added, on its WebGL 2 and WebGPU engines (`fixtures/engines/babylon-shadows.html`); both replay identically. A WebGPU device in a worker, and the engines the matrix still lacks, are untried. |
 | Or reports why not | Met: every capture is replayed once when taken and compared with the frame's own image, the verdict is stored with it, and replay answers carry a warning when it failed. |
-| An agent diagnoses the planted bugs with no hints | Met for the bugs there are: twelve, in one small WebGL scene (`fixtures/bugs/`), all diagnosed by agents using only the command line, in a median of 8.5 commands. `evals/results/README.md` has both rounds and their limits. There is no runner that starts the agents; the rounds were started by hand. |
+| An agent diagnoses the planted bugs with no hints | Met for the bugs there were: twelve, in one small WebGL scene (`fixtures/bugs/`), all diagnosed by agents using only the command line, in a median of 8.5 commands. `evals/results/README.md` has both rounds and their limits. The rounds were started by hand; a runner now exists (`evals/run.mjs`), and fifteen WebGPU bugs that no agent has been given yet. |
 
 Differences from the specification:
 
@@ -296,7 +296,7 @@ The build plan gives milestone 7 a list and no exit sentence: "Capture viewer an
 
 | PRD section 10 | Target | Standing |
 |---|---|---|
-| Planted bugs diagnosed, no hints | 80% or more | Met on the bugs there are: 14 of 14 in round 3, on the finished build (12 of 12 and 6 of 6 in rounds 1 and 2). The bugs are one small scene with one mistake each, all on WebGL; `evals/results/README.md` says what that does and does not show. |
+| Planted bugs diagnosed, no hints | 80% or more | Met on the bugs there are: 14 of 14 in round 3, on the finished build (12 of 12 and 6 of 6 in rounds 1 and 2). Those bugs are one small scene with one mistake each, all on WebGL; `evals/results/README.md` says what that does and does not show. The fifteen WebGPU bugs planted since have not been given to agents. |
 | Median tool calls to a correct diagnosis | 12 or fewer | 9 in round 3. One bug is far outside it: the intermittent one (b13) took about 190 commands, because the agent did not find the flight recorder. The help now points at it; that has not been run past an agent. |
 | Tokens of tool results per diagnosis | Under 40,000 | Roughly 2,000 to 4,500 in rounds 1 and 2. Not measured in round 3; b13's 190 commands will have been well over it. |
 | Hand-off round trip with no manual steps | Works on both platforms | Works on macOS: checked by hand with a real F9 press on 11 November 2026, and by `tests/e2e.test.mjs` with `debug`. Windows is not built. |
@@ -337,6 +337,18 @@ A compressed texture, a depth texture and (on WebGL) a luminance or alpha textur
 - **WebGPU** (`probe/src/gpu/sample.ts`). A compressed texture is copied as its blocks for a capture, which the replay writes back as they are, and drawn to be looked at. Depth is copied where the format allows (`depth16unorm`, `depth32float`, the depth of `depth32float-stencil8`) and drawn where it does not (`depth24plus`). `TEXTURE_BINDING` is added to the usage of `depth24plus` textures so that they can be drawn; it is declared with the other changes. The replay fills a depth texture by drawing a triangle whose fragments take their depth from the captured values.
 - Depth render targets are read before the frame, as colour targets are, so a frame that loads depth an earlier one drew replays from the right start.
 - Not read: multisampled textures, stencil, and 3D compressed textures.
+
+## The WebGPU bugs, and what planting them found
+
+The planted-bug scene was written again in raw WebGPU (`fixtures/bugs/scene-webgpu.js`), with fifteen mistakes of the kind a WebGPU page makes (`evals/bugs.json`, `w01` to `w15`). Each reproduces (`tests/bugs.test.mjs`), and Scanline is held to stating the cause of each in a capture's summary or one further command (`tests/findings.test.mjs`). Agents have not been given them yet.
+
+Most were already answered by what was built. Planting them found these gaps, now closed:
+
+- **A pass that ends with `storeOp: "discard"` replayed wrongly.** The replay keeps what every pass draws, so that it can be read; a target the page's pass threw away was full in the replay and empty in the page. The replay now empties such a target when the pass ends, as the browser does, and the capture says when a later draw samples it.
+- **Mip levels that were never written.** The probe now follows which levels of a WebGPU texture have been written (an upload, a copy, a pass that draws to it), the inventory says `9 levels (only level 0 written)`, and a capture names the draws that sample such a texture. A texture a compute pass may write is not judged.
+- **Translucent colours written unblended to an opaque canvas.** The canvas shows as if alpha were 1, so nothing looks wrong until the colour does. A capture counts the pixels of an opaque WebGPU canvas that end the frame with alpha below 1 and says where.
+- **The viewport finding** looked for a run of events that all used one viewport. A WebGPU pass's clear is listed with the whole target, so the run never matched; the draws now decide.
+- **A uniform buffer written short of what its shader reads.** `draw` gives each member's byte offset, and says when the page has only ever written part of what the struct covers: the usual sign of a layout written without WGSL's padding.
 
 ## State set up long before the frame
 

@@ -62,7 +62,7 @@ function claimed (answer)
 if (import.meta.url === `file://${process.argv[1]}`)
 {
     const rows = process.argv[2] === '--dir'
-        ? readdirSync(process.argv[3]).filter((name) => /^b\d+\.txt$/.test(name)).sort().map((name) => score(name.slice(0, -4), readFileSync(join(process.argv[3], name), 'utf8')))
+        ? readdirSync(process.argv[3]).filter((name) => /^[bw]\d+\.txt$/.test(name)).sort().map((name) => score(name.slice(0, -4), readFileSync(join(process.argv[3], name), 'utf8')))
         : [score(process.argv[2], readFileSync(process.argv[3], 'utf8'))];
 
     console.table(rows.map((row) => ({ bug: row.id, class: row.class, correct: row.correct, calls: row.calls, missing: row.missing.join('; ') })));

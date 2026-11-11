@@ -3,6 +3,7 @@
 import { currentFrame } from './clock/gate';
 import { allContexts, contextById, type ContextInfo } from './contexts';
 import { formatName } from './gl/formats';
+import { unwritten } from './gpu/formats';
 import { CAP_CODES, trackerFor, type UniformSlot } from './gl/tracker';
 import { verify } from './gl/verify';
 import { gpuPropagateUse } from './gpu/patch';
@@ -42,7 +43,7 @@ function what (entry: Entry): string
             if (entry.api === 'webgpu')
             {
                 return `${p.width}×${p.height}${p.depthOrArrayLayers > 1 ? `×${p.depthOrArrayLayers}` : ''} ${p.format}`
-                    + (p.mipLevelCount > 1 ? `, ${p.mipLevelCount} levels` : '')
+                    + (p.mipLevelCount > 1 ? `, ${p.mipLevelCount} levels${unwritten(p)}` : '')
                     + (p.sampleCount > 1 ? `, ${p.sampleCount}× MSAA` : '')
                     + (p.dimension !== '2d' ? `, ${p.dimension}` : '');
             }

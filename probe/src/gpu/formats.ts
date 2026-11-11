@@ -98,3 +98,29 @@ export function copyBytes (format: string): number
 
     return texelBytes(format);
 }
+
+// Which mip levels of a WebGPU texture nothing has ever written, where some have been and
+// some have not: " (only level 0 written)". A texture a compute pass may write is not judged.
+export function unwritten (p: Record<string, any>): string
+{
+    const count: number = p.mipLevelCount ?? 1;
+    const mask: number = p.levelsWritten ?? 0;
+    const all = count >= 31 ? 0x7FFFFFFF : (1 << count) - 1;
+
+    if (count <= 1 || mask === 0 || (mask & all) === all || (typeof p.usage === 'number' && (p.usage & 0x08) !== 0))
+    {
+        return '';
+    }
+
+    const written: number[] = [];
+
+    for (let level = 0; level < count; level++)
+    {
+        if (mask & (1 << level))
+        {
+            written.push(level);
+        }
+    }
+
+    return written.length === 1 ? ` (only level ${written[0]} written)` : ` (only levels ${written.join(', ')} written)`;
+}

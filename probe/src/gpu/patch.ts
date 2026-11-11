@@ -34,7 +34,7 @@ import { G, nativeNow } from '../natives';
 import { all, deviceFor, entryOf, find, gpuUse, type Entry } from '../registry';
 import { imageOf } from '../standin';
 import { recordIntercepted } from './rec';
-import { bufferWatch, madeFromOf, viewOf } from './tracker';
+import { bufferWatch, madeFromOf, noteCopyTo, viewOf, wholeWritten } from './tracker';
 
 export interface GpuPatch
 {
@@ -1245,14 +1245,21 @@ export const gpuPatchHandlers: Record<string, Post> = {
         events++;
     },
 
-    'GPUCommandEncoder.copyTextureToTexture' ()
+    'GPUCommandEncoder.copyTextureToTexture' (_c, _encoder, _result, _source, destination)
     {
         events++;
+        noteCopyTo(destination);
     },
 
-    'GPUCommandEncoder.copyBufferToTexture' ()
+    'GPUCommandEncoder.copyBufferToTexture' (_c, _encoder, _result, _source, destination)
     {
         events++;
+        noteCopyTo(destination);
+    },
+
+    'GPUCommandEncoder.copyBufferToBuffer' (_c, _encoder, _result, _source, _from, destination)
+    {
+        wholeWritten(destination);
     }
 };
 

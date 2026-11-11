@@ -294,6 +294,41 @@ function derivedLayout (pipeline: object, layout: object | null | undefined, ind
     }
 }
 
+// Which mip levels of a texture have been given contents, one bit a level: by an upload,
+// a copy, or a pass that draws to it. A level never written reads as zeros, and a texture
+// sampled between levels that were never filled is a common way to draw black.
+export function noteLevel (entry: Entry | undefined, level: unknown): void
+{
+    if (entry)
+    {
+        entry.p.levelsWritten = (entry.p.levelsWritten ?? 0) | (1 << G.Math.min(30, G.Number(level) || 0));
+    }
+}
+
+// The destination of a copy: { texture, mipLevel }.
+export function noteCopyTo (destination: any): void
+{
+    try
+    {
+        noteLevel(entryOf(destination?.texture), destination?.mipLevel);
+    }
+    catch
+    {
+        // A destination the probe cannot read is the page's business.
+    }
+}
+
+// A buffer written in a way the probe does not follow byte by byte: taken as written whole.
+export function wholeWritten (buffer: unknown): void
+{
+    const entry = buffer && typeof buffer === 'object' ? entryOf(buffer) : undefined;
+
+    if (entry && entry.kind === 'buffer')
+    {
+        entry.p.writtenEnd = entry.p.size ?? 0;
+    }
+}
+
 // Marks the textures a render pass draws to, so a capture knows to read them before a frame.
 export function noteTargets (descriptor: any): void
 {
@@ -303,11 +338,13 @@ export function noteTargets (descriptor: any): void
         {
             for (const view of [attachment?.view, attachment?.resolveTarget])
             {
-                const texture = view ? viewTag.get(view)?.texture : undefined;
+                const tagged = view ? viewTag.get(view) : undefined;
+                const texture = tagged?.texture;
 
                 if (texture)
                 {
                     texture.p.renderTarget = true;
+                    noteLevel(texture, (tagged.descriptor as any)?.baseMipLevel);
                 }
             }
         }
@@ -488,6 +525,9 @@ const post: Record<string, Post> = {
 
     'GPUBuffer.getMappedRange' (_c, buffer, range, offset)
     {
+        // A mapped buffer may be written anywhere: taken as written whole.
+        wholeWritten(buffer);
+
         if (mapWatch.range !== null && range)
         {
             mapWatch.range(buffer, range, G.Number(offset) || 0);
@@ -511,6 +551,21 @@ const post: Record<string, Post> = {
         if (entry)
         {
             entry.written = currentFrame();
+
+            // How far into the buffer the page has ever written: a uniform buffer written
+            // short of what its shader reads is usually a layout the page has wrong.
+            try
+            {
+                const each = data?.BYTES_PER_ELEMENT ?? 1;
+                const from = (G.Number(dataOffset) || 0) * each;
+                const bytes = size === undefined ? (data?.byteLength ?? 0) - from : G.Number(size) * each;
+
+                entry.p.writtenEnd = G.Math.max(entry.p.writtenEnd ?? 0, (G.Number(offset) || 0) + bytes);
+            }
+            catch
+            {
+                // Arguments the browser will reject are the page's business.
+            }
         }
 
         if (bufferWatch.written !== null)
@@ -526,6 +581,7 @@ const post: Record<string, Post> = {
         if (entry)
         {
             entry.written = currentFrame();
+            noteLevel(entry, destination.mipLevel);
         }
     },
 
@@ -536,6 +592,7 @@ const post: Record<string, Post> = {
         if (entry)
         {
             entry.written = currentFrame();
+            noteLevel(entry, destination.mipLevel);
         }
     }
 };

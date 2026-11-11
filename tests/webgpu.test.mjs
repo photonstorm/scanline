@@ -320,9 +320,9 @@ describe('one draw of a WebGPU capture', () =>
         assert.equal(culled.code, 0, culled.out);
         assert.match(culled.json.summary, /Why: With face culling off it changes 2400 pixels: every triangle is culled \(cull back, front face ccw\)/);
         assert.match(culled.json.summary, /group 0 binding 0: «tint» Tint \(uniform buffer\), in buf_\d+/);
-        assert.match(culled.json.summary, /tint\.colour \(vec4f\) = 0\.2, 0\.8, 0\.2, 1/);
-        assert.match(culled.json.summary, /tint\.rect \(vec4f\) = 120, 0, 160, 60/);
-        assert.match(culled.json.summary, /tint\.depth \(f32\) = 0\.5/);
+        assert.match(culled.json.summary, /tint\.colour \(vec4f, byte 0\) = 0\.2, 0\.8, 0\.2, 1/);
+        assert.match(culled.json.summary, /tint\.rect \(vec4f, byte 16\) = 120, 0, 160, 60/);
+        assert.match(culled.json.summary, /tint\.depth \(f32, byte 32\) = 0\.5/);
         assert.deepEqual(culled.json.data.bindings.buffers[0].values.map((value) => value.name), ['tint.colour', 'tint.rect', 'tint.depth']);
 
         // E: outside the scissor box.
@@ -335,7 +335,7 @@ describe('one draw of a WebGPU capture', () =>
 
         assert.match(textured.out, /group 0 binding 1: «checks» texture_2d<f32>/);
         assert.match(textured.out, /group 0 binding 2: «nearest» sampler/);
-        assert.match(textured.out, /tint\.rect \(vec4f\) = 120, 0, 160, 120/);
+        assert.match(textured.out, /tint\.rect \(vec4f, byte 16\) = 120, 0, 160, 120/);
     });
 
     test('geometry reads what the vertex shader made of the vertices', async () =>

@@ -8,7 +8,7 @@
 //! draw, which draws changed a pixel) are answered by running it again in a hidden page of
 //! a live browser, on the same GPU: those answers are `gpu-measured`.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::io::Read;
 use std::sync::Arc;
 use std::time::Duration;
@@ -431,6 +431,43 @@ pub(crate) fn plural(count: i64, noun: &str) -> String {
 
 /// Things about the frame that are often the bug, found without being asked. Each is a
 /// plain fact about the capture; whether it is a mistake is for the reader to judge.
+/// WebGPU: a canvas configured as opaque that ends the frame with alpha below 1 somewhere.
+/// The alpha is not shown, so the picture looks solid, but something wrote a translucent
+/// colour without blending it: a draw whose pipeline has no blend state, or texels that
+/// are empty.
+fn translucent(body: &Value, picture: &Image) -> Option<String> {
+    if !is_webgpu(body) || body["header"]["alphaMode"].as_str().unwrap_or("opaque") != "opaque" {
+        return None;
+    }
+
+    let (mut count, mut lowest) = (0u64, 255u8);
+    let (mut left, mut top, mut right, mut bottom) = (u32::MAX, u32::MAX, 0u32, 0u32);
+
+    for (index, pixel) in picture.data.chunks_exact(4).enumerate() {
+        if pixel[3] < 255 {
+            let (x, y) = (index as u32 % picture.width, index as u32 / picture.width);
+
+            count += 1;
+            lowest = lowest.min(pixel[3]);
+            left = left.min(x);
+            top = top.min(y);
+            right = right.max(x);
+            bottom = bottom.max(y);
+        }
+    }
+
+    (count > 0).then(|| {
+        format!(
+            "{count} pixels of the canvas end the frame with alpha below 1 (as low as {}), within x {left} y {top} {}×{}. The canvas is opaque, so alpha is not shown, but something wrote a translucent or empty colour there without blending it: a pipeline with no blend state, or texels that are transparent. pixel_source(x: {}, y: {}) names the draw.",
+            (lowest as f64 / 255.0 * 100.0).round() / 100.0,
+            right - left + 1,
+            bottom - top + 1,
+            (left + right) / 2,
+            (top + bottom) / 2
+        )
+    })
+}
+
 /// True for a draw made with RASTERIZER_DISCARD on: it is not meant to change a pixel.
 fn discards(row: &Value) -> bool {
     row["enabled"].as_array().is_some_and(|caps| caps.iter().any(|cap| cap == 0x8C89))
@@ -486,24 +523,34 @@ fn findings(body: &Value, tag: u64, errors: &HashMap<i64, String>, effects: &Has
             end += 1;
         }
 
+        // The draws decide: a WebGPU pass's clear is not held to the viewport, and is listed with the target's own.
         let size = sizes.target(&draws[start]);
-        let viewport = &draws[start]["viewport"];
-        let drawn = draws[start..=end].iter().filter(|row| row["kind"] == "draw").count();
+        let drawn: Vec<usize> = (start..=end).filter(|index| draws[*index]["kind"] == "draw").collect();
 
-        if drawn > 0 && partial(viewport, size) && draws[start..=end].iter().all(|row| row["viewport"] == *viewport) {
-            let set_in_frame =
-                commands[..draws[start]["command"].as_u64().unwrap_or(0) as usize].iter().rposition(|command| method_of(command) == "gl.viewport");
+        if let (Some(first), Some(last)) = (drawn.first().copied(), drawn.last().copied()) {
+            let viewport = &draws[first]["viewport"];
 
-            found.push(format!(
-                "Every event on {name} (events {start}–{end}) uses viewport {}, but {name} is {}×{}. {}",
-                list(viewport),
-                size.0,
-                size.1,
-                match set_in_frame {
-                    Some(call) => format!("The viewport was last set at call {call}."),
-                    None => "Nothing in the frame sets the viewport before them: it was left like that by an earlier frame.".to_string(),
-                }
-            ));
+            if partial(viewport, size) && drawn.iter().all(|index| draws[*index]["viewport"] == *viewport) {
+                let every = draws[start..=end].iter().all(|row| row["viewport"] == *viewport);
+                let set_in_frame = commands[..draws[first]["command"].as_u64().unwrap_or(0) as usize]
+                    .iter()
+                    .rposition(|command| matches!(method_of(command), "gl.viewport" | "GPURenderPassEncoder.setViewport"));
+
+                found.push(format!(
+                    "Every {} on {name} (events {}–{end}) uses viewport {}, but {name} is {}×{}. {}",
+                    if every { "event" } else { "draw" },
+                    if every { start } else { first },
+                    list(viewport),
+                    size.0,
+                    size.1,
+                    match set_in_frame {
+                        Some(call) => format!("The viewport was last set at call {call}."),
+                        None => "Nothing in the frame sets the viewport before them: it was left like that by an earlier frame.".to_string(),
+                    }
+                ));
+            }
+
+            let _ = last;
         }
 
         start = end + 1;
@@ -659,6 +706,73 @@ fn findings(body: &Value, tag: u64, errors: &HashMap<i64, String>, effects: &Has
                     None => "never set, so NEAREST_MIPMAP_LINEAR".to_string(),
                 }
             ));
+        }
+    }
+
+    // WebGPU: a texture with mip levels nothing ever wrote. They read as zeros, so a draw
+    // that samples it smaller than it is, between levels, comes out black.
+    for object in body["objects"].as_array().into_iter().flatten().filter(|object| object["kind"] == "texture" && is_webgpu(body)) {
+        let Some(unwritten) = object["unwritten"].as_str().filter(|text| !text.is_empty()) else { continue };
+        let id = object["id"].as_i64();
+        let users: Vec<i64> = draws
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| row["kind"] == "draw" && row["textures"].as_array().into_iter().flatten().any(|unit| unit["t2d"].as_i64() == id))
+            .map(|(index, _)| index as i64)
+            .collect();
+
+        if !users.is_empty() {
+            found.push(format!(
+                "{} has {} mip levels, but {}: the others have never been written and hold zeros. Event{} {} sample{} it; wherever it is drawn smaller than its {}×{}, a sampler that reads between mip levels reads those zeros (transparent black).",
+                handle_for("texture", &object["id"], tag).unwrap_or_default(),
+                object["levels"],
+                unwritten.trim().trim_start_matches('(').trim_end_matches(')').replace("written", "has ever been written").replace("levels 0", "levels 0"),
+                if users.len() == 1 { "" } else { "s" },
+                runs(&users),
+                if users.len() == 1 { "s" } else { "" },
+                object["width"],
+                object["height"]
+            ));
+        }
+    }
+
+    // WebGPU: a pass that throws away what it drew (storeOp discard), which is then sampled.
+    if is_webgpu(body) {
+        let mut told = BTreeSet::new();
+
+        for (index, row) in draws.iter().enumerate() {
+            for texture in row["discards"].as_array().into_iter().flatten().filter_map(Value::as_i64) {
+                if !told.insert((row["pass"].as_i64(), texture)) {
+                    continue;
+                }
+
+                let pass = row["pass"].as_i64().unwrap_or(0);
+                let last = draws.iter().rposition(|other| other["pass"].as_i64() == Some(pass)).unwrap_or(index);
+                let name = if texture > 0 { handle_for("texture", &json!(texture), tag).unwrap_or_default() } else { "the canvas".to_string() };
+                let users: Vec<i64> = draws
+                    .iter()
+                    .enumerate()
+                    .skip(last + 1)
+                    .filter(|(_, other)| {
+                        other["kind"] == "draw" && other["textures"].as_array().into_iter().flatten().any(|unit| unit["t2d"].as_i64() == Some(texture))
+                    })
+                    .map(|(other, _)| other as i64)
+                    .collect();
+
+                if texture == 0 {
+                    found.push(format!(
+                        "Pass {pass} draws to the canvas and ends with storeOp \"discard\", which throws away what it drew: nothing from it is shown. Use storeOp: \"store\"."
+                    ));
+                } else if !users.is_empty() {
+                    found.push(format!(
+                        "Pass {pass} draws to {name} and ends with storeOp \"discard\", which throws away what it drew. Event{} {} then sample{} {name} and read{} zeros. Use storeOp: \"store\" for a target that is read later.",
+                        if users.len() == 1 { "" } else { "s" },
+                        runs(&users),
+                        if users.len() == 1 { "s" } else { "" },
+                        if users.len() == 1 { "s" } else { "" }
+                    ));
+                }
+            }
         }
     }
 
@@ -1464,7 +1578,11 @@ pub(crate) async fn build(host: &Arc<Host>, session: &Arc<Session>, body: Value,
 
     counts["gl_errors"] = json!(raised);
 
-    let found = findings(&body, tag, &errors, &effects);
+    let mut found = findings(&body, tag, &errors, &effects);
+
+    if let Some(picture) = &source.original {
+        found.extend(translucent(&body, picture));
+    }
 
     let mut notes: Vec<String> = replayed["notes"].as_array().into_iter().flatten().filter_map(|note| note.as_str().map(str::to_string)).collect();
 
@@ -2707,9 +2825,10 @@ async fn gpu_uniform_lines(host: &Arc<Host>, params: &Value, handle: &str, index
                 .collect();
 
             lines.push(format!(
-                "      {} ({}) = {}",
+                "      {} ({}{}) = {}",
                 page_text(value["name"].as_str().unwrap_or("?"), 80),
                 page_text(value["type"].as_str().unwrap_or(""), 40),
+                value["offset"].as_u64().map(|offset| format!(", byte {offset}")).unwrap_or_default(),
                 numbers.join(", ")
             ));
             shown += 1;
@@ -2717,6 +2836,22 @@ async fn gpu_uniform_lines(host: &Arc<Host>, params: &Value, handle: &str, index
 
         if buffer["more"] == true {
             lines.push("      … and more members or elements than are listed.".into());
+        }
+
+        // A uniform buffer the page has only ever written part of what the shader reads.
+        let name = handle_for("buffer", &buffer["buffer"], tag).unwrap_or_default();
+        let detail = host
+            .store
+            .query(handle, "SELECT detail FROM objects WHERE kind = 'buffer' AND handle = ?1", &[Sql::Text(name.clone())], 1)
+            .ok()
+            .and_then(|rows| rows.rows.first().and_then(|row| row[0].as_str().and_then(|text| serde_json::from_str::<Value>(text).ok())));
+        let written = detail.as_ref().and_then(|detail| detail["writtenEnd"].as_u64());
+        let read_to = buffer["offset"].as_u64().unwrap_or(0) + buffer["extent"].as_u64().unwrap_or(0);
+
+        if let Some(written) = written.filter(|written| binding["space"] == "uniform" && *written < read_to) {
+            lines.push(format!(
+                "      The page has only ever written bytes 0–{written} of {name}, and the shader reads it as far as byte {read_to}: what is past byte {written} is still zero. Where the values above look shifted along, the page is writing another layout than the struct's: in WGSL a vec3f, a vec4f or a matrix starts on a multiple of 16 bytes, so padding is needed before one that follows a lone float."
+            ));
         }
     }
 

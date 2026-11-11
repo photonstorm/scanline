@@ -25,7 +25,7 @@ import { G } from '../natives';
 import { readBuffer, readGpuDepth, readGpuRaw } from '../readback';
 import { alive, all, deviceFor, entryOf, find, type Entry, type Kind } from '../registry';
 import { emit } from '../transport';
-import { block } from './formats';
+import { block, unwritten } from './formats';
 import { depthNeedsSampling, isDepth } from './sample';
 import { mapWatch } from './rec';
 import { viewOf } from './tracker';
@@ -45,6 +45,7 @@ interface PassState
     scissor: number[] | null;
     blendConstant: unknown;
     stencilReference: number;
+    discards: number[];     // the colour targets the pass throws away when it ends: texture IDs, 0 for the canvas
 }
 
 export interface GpuState
@@ -324,7 +325,8 @@ function beginPass (capture: Capture, kind: 'render' | 'compute', pass: object, 
         viewport: null,
         scissor: null,
         blendConstant: null,
-        stencilReference: 0
+        stencilReference: 0,
+        discards: []
     };
 
     gpu.passes.set(pass, state);
@@ -349,6 +351,21 @@ function beginPass (capture: Capture, kind: 'render' | 'compute', pass: object, 
         }
     }
 
+    // What the pass draws and then throws away: a colour attachment whose storeOp is
+    // discard, unless it is resolved to another texture (that is how multisampling is used).
+    for (const attachment of attachments)
+    {
+        if (attachment && attachment.storeOp === 'discard' && !attachment.resolveTarget)
+        {
+            const target = targetOf(attachment.view);
+
+            if (target.known)
+            {
+                state.discards.push(target.texture?.id ?? 0);
+            }
+        }
+    }
+
     const depth = descriptor.depthStencilAttachment;
     const cleared = attachments.some((attachment) => attachment?.loadOp === 'clear');
 
@@ -368,6 +385,7 @@ function beginPass (capture: Capture, kind: 'render' | 'compute', pass: object, 
             clearDepth: depth?.depthLoadOp === 'clear' ? (depth.depthClearValue ?? null) : null,
             clearStencil: depth?.stencilLoadOp === 'clear' ? (depth.stencilClearValue ?? 0) : null,
             mask: (cleared ? 0x4000 : 0) | (depth?.depthLoadOp === 'clear' ? 0x100 : 0) | (depth?.stencilLoadOp === 'clear' ? 0x400 : 0),
+            discards: state.discards.length ? state.discards.slice() : undefined,
             viewport: [0, 0, state.size[0], state.size[1]],
             scissor: null,
             colorMask: [true, true, true, true]
@@ -520,6 +538,7 @@ function drawRow (capture: Capture, state: PassState, name: string, args: any[],
         colorMask: facts.colorMask,
         blendConstant: state.blendConstant,
         textures: texturesOf(gpu, state),
+        discards: state.discards.length ? state.discards.slice() : undefined,
         uniforms: {},
         attributes: []
     };
@@ -1102,7 +1121,8 @@ async function describe (capture: Capture, entry: Entry): Promise<Record<string,
                 sampleCount: p.sampleCount ?? 1,
                 dimension: p.dimension ?? '2d',
                 viewFormats: (p.descriptor as any)?.viewFormats ?? [],
-                renderTarget: G.Boolean(p.renderTarget)
+                renderTarget: G.Boolean(p.renderTarget),
+                unwritten: unwritten(p)
             });
 
             if (inFrame || !p.width)
@@ -1142,7 +1162,7 @@ async function describe (capture: Capture, entry: Entry): Promise<Record<string,
         }
 
         case 'buffer':
-            G.Object.assign(out, { size: p.size ?? 0, usage: p.usage });
+            G.Object.assign(out, { size: p.size ?? 0, usage: p.usage, writtenEnd: p.writtenEnd });
 
             if (inFrame || !p.size)
             {

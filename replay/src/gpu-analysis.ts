@@ -2171,6 +2171,7 @@ export const gpuAnalysis = {
 
                     out.offset = offset;
                     out.more = laid.more;
+                    out.extent = extent;
 
                     if (!bytes)
                     {
@@ -2184,7 +2185,7 @@ export const gpuAnalysis = {
 
                         if (values)
                         {
-                            out.values.push({ name: leaf.name, type: leaf.type, values });
+                            out.values.push({ name: leaf.name, type: leaf.type, values, offset: leaf.offset });
                         }
                     }
                 }
