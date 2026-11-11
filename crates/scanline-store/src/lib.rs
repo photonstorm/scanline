@@ -135,6 +135,22 @@ impl Store {
         format!("cap_{}", highest + 1)
     }
 
+    /// Takes a handle for a new capture, so that two captures taken at once cannot be given
+    /// the same one. The handle is held by its directory existing.
+    pub fn reserve_handle(&self) -> Result<String> {
+        for _ in 0..1000 {
+            let handle = self.next_handle();
+
+            match std::fs::create_dir(self.capture_dir(&handle)) {
+                Ok(()) => return Ok(handle),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error).with_context(|| format!("creating {}", self.capture_dir(&handle).display())),
+            }
+        }
+
+        bail!("Could not take a handle for a new capture in {}.", self.root.join("captures").display())
+    }
+
     /// Writes a capture: its stream for replay, its tables for queries, its facts.
     pub fn write_capture(&self, handle: &str, stream: &Value, meta: &Value, tables: Vec<Table>) -> Result<()> {
         Self::check_handle(handle)?;
@@ -314,6 +330,11 @@ mod tests {
         assert_eq!(store.next_handle(), "cap_1");
         assert!(store.handles().is_empty());
 
+        // A reserved handle is not given out again, and is not a capture until it is written.
+        assert_eq!(store.reserve_handle().unwrap(), "cap_1");
+        assert_eq!(store.reserve_handle().unwrap(), "cap_2");
+        assert!(store.handles().is_empty());
+
         let tables = vec![Table {
             name: "draws",
             columns: vec!["draw INTEGER PRIMARY KEY", "program TEXT", "blend INTEGER"],
@@ -323,7 +344,7 @@ mod tests {
         store.write_capture("cap_1", &json!({ "commands": [[1, []]] }), &json!({ "api": "webgl2", "width": 320, "notes": ["a"] }), tables).unwrap();
 
         assert_eq!(store.handles(), vec!["cap_1"]);
-        assert_eq!(store.next_handle(), "cap_2");
+        assert_eq!(store.next_handle(), "cap_3");
         assert_eq!(store.meta("cap_1").unwrap(), json!({ "api": "webgl2", "width": 320, "notes": ["a"] }));
         assert_eq!(store.stream("cap_1").unwrap()["commands"][0][0], 1);
 

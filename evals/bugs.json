@@ -1,0 +1,113 @@
+{
+  "scene": "A small game scene, 480×360: a blue sky, a green ground along the bottom, three wooden crates standing on the ground, a translucent blue glass panel in front of the middle of them, a ring of glowing sparks above, a health bar at the top-left, and a minimap at the top-right that shows a yellow dot for each crate.",
+  "bugs": [
+    {
+      "id": "b01",
+      "class": "nothing drawn",
+      "symptom": "The three crates are missing.",
+      "diagnosis": "The crates are drawn with a negative width, which reverses their winding. Back-face culling is on (CULL_FACE, cull BACK, front face CW), so every crate is culled: the three crate draws change no pixels.",
+      "fix": "Do not flip a sprite with a negative size while culling is on: disable culling for sprites, or flip the texture coordinates instead.",
+      "expect": [["cull"], ["winding", "negative", "flip", "mirror", "front.?face", "back.?fac", "revers"]],
+      "check": { "pixel": [100, 220], "is": "not", "reference": [187, 131, 75, 255] }
+    },
+    {
+      "id": "b02",
+      "class": "sampling",
+      "symptom": "The crates are drawn black.",
+      "diagnosis": "The crate texture has one mip level, but its MIN_FILTER is still the default NEAREST_MIPMAP_LINEAR, which needs a full mip chain. The texture is incomplete, so it samples as black.",
+      "fix": "Call generateMipmap after the upload, or set MIN_FILTER to LINEAR or NEAREST.",
+      "expect": [["mip"], ["min.?filter", "incomplete", "filter"]],
+      "check": { "pixel": [100, 220], "is": "exactly", "value": [0, 0, 0, 255] }
+    },
+    {
+      "id": "b03",
+      "class": "wrong pixels",
+      "symptom": "The glass panel is opaque. The crates behind it cannot be seen through it.",
+      "diagnosis": "Blending is not enabled when the glass panel is drawn, so its colour replaces what is behind it instead of mixing with it.",
+      "fix": "Enable BLEND with blendFunc(SRC_ALPHA, ONE_MINUS_SRC_ALPHA) before drawing the glass.",
+      "expect": [["blend"], ["off", "disabled", "not enabled", "never enabled", "isn't enabled", "is not enabled", "without", "not being enabled", "no blend"]],
+      "check": { "pixel": [250, 210], "is": "exactly", "value": [51, 102, 255, 255] }
+    },
+    {
+      "id": "b04",
+      "class": "wrong pixels",
+      "symptom": "The ground is the wrong colour. It should be green.",
+      "diagnosis": "The ground's draw never sets the tint uniform, so it uses the value left by the draw before it: the minimap's dots, (1, 0.8, 0.2, 1).",
+      "fix": "Set the tint uniform to the ground's colour before drawing it.",
+      "expect": [["tint"], ["not set", "never set", "isn't set", "is not set", "doesn't set", "does not set", "stale", "left ?over", "previous", "earlier", "carried", "inherit", "leak", "persist", "still holds", "same value"]],
+      "check": { "pixel": [30, 320], "is": "exactly", "value": [255, 204, 51, 255] }
+    },
+    {
+      "id": "b05",
+      "class": "nothing drawn",
+      "symptom": "Only the sky and the HUD are drawn. The ground, the crates, the glass panel and the sparks are all missing.",
+      "diagnosis": "The depth buffer is cleared to 0, and the depth test is LESS. No fragment's depth is less than 0, so every depth-tested draw is rejected.",
+      "fix": "Clear depth to 1 (clearDepth(1)).",
+      "expect": [["depth"], ["clear"], ["\\b0(\\.0)?\\b", "zero"]],
+      "check": { "pixel": [100, 220], "is": "exactly", "value": [89, 153, 229, 255] }
+    },
+    {
+      "id": "b06",
+      "class": "wrong order",
+      "symptom": "The glass panel does not tint the crates. The crates look as if they are in front of it.",
+      "diagnosis": "The glass panel is drawn before the crates. It is blended and does not write depth, so the crates, drawn afterwards, pass the depth test and cover it.",
+      "fix": "Draw opaque objects first and blended ones after them.",
+      "expect": [["order", "before", "after", "sort", "first", "earlier", "later"], ["glass", "blend", "transparent", "translucent"]],
+      "check": { "pixel": [250, 210], "is": "not", "reference": [131, 118, 146, 255] }
+    },
+    {
+      "id": "b07",
+      "class": "wrong pixels",
+      "symptom": "After the first frame almost the whole canvas is black. Only a thin strip near the top-left still shows anything.",
+      "diagnosis": "The scissor test is enabled to clip the health bar and never disabled. From the next frame on, the clear and every draw are clipped to the health bar's rectangle.",
+      "fix": "Disable SCISSOR_TEST after drawing the health bar.",
+      "expect": [["scissor"]],
+      "check": { "pixel": [30, 320], "is": "exactly", "value": [0, 0, 0, 255] }
+    },
+    {
+      "id": "b08",
+      "class": "wrong pixels",
+      "symptom": "The crates have the wrong picture on them.",
+      "diagnosis": "The crate draws do not bind the crate texture. They sample whatever is bound to unit 0 at the time, which is the minimap's render target.",
+      "fix": "Bind the crate texture before drawing the crates.",
+      "expect": [["texture"], ["bound", "bind", "minimap", "render target", "stale", "wrong texture", "unit 0", "different texture", "same texture"]],
+      "check": { "pixel": [100, 220], "is": "not", "reference": [187, 131, 75, 255] }
+    },
+    {
+      "id": "b09",
+      "class": "targets",
+      "symptom": "The whole scene is tiny, squashed into the bottom-left corner of the canvas.",
+      "diagnosis": "The viewport is still 64×64, as set for the minimap's render target, when the main scene is drawn to the canvas.",
+      "fix": "Set the viewport back to the canvas size after rendering the minimap.",
+      "expect": [["viewport"], ["64"]],
+      "check": { "pixel": [100, 220], "is": "exactly", "value": [89, 153, 229, 255] }
+    },
+    {
+      "id": "b10",
+      "class": "memory",
+      "symptom": "Memory use keeps growing for as long as the page runs.",
+      "diagnosis": "A new 256×256 texture is created every frame for the minimap (makeMapTarget, called from renderMap) and the old one is never deleted.",
+      "fix": "Create the minimap texture once, or delete the old one before replacing it.",
+      "expect": [["texture"], ["every frame", "each frame", "per frame", "per-frame", "never (deleted|destroyed|freed|released)", "not (deleted|destroyed|freed|released)", "leak"], ["makeMapTarget", "renderMap", "minimap", "256"]],
+      "check": { "growth": "texture" }
+    },
+    {
+      "id": "b11",
+      "class": "performance",
+      "symptom": "The page stutters: frames take much longer than they should.",
+      "diagnosis": "The sparks' shader program is compiled and linked again every frame.",
+      "fix": "Build the program once and reuse it.",
+      "expect": [["compil", "link", "program"], ["every frame", "each frame", "per frame", "per-frame", "recompil", "re-compil", "relink", "re-link", "recreat", "re-creat"]],
+      "check": { "counter": "compiles" }
+    },
+    {
+      "id": "b12",
+      "class": "targets",
+      "symptom": "The minimap in the top-right corner is empty. It should show a yellow dot for each crate.",
+      "diagnosis": "The minimap's texture is still bound to texture unit 0 while the minimap is rendered into it. That is a feedback loop: the browser rejects each of the three dot draws with INVALID_OPERATION, so nothing is drawn.",
+      "fix": "Bind a different texture (or none) to the unit before rendering into the minimap texture.",
+      "expect": [["feedback", "bound", "sampl", "same texture"], ["invalid.?operation", "reject", "error", "render(ed|ing|s)? (to|into)", "draw(n|ing|s)? (to|into)", "target"]],
+      "check": { "pixel": [419, 49], "is": "not", "reference": [255, 204, 51, 255] }
+    }
+  ]
+}

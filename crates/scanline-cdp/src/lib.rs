@@ -23,6 +23,8 @@ pub struct Event {
     pub params: Value,
     /// The flattened session the event belongs to; `None` for the browser itself.
     pub session: Option<String>,
+    /// Its place in the order the browser sent events, from 1.
+    pub seq: u64,
 }
 
 type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<std::result::Result<Value, String>>>>>;
@@ -34,6 +36,8 @@ pub struct Client {
     pending: Pending,
     outgoing: mpsc::UnboundedSender<Vec<u8>>,
     events: broadcast::Sender<Event>,
+    /// The `seq` of the last event read from the browser.
+    last_event: Arc<AtomicU64>,
     closed: Arc<std::sync::atomic::AtomicBool>,
 }
 
@@ -65,6 +69,8 @@ impl Client {
 
         let reader_pending = pending.clone();
         let reader_events = events.clone();
+        let last_event = Arc::new(AtomicU64::new(0));
+        let reader_last = last_event.clone();
         let reader_closed = closed.clone();
 
         tokio::spawn(async move {
@@ -83,7 +89,7 @@ impl Client {
                     let message: Vec<u8> = buffer.drain(..=end).collect();
 
                     if let Ok(value) = serde_json::from_slice::<Value>(&message[..message.len() - 1]) {
-                        dispatch(value, &reader_pending, &reader_events);
+                        dispatch(value, &reader_pending, &reader_events, &reader_last);
                     }
                 }
             }
@@ -95,10 +101,11 @@ impl Client {
                 let _ = waiter.send(Err("the browser exited".to_string()));
             }
 
-            let _ = reader_events.send(Event { method: "Scanline.disconnected".into(), params: Value::Null, session: None });
+            let seq = reader_last.fetch_add(1, Ordering::SeqCst) + 1;
+            let _ = reader_events.send(Event { method: "Scanline.disconnected".into(), params: Value::Null, session: None, seq });
         });
 
-        Client { next_id: Arc::new(AtomicU64::new(1)), pending, outgoing, events, closed }
+        Client { next_id: Arc::new(AtomicU64::new(1)), pending, outgoing, events, last_event, closed }
     }
 
     pub fn is_closed(&self) -> bool {
@@ -106,6 +113,13 @@ impl Client {
     }
 
     /// Every event from every session. Filter on `Event::session` and `Event::method`.
+    /// The `seq` of the last event the browser has sent. A reply is read after every event
+    /// the browser sent before it, so once a command has been answered, an event with this
+    /// `seq` or lower is everything the command caused to be reported.
+    pub fn last_event(&self) -> u64 {
+        self.last_event.load(Ordering::SeqCst)
+    }
+
     pub fn subscribe(&self) -> broadcast::Receiver<Event> {
         self.events.subscribe()
     }
@@ -176,7 +190,7 @@ impl Client {
     }
 }
 
-fn dispatch(mut value: Value, pending: &Pending, events: &broadcast::Sender<Event>) {
+fn dispatch(mut value: Value, pending: &Pending, events: &broadcast::Sender<Event>, last_event: &AtomicU64) {
     if let Some(id) = value.get("id").and_then(Value::as_u64) {
         let Some(waiter) = pending.lock().unwrap().remove(&id) else { return };
 
@@ -195,7 +209,8 @@ fn dispatch(mut value: Value, pending: &Pending, events: &broadcast::Sender<Even
         let params = value.get_mut("params").map(Value::take).unwrap_or(Value::Null);
 
         // No receivers is not an error: nobody is listening yet.
-        let _ = events.send(Event { method, params, session });
+        let seq = last_event.fetch_add(1, Ordering::SeqCst) + 1;
+        let _ = events.send(Event { method, params, session, seq });
     }
 }
 

@@ -37,6 +37,33 @@ impl std::fmt::Display for Dropped {
 
 impl std::error::Error for Dropped {}
 
+/// The process ID the runtime file names, if there is one.
+#[cfg(unix)]
+fn recorded_pid() -> Option<i32> {
+    let text = std::fs::read_to_string(runtime_path()).ok()?;
+
+    serde_json::from_str::<Value>(&text).ok()?["pid"].as_i64().map(|pid| pid as i32)
+}
+
+/// The process ID of a host that is running, going by the runtime file.
+#[cfg(unix)]
+fn running_host() -> Option<i32> {
+    let pid = recorded_pid()?;
+
+    // Signal 0 tests for the process without touching it. "Not permitted" still means it exists.
+    let alive = unsafe { libc::kill(pid, 0) } == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM);
+
+    (alive && pid != std::process::id() as i32).then_some(pid)
+}
+
+#[cfg(unix)]
+fn blocked(error: &std::io::Error) -> String {
+    format!(
+        "This process is not allowed to reach the Scanline host's socket at {} ({error}). A sandbox around this command is the usual cause: run scanline outside it. The host itself has not been touched.",
+        socket_path().display()
+    )
+}
+
 #[cfg(unix)]
 pub async fn serve() -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -47,8 +74,19 @@ pub async fn serve() -> Result<()> {
     std::fs::create_dir_all(&home).with_context(|| format!("creating {}", home.display()))?;
     std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700)).ok();
 
-    if tokio::net::UnixStream::connect(&socket).await.is_ok() {
-        bail!("A Scanline host is already running (socket {}). Use `scanline stop` to stop it.", socket.display());
+    // Never disturb a host that is running. One that cannot be reached is not the same as
+    // one that is gone: a sandbox may be blocking this process and not the host.
+    match tokio::net::UnixStream::connect(&socket).await {
+        Ok(_) => bail!("A Scanline host is already running (socket {}). Use `scanline stop` to stop it.", socket.display()),
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => bail!("{}", blocked(&error)),
+        Err(error) => {
+            if let Some(pid) = running_host() {
+                bail!(
+                    "A Scanline host is running (process {pid}) but its socket at {} cannot be reached: {error}. Stop that process, then start again.",
+                    socket.display()
+                );
+            }
+        }
     }
 
     // A socket file left by a host that did not exit cleanly.
@@ -87,8 +125,11 @@ pub async fn serve() -> Result<()> {
     // Close every browser before going, so none is left running with nobody driving it.
     host.shutdown().await;
 
-    let _ = std::fs::remove_file(&socket);
-    let _ = std::fs::remove_file(runtime_path());
+    // Only this host's own files: another may have taken the place since.
+    if recorded_pid() == Some(std::process::id() as i32) {
+        let _ = std::fs::remove_file(&socket);
+        let _ = std::fs::remove_file(runtime_path());
+    }
 
     Ok(())
 }
@@ -151,8 +192,15 @@ pub struct Link {
 impl Link {
     /// Connects to the host, starting it first if it is not running.
     pub async fn connect() -> Result<Self> {
-        if let Some(link) = Self::try_connect().await {
-            return Ok(link);
+        match tokio::net::UnixStream::connect(socket_path()).await {
+            Ok(stream) => return Ok(Self::over(stream)),
+            // Not allowed to reach it. Starting another host would not help, and would get in its way.
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => bail!("{}", blocked(&error)),
+            Err(error) => {
+                if let Some(pid) = running_host() {
+                    bail!("A Scanline host is running (process {pid}) but its socket at {} cannot be reached: {error}.", socket_path().display());
+                }
+            }
         }
 
         start_host()?;
@@ -169,10 +217,13 @@ impl Link {
     }
 
     pub async fn try_connect() -> Option<Self> {
-        let stream = tokio::net::UnixStream::connect(socket_path()).await.ok()?;
+        Some(Self::over(tokio::net::UnixStream::connect(socket_path()).await.ok()?))
+    }
+
+    fn over(stream: tokio::net::UnixStream) -> Self {
         let (read, write) = stream.into_split();
 
-        Some(Link { lines: BufReader::new(read).lines(), write, next_id: 1 })
+        Link { lines: BufReader::new(read).lines(), write, next_id: 1 }
     }
 
     pub async fn call(&mut self, method: &str, params: Value) -> Result<Value> {
@@ -243,7 +294,13 @@ fn start_host() -> Result<()> {
 #[cfg(unix)]
 pub async fn stop() -> Result<String> {
     match Link::try_connect().await {
-        None => Ok("No Scanline host is running.".to_string()),
+        None => match running_host() {
+            Some(pid) => bail!(
+                "A Scanline host is running (process {pid}) but its socket at {} cannot be reached from here, so it was not stopped.",
+                socket_path().display()
+            ),
+            None => Ok("No Scanline host is running.".to_string()),
+        },
         Some(mut link) => {
             let reply = link.call("host.stop", json!({})).await?;
 

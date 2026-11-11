@@ -1,0 +1,18 @@
+CAUSE: The page draws the translucent glass panel (blended, depth test on, depth write off) before the three opaque crates, so the glass is blended only onto the sky and ground. The crates are drawn afterwards and pass the depth test against the cleared depth, because the glass wrote no depth. They overwrite the tint even though the glass is nearer (depth 0.3 against the crates' 0.5).
+
+EVIDENCE: draw_list cap_1 shows draw 5 (background), then draw 6 (blend SRC_ALPHA/ONE_MINUS_SRC_ALPHA, depth LESS, no write), then draws 7, 8 and 9, which are opaque with depth LESS, write on and tex_1. Draw 6 has depth=0.3, rect=150,120,220,160, tint=0.2,0.4,1,0.4 and textured=0. It changed 35200 pixels. draw_diff of 6 against 7 shows the crate draws have depth 0.5, rect 60,180,80,80, textured 1, no blend and depth.write true. I did not run pixel_source or screenshot at a draw to confirm the overwrite directly. It follows from the draw order and the depth state.
+
+FIX: Draw the opaque geometry (the crates) first, then the translucent glass panel with blending on and depth write off. Sort the transparent draws back to front after all the opaque ones. The additive sparks (draws 10-21) are already drawn after the crates.
+
+CALLS: 6
+
+COMMANDS:
+help capture
+launch http://127.0.0.1:8765/fixtures/bugs/b06.html --headless
+capture --session ses_1
+draw_list --capture cap_1 --session ses_1 || draw_list cap_1
+draw cap_1 6 --session ses_1
+draw_diff cap_1 6 7 --session ses_1
+close --session ses_1
+
+FRICTION: The output was clear and the tool worked well. The `help capture` text writes calls as function-style `draw_list(capture)` and `draw(capture, draw: n)`, and the draw_list footer prints `draw(capture: "cap_1", draw: n)`. I had to guess the CLI syntax. The draw_list call with `--capture cap_1 --session ses_1` appeared to work (I chained a `|| draw_list cap_1` fallback and never saw whether it was needed). The positional form `draw cap_1 6` worked. A one-line CLI example in the help would have saved the guesswork. A "draw order vs depth/blend" hint in draw_list would have helped here. For example, it could flag a blended draw that precedes opaque draws overlapping its rect and does not write depth. I had to infer that myself from the list.

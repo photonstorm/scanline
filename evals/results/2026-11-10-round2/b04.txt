@@ -1,0 +1,20 @@
+CAUSE: The ground quad (draw event 5, prg_1) is drawn untextured (`textured = 0`) and never sets the `tint` uniform, so it uses the stale tint (1, 0.8, 0.2, 1) left over from the earlier minimap-dot draw (event 3). That is yellow-orange instead of green. The ground needs to set its own green tint.
+
+EVIDENCE: pixel_source at (240,340) gave (255,204,51,255), produced by event 5 (TRIANGLE_STRIP x4, prg_1, depth LESS, rect 0,260,480,100). `draw cap_4 5` shows `tint = 1, 0.8, 0.2, 1 ← last set at call 23, for event 3; not set again for this draw` and `textured = 0` (set for this draw). The tint 0.8 × 255 = 204 and 0.2 × 255 = 51 match the pixel. `draw_diff cap_4 5 6` (ground vs. a crate) shows tint [1,0.8,0.2,1] → [1,1,1,1], textured 0 → 1, and a different texture. Every other draw sets tint explicitly. The ground has a texture bound (tex_2, 32×1, made by makeBarTexture in scene.js) but does not sample it.
+
+FIX: Before the ground draw, call `gl.uniform4f(tintLoc, r, g, b, 1)` with the intended green (for example 0.2, 0.6, 0.2, 1). Or set `textured` to 1 with a green texture bound. More generally, set `tint` before every draw instead of relying on leftover program state.
+
+CALLS: 6
+
+COMMANDS:
+help
+help capture
+launch http://127.0.0.1:8765/fixtures/bugs/b04.html --headless --start paused
+step --session ses_1 --frames 3 (then, in the same shell call) capture --session ses_1
+pixel_source cap_4 240 340 --session ses_1 (then, in the same shell call) draw_list cap_4 --session ses_1
+draw cap_4 5 --session ses_1 (then, in the same shell call) resource tex_2 --preview --session ses_1
+draw_diff cap_4 5 6 --session ses_1 (then, in the same shell call) close --session ses_1
+
+The ones that shared a shell call with another scanline command are counted separately above. By individual invocation the count is 11, so CALLS is better read as 11.
+
+FRICTION: Very little. The tool pointed to the answer with the "not set again for this draw" note on the tint uniform, and the draw_diff output was clear. The tool did not say outright that tint came from an earlier draw's setting rather than being a legitimate yellow tint; I had to infer that from "last set for event 3". A hint such as "this draw's output colour equals tint × texture" would have helped. It also took a moment to find out whether `launch` wanted `--start paused` or `--headless` as flags. The capture handle was cap_4 rather than cap_1, which is fine but slightly surprising.

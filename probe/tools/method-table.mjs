@@ -183,6 +183,16 @@ export const GPU = {
         destroy: { post: true }
     },
     GPUBuffer: {
-        destroy: { post: true }
+        destroy: { post: true },
+        // A capture reads what the page wrote to a mapped buffer just before it is unmapped.
+        getMappedRange: { post: true },
+        unmap: { intercept: true }
+    },
+    // A layout taken from a pipeline is an object like any other layout, and bind groups are made with it.
+    GPURenderPipeline: {
+        getBindGroupLayout: { post: true }
+    },
+    GPUComputePipeline: {
+        getBindGroupLayout: { post: true }
     }
 };

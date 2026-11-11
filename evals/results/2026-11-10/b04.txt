@@ -1,0 +1,28 @@
+CAUSE: The ground draw (draw 5) never sets the `tint` uniform, which is a program-level uniform. It inherits the last value set before it, the minimap pass's yellow dot colour (1, 0.8, 0.2, 1), so the ground renders orange-yellow instead of green. The ground draw has textured = 0, so it outputs the tint directly.
+
+EVIDENCE: pixel_source at (240,340) gives final (255,204,51,255) from event 5, a TRIANGLE_STRIP with prg_1, after the sky clear (89,153,229). draw 5 state: rect 0,260,480,100; depth 0.9; textured 0; tint = 1, 0.8, 0.2, 1. The command list for cap_3 shows draw 5 (commands 33-36) setting rect, depth and textured but no uniform4f for tint. Every later draw (commands 39, 45, 50, 58) sets tint explicitly. The only earlier tint set is in the offscreen minimap pass (draws 1-3, tex_3), which used (1, 0.8, 0.2, 1) for the yellow crate dots and left it in place.
+
+FIX: Before the ground drawArrays, call gl.uniform4f(tintLoc, r, g, b, 1) with a green tint (e.g. about 0.3, 0.7, 0.25). Better, set tint on every draw, or reset it after the minimap pass.
+
+CALLS: 12
+
+COMMANDS:
+help
+help capture
+launch http://127.0.0.1:8765/fixtures/bugs/b04.html --headless --start paused
+step --session ses_2 --frames 5
+capture --session ses_2
+pixel_source --session ses_2 --capture cap_3 --x 240 --y 340
+draw --session ses_2 --capture cap_3 --draw 5
+draw_list --session ses_2 --capture cap_3
+query --session ses_2 --capture cap_3 --sql "select * from calls where call_index between 25 and 40"  (failed, no such table)
+query --session ses_2 --capture cap_3 --sql "select * from commands where call_index between 28 and 50"  (failed, no such column)
+query --session ses_2 --capture cap_3 --sql "select * from commands limit 45 offset 25"
+close --session ses_2
+
+FRICTION:
+- Guessed SQL table and column names and got two errors before the third query worked. `help sql` would have saved those; I didn't read it. The error message did list the tables, which helped.
+- `draw` shows only the final uniform values. It does not say where the tint value came from (which call set it, and when). I had to dump the raw command stream by row offset to see that the ground draw never set tint. A "uniform last set at command N" field, or a note on a draw that uses a uniform inherited from an earlier draw or pass, would have given the answer straight away.
+- The `commands` table has no filter by draw or by method, and limit/offset was the only way to window it, so I had to guess where draw 5's calls sat.
+- draw_list is useful, but it doesn't show uniform differences between draws. A draw_diff between 5 and 6 would have shown tint differing, but I didn't need it.
+- The CLI flag spellings (--frames, --start paused, --draw) were guessed and happened to work.

@@ -10,6 +10,8 @@ import { config } from './config';
 import { currentFrame, onFrameBegin, onFrameEnd } from './clock/gate';
 import { allContexts, type ContextInfo } from './contexts';
 import { hub } from './hooks/hub';
+import { recordIntercepted } from './gpu/rec';
+import { noteTargets } from './gpu/tracker';
 import { natives, type Handlers } from './hooks/install';
 import { declare } from './mods';
 import { G, type Fn } from './natives';
@@ -322,11 +324,10 @@ function describePass (kind: string, descriptor: any, index: number): string
 
 function beginPass (kind: string): Fn
 {
-    return (encoder: any, native: Fn, args: IArguments): unknown =>
-    {
-        hub.gpu.calls++;
-        hub.gpu.passes++;
+    const method = kind === 'render' ? 'GPUCommandEncoder.beginRenderPass' : 'GPUCommandEncoder.beginComputePass';
 
+    const begin = (encoder: any, native: Fn, args: IArguments): unknown =>
+    {
         const timer = encoderTag.get(encoder);
         const given = args[0];
 
@@ -344,6 +345,24 @@ function beginPass (kind: string): Fn
         const writes = { querySet: timer.querySet, beginningOfPassWriteIndex: index * 2, endOfPassWriteIndex: index * 2 + 1 };
 
         return native.call(encoder, given === undefined ? { timestampWrites: writes } : G.Object.create(given, { timestampWrites: { value: writes, enumerable: true } }));
+    };
+
+    return (encoder: any, native: Fn, args: IArguments): unknown =>
+    {
+        hub.gpu.calls++;
+        hub.gpu.passes++;
+
+        const pass = begin(encoder, native, args);
+
+        if (kind === 'render')
+        {
+            noteTargets(args[0]);
+        }
+
+        // A capture records the pass as the page asked for it, without the timestamp writes.
+        recordIntercepted(method, encoder, pass, args);
+
+        return pass;
     };
 }
 

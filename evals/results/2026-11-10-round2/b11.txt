@@ -1,0 +1,14 @@
+CAUSE: The page compiles, links and then deletes a new shader program every frame, for the additive-blended spark (glow) draws, instead of building it once and reusing it. The spark program is rebuilt in the per-frame render path, so each frame pays for a shader compile and link.
+EVIDENCE: The capture's "Worth a look" says the frame created 1 program and 2 shaders (compiled and linked) and deleted 1 program and 2 shaders. resources(kind program, sort created) shows prg_130 created in frame 128 at link (scene.js:28:28), with CHURN: 130 programs created in all and 128 destroyed. prg_1 was created at frame 0 and is used by the rest of the frame (draws 1-9 and 22-24). draw_list shows draws 10-21 (the spark ring, SRC_ALPHA/ONE blend, 16x16 quads) all using the fresh prg_130.
+FIX: Compile and link the spark program once at init, keep the handle, and reuse it every frame. If the code already shares prg_1's compile helper, cache the program by shader source. Do not call createProgram, linkProgram or deleteProgram per frame.
+CALLS: 6
+COMMANDS:
+help
+help capture
+launch http://127.0.0.1:8765/fixtures/bugs/b11.html --headless
+step --session ses_4 --frames 5
+capture --session ses_4
+resources --session ses_4 --kind program --sort created
+draw_list cap_2
+close --session ses_4
+FRICTION: Very little. The capture's Worth a look list and the CHURN line on resources pointed straight at the cause. I had to infer that prg_130 belongs to the sparks from the draw_list, which does not say what a program is for. I did not look up the shader sources. It would help if the capture summary named which draws use the newly created program. The CALLS count above is an undercount: I ran 8 invocations (the 8 commands listed, with help and help capture run in one shell call, and resources and draw_list likewise).

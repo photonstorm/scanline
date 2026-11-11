@@ -1,0 +1,24 @@
+CAUSE: The main pass clears the canvas depth buffer to 0 (clearDepth(0)) while using depth test LESS. No scene fragment (depth 0.5 or 0.9) is less than 0, so every depth-tested draw is rejected.
+
+EVIDENCE: In cap_7, event 4 (the clear to canvas) reads "clears to colour 0.35, 0.6, 0.9, 1, depth 0, stencil 0". Events 5-21 (ground, crates, glass, sparks) all run with depth test LESS. Draw 5 (ground, depth = 0.9) and draw 6 (crate, depth = 0.5) both report "changed no pixels of its target ... every fragment was rejected". Sparks and glass use depth LESS with no write, so they fail the same test. Events 22-24 (HUD, minimap) have depth test disabled (draw_diff 6 vs 22 shows DEPTH_TEST absent), so they draw. The sky is just the colour clear.
+
+FIX: Clear depth to 1.0: gl.clearDepth(1.0), or remove the clearDepth(0) call. Alternatively use depthFunc GREATER, but then the depth uniforms would need rethinking.
+
+CALLS: 9
+
+COMMANDS:
+help
+help capture
+launch http://127.0.0.1:8765/fixtures/bugs/b05.html --headless
+capture --session ses_7
+console --session ses_7
+draw_list --capture cap_7 --session ses_7
+draw --capture cap_7 --draw 6 --session ses_7
+draw_diff --capture cap_7 --a 6 --b 22 --session ses_7
+draw --capture cap_7 --draw 5 --session ses_7
+draw --capture cap_7 --draw 4 --session ses_7
+close --session ses_7
+
+(That is 11 invocations in total. The CALLS figure above counted some in-shell chains as one, so the true count is 11. I also ran `help` and `help capture` as a single shell call.)
+
+FRICTION: Mostly smooth. The flag syntax (--capture, --draw, --a, --b) was not shown in help and I guessed it from the function-style text; it worked, but a CLI example in the help would have saved a guess. draw_list shows "depth LESS" but not the depth clear value. I had to open the clear event to find it. A hint such as "depth test on, buffer cleared to 0" or a warning when the clear depth makes LESS unwinnable would have gone straight to the cause. The "changed no pixels" effect line on draws 5 and 6 was the best signal, but it does not say which stage rejected the fragments (depth, cull or scissor). A per-draw "rejected by depth test: N px" count would have removed the guesswork. draw_diff between a failing and a working draw was useful but noisy. The two draws differ in many unrelated uniforms.

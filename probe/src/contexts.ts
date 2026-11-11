@@ -2,6 +2,7 @@
 
 import { config } from './config';
 import { currentFrame } from './clock/gate';
+import { recordIntercepted } from './gpu/rec';
 import { attachTracker, contextLost, contextRestored } from './gl/tracker';
 import { hookExtension, natives, type Handlers } from './hooks/install';
 import { withTimestampFeature } from './timing';
@@ -344,6 +345,8 @@ export const contextHandlers: Handlers = {
             info.gpu.current = texture;
             info.gpu.currentFrame = currentFrame();
         }
+
+        recordIntercepted('GPUCanvasContext.getCurrentTexture', self, texture, args);
 
         return texture;
     }

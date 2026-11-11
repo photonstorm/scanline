@@ -1,0 +1,36 @@
+CAUSE: drawSparks, called every frame, compiles and links a brand-new shader program for the glowing sparks (additive-blend draws) and deletes it again at the end of the frame, instead of creating it once and reusing it. Shader compile and link is expensive, and doing it every frame causes the stutter.
+
+EVIDENCE:
+- In cap_10 the draw_list shows draws 10-21 (the 12 sparks, blend SRC_ALPHA/ONE) using prg_146. All other draws use prg_1.
+- A program handle as high as 146 at frame 144 means a new program is created roughly every frame.
+- resource prg_146 says: "Created in frame 144, DESTROYED in frame 145, last used in frame 144", created at link (scene.js:28) < drawSparks (scene.js:317) < frame (scene.js:389). It also shows shd_291 and shd_292 for it, so two new shaders per frame as well. The program lives for exactly one frame.
+- Its listing said "LINK FAILED", which is odd, but the draws still rendered correctly (draw 10 changed 199 pixels), so this looks like a quirk of reading a destroyed program rather than a real failure.
+- The spark draws are the same quad geometry on the same texture, so one shared program would work.
+
+FIX: Build the spark program once (at init, or lazily and cached) and reuse it every frame. Remove the per-frame createProgram, compile, link and deleteProgram calls from drawSparks. Ideally share the existing program, or make the spark shader static.
+
+CALLS: 7 (counting the failed `launch --help` attempt, and the one failed `query` with a wrong table name)
+
+COMMANDS:
+help
+help capture
+launch --help
+launch http://127.0.0.1:8765/fixtures/bugs/b11.html --headless
+capture --session ses_11
+draw_list --capture cap_10 --session ses_11
+resources --kind texture --session ses_11
+query --capture cap_10 --session ses_11 --sql "select * from calls where name like '%Program%' or name like '%hader%' limit 40"
+draw --capture cap_10 --draw 10 --session ses_11
+query --capture cap_10 --session ses_11 --sql "select * from commands where name like '%rogram%' or name like '%hader%' or name like '%ink%'"
+resource --handle prg_146 --session ses_11
+close --session ses_11
+
+(That is 12 commands in total. Five of them were bundled with another in the same shell call, and `help capture` was bundled with `help`.)
+
+FRICTION:
+- The CALLS count above is ambiguous. The honest total is 12 scanline invocations, not 7.
+- The tool has no per-frame summary of GL calls, such as counts of createProgram, compileShader or deleteProgram. I had to infer the cost from the high handle number (prg_146) and then look at a single program. A "per-frame churn" or "objects created and destroyed this frame" line in the capture summary would have made the cause obvious immediately.
+- I guessed the `query` table and column names wrong twice: `calls`, then `name` on `commands`. I would have liked the available columns listed in the error itself, or to see the tables before guessing.
+- "LINK FAILED" on a destroyed program is misleading, because the draws rendered fine. It may be an artefact of reading a deleted program. The tool should say "program deleted, status unavailable" rather than "link failed".
+- I did not know the CLI flag syntax (`--capture`, `--session`, `--draw`, `--handle`). `launch --help` printed only a function-style example, so I had to guess flag names. A short per-command usage line would help.
+- The page reports no timing figures. The GPU/CPU time per frame, which the launch note said is measured via a timer query, was never surfaced in the capture summary, so the "slow" claim itself was not quantified.

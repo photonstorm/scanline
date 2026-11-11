@@ -1,5 +1,6 @@
 // What the host can ask about the registry: lists, one object in full, memory, GL state.
 
+import { currentFrame } from './clock/gate';
 import { allContexts, contextById, type ContextInfo } from './contexts';
 import { formatName } from './gl/formats';
 import { CAP_CODES, trackerFor, type UniformSlot } from './gl/tracker';
@@ -380,7 +381,48 @@ export function installInventory (): void
             }
         }
 
-        return { byKind, categories, total: (G.Object.values(categories) as number[]).reduce((a, b) => a + b, 0) };
+        // Lines of code that many live objects came from: where a leak shows first.
+        const sites: { kind: string; site: string; alive: number; bytes: number; first: number; last: number }[] = [];
+
+        for (const kind of kinds())
+        {
+            const groups: Map<number, { alive: number; bytes: number; first: number; last: number }> = new G.Map();
+
+            for (const entry of all(kind))
+            {
+                if (!alive(entry))
+                {
+                    continue;
+                }
+
+                const group = groups.get(entry.site);
+
+                if (group)
+                {
+                    group.alive++;
+                    group.bytes += entry.bytes;
+                    group.first = Math.min(group.first, entry.created);
+                    group.last = Math.max(group.last, entry.created);
+                }
+                else
+                {
+                    groups.set(entry.site, { alive: 1, bytes: entry.bytes, first: entry.created, last: entry.created });
+                }
+            }
+
+            for (const [site, group] of groups)
+            {
+                // Created over several frames, not all at once in a loader.
+                if (group.alive >= 8 && group.last - group.first >= 4)
+                {
+                    sites.push({ kind, site: siteText(site), ...group });
+                }
+            }
+        }
+
+        sites.sort((a, b) => b.alive - a.alive);
+
+        return { byKind, categories, sites: sites.slice(0, 6), frame: currentFrame(), total: (G.Object.values(categories) as number[]).reduce((a, b) => a + b, 0) };
     });
 
     // Every live object that holds memory, compactly, for the host to keep and compare.

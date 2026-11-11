@@ -56,17 +56,17 @@ Decided 10 November 2026, replacing the percentages in the PRD (section 9.1). Th
 
 Also from the milestone's list, not built: WGSL reflection (the plan's `scanline-shader` crate and `naga`), the real memory of the GPU process, and GPU time per pass on WebGL (queries cannot nest, so it needs one query per framebuffer span). WebGL shader reflection comes from the driver (active attributes and uniforms), which needs no parser.
 
-## Milestone 3 so far
+## Milestone 3 against its exit criteria
 
-Built for WebGL 1 and WebGL 2: the capture, the store (BLAKE3-named, zstd-compressed blobs and one SQLite database per capture), the replay page, and the commands `capture`, `captures`, `draw_list`, `draw`, `draw_diff`, `pixel_source`, `pass_tree`, `query`, with `screenshot` and `pixels` taking a capture and a draw.
+Built for WebGL 1, WebGL 2 and WebGPU: the capture, the store (BLAKE3-named, zstd-compressed blobs and one SQLite database per capture), the replay page, and the commands `capture`, `captures`, `draw_list`, `draw`, `draw_diff`, `pixel_source`, `pass_tree`, `query`, with `screenshot` and `pixels` taking a capture and a draw.
 
 "Replay matches the original on every matrix page, or reports why not. An agent diagnoses the 'wrong pixels' class of planted bugs with no hints."
 
 | Criterion | Standing |
 |---|---|
-| Replay matches on every matrix page | Met for the WebGL pages there are (eight, in the tests). **WebGPU frames cannot be captured yet.** |
+| Replay matches on every matrix page | Met for the pages there are: eight on WebGL, and on WebGPU the two raw pages, three.js and PixiJS. Babylon.js on WebGPU, a device in a worker, and the engines the matrix still lacks are untried. |
 | Or reports why not | Met: every capture is replayed once when taken and compared with the frame's own image, the verdict is stored with it, and replay answers carry a warning when it failed. |
-| Planted bugs and the evaluation harness | **Not started.** |
+| An agent diagnoses the planted bugs with no hints | Met for the bugs there are: twelve, in one small WebGL scene (`fixtures/bugs/`), all diagnosed by agents using only the command line, in a median of 8.5 commands. `evals/results/README.md` has both rounds and their limits. There is no runner that starts the agents; the rounds were started by hand. |
 
 Differences from the specification:
 
@@ -77,7 +77,10 @@ Differences from the specification:
 | The pass tree uses debug groups, labels, target changes and adapter knowledge. | Passes are runs of events on one target. | WebGL has no debug groups; the rest needs the page protocol and adapters. |
 | The command stream is `stream.bin`. | It is `stream.zst`: the capture as JSON, compressed, with data in the blob store. | Simple, and the replay page takes it as it is. |
 | Full-size intermediate targets are not stored; thumbnails of each target at pass ends are. | Only the frame's final image is stored. Intermediate targets come from replay. | Replay is fast enough that thumbnails have not been needed. |
-| The replay page is at an internal URL. | It is `about:blank`, hidden. | Enough for WebGL. WebGPU needs a secure context, so this will change. |
+| The replay page is at an internal URL. | It is a hidden page at `https://replay.scanline.invalid/`, a request the host answers itself and nothing fetches. | WebGPU exists only in a secure context, which `about:blank` is not. |
+| A WebGPU capture is replayed onto a canvas. | The replay has no canvas: where the page called `getCurrentTexture`, it gets an ordinary texture of the same size and format. | A canvas's texture expires when the task ends, and reading a target back takes several. |
+| (Not said.) How a WebGPU target is seen part-way through a frame. | The replay splits the frame at that point: it ends the open pass, finishes and submits every encoder so far, reads, then opens new encoders and a pass that loads what the old one stored and has the same state set. | WebGPU does nothing until commands are submitted, and a pass cannot be read while it is open. |
+| WebGPU objects are recreated from recorded creation calls. | From the descriptors the registry already keeps for the inventory, made lossless: object references, views with their textures, layouts taken from pipelines. | One record serves both. |
 
 Also true of what is built:
 
@@ -89,7 +92,25 @@ Also true of what is built:
 - Each replay makes a fresh context and recreates every object. Keeping one context per capture and running forwards from where it stands would make repeated questions cheaper.
 - WebGL 1 buffers now have a copy kept of every upload, as the specification asks, so they can be read and captured. This doubles the memory of WebGL 1 buffers while Scanline is attached.
 
+## WebGPU capture: what it does not do
+
+- Which test rejected a draw that changed nothing. The tests are part of the pipeline, so trying a draw without one means building the pipeline again without it.
+- Uniform values by name. That needs WGSL reflection, which is not built. `draw` lists what each bind group holds.
+- Render bundles built before the captured frame, and external textures. The calls that use them fail in replay and the summary says so.
+- The contents of depth, stencil, multisampled and compressed textures. They are empty in replay; a pass normally clears them.
+- Buffers and storage textures the GPU wrote in an earlier frame (a compute simulation) are captured as the frame left them, not as it found them, so such a frame replays one step ahead. Render targets are read before the frame. The replay check shows when this matters.
+- More than one device in a capture. Calls on another device's objects are left out.
+- A call rejected in replay is found by wrapping every call in an error scope. WebGPU reports most errors when an encoder is finished, so the call named is `finish`, with the browser's message saying which pass call was at fault.
+
 ## Added, not in the specification
+
+- **A capture says what is worth a look.** The specification puts lints in milestone 5. A first set came out of the evaluation and is built: draws that changed nothing, rejected calls and feedback loops, a viewport that is not its target's size, a clear clipped by a scissor box left on, a blended draw with opaque ones drawn over it, blending off on a translucent colour, a bound texture that cannot be sampled, and what the frame created and deleted. Each is worded as a fact about the frame, not a verdict.
+- **What every event changed is measured when the capture is taken**, by reading its target back around each event in one more replay. `draw_list` shows it. A frame too large for that (more than about 600 million pixels read) goes without, and `draw` measures one event when asked.
+- **A draw that changed nothing is replayed with each test off in turn**, so `draw` can say which test rejected it. This stands in for part of pixel history.
+- **`draw` says where each uniform and each texture binding came from**: the call that set it, and whether that call was for this draw or an earlier one.
+- **`resources` and `memory` flag leaks and churn** from the registry: many live objects created by one line over many frames, or far more objects created than are alive.
+- **Call arguments in a capture's `commands` table are stored for reading**: handles for objects, `prg_1.name` for uniform locations, WebGL's names for the enumerated arguments of the common methods.
+- **A command waits for the events the browser sent before its reply.** Replies and events are handled by different tasks, so `step` could otherwise report no errors for a frame that raised one.
 
 - **A page that draws from timers alone still steps.** A frame is "the clock moves, the frame callbacks run, then the timers that have come due run", so a loop on `setTimeout` pauses and steps like any other.
 - **Errors carry the frame they were thrown in.** The browser reports an uncaught error after the probe's end-of-frame work, by which time the frame number has moved on. The probe notes the throw as it passes.

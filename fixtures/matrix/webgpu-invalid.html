@@ -1,0 +1,54 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Matrix: WebGPU with a validation error</title>
+<style>body { margin: 0; background: #111; } canvas { display: block; }</style>
+<canvas id="scene" width="320" height="240"></canvas>
+<script type="module">
+// A frame the browser rejects: the draw asks for three vertices of a buffer that holds one.
+// The error is raised when the encoder is finished, and the whole command buffer is dropped,
+// so nothing is drawn, not even the clear.
+const adapter = await navigator.gpu.requestAdapter();
+const device = await adapter.requestDevice();
+const context = document.getElementById('scene').getContext('webgpu');
+const format = navigator.gpu.getPreferredCanvasFormat();
+
+context.configure({ device, format, alphaMode: 'opaque' });
+
+const module = device.createShaderModule({
+    label: 'triangle',
+    code: `
+        @vertex fn vs (@location(0) position: vec2f) -> @builtin(position) vec4f { return vec4f(position, 0.0, 1.0); }
+        @fragment fn fs () -> @location(0) vec4f { return vec4f(1.0, 0.5, 0.0, 1.0); }
+    `
+});
+
+const pipeline = device.createRenderPipeline({
+    label: 'triangle',
+    layout: 'auto',
+    vertex: { module, buffers: [{ arrayStride: 8, attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x2' }] }] },
+    fragment: { module, targets: [{ format }] }
+});
+
+const vertices = device.createBuffer({ label: 'one vertex, not three', size: 8, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
+
+device.queue.writeBuffer(vertices, 0, new Float32Array([0, 0.5]));
+
+function frame ()
+{
+    const encoder = device.createCommandEncoder();
+    const pass = encoder.beginRenderPass({
+        colorAttachments: [{ view: context.getCurrentTexture().createView(), clearValue: [0.1, 0.2, 0.3, 1], loadOp: 'clear', storeOp: 'store' }]
+    });
+
+    pass.setPipeline(pipeline);
+    pass.setVertexBuffer(0, vertices);
+    pass.draw(3);
+    pass.end();
+
+    device.queue.submit([encoder.finish()]);
+
+    requestAnimationFrame(frame);
+}
+
+requestAnimationFrame(frame);
+</script>

@@ -8,6 +8,7 @@
 //! draw, which draws changed a pixel) are answered by running it again in a hidden page of
 //! a live browser, on the same GPU: those answers are `gpu-measured`.
 
+use std::collections::HashMap;
 use std::io::Read;
 use std::sync::Arc;
 use std::time::Duration;
@@ -55,6 +56,11 @@ fn int(value: &Value) -> Sql {
 }
 
 fn mode_name(mode: &Value) -> Option<String> {
+    // A WebGPU topology is already a word.
+    if let Some(topology) = mode.as_str() {
+        return Some(topology.to_string());
+    }
+
     Some(
         match mode.as_u64()? {
             0 => "POINTS",
@@ -72,6 +78,10 @@ fn mode_name(mode: &Value) -> Option<String> {
 
 /// Where an event drew: the canvas, or the texture that is its framebuffer's first colour attachment.
 fn target_name(row: &Value, tag: u64) -> String {
+    if row["noTarget"] == true {
+        return if row["kind"] == "dispatch" { "compute".to_string() } else { "(no colour target)".to_string() };
+    }
+
     match row["target"].as_i64() {
         Some(texture) if texture > 0 => {
             let handle = handle_for("texture", &json!(texture), tag).unwrap_or_default();
@@ -84,6 +94,104 @@ fn target_name(row: &Value, tag: u64) -> String {
             handle_for("framebuffer", &row["framebuffer"], tag).unwrap_or_default()
         }
         _ => "canvas".to_string(),
+    }
+}
+
+/// What is said of an event that was encoded in a command buffer the browser dropped.
+const DROPPED: &str = "dropped with its command buffer";
+
+/// The events of a WebGPU frame that were encoded by an encoder whose command buffer was
+/// rejected, each with the call that raised the error.
+fn dropped_events(body: &Value, errors: &HashMap<i64, String>) -> Vec<(i64, i64)> {
+    let methods: Vec<&str> = body["methods"].as_array().into_iter().flatten().map(|name| name.as_str().unwrap_or("")).collect();
+    let commands = body["commands"].as_array().cloned().unwrap_or_default();
+    let method_of = |command: &Value| command[0].as_u64().and_then(|id| methods.get(id as usize)).copied().unwrap_or("");
+    let local = |reference: &Value| reference["l"].as_i64();
+
+    // The encoder each pass belongs to, and the encoders whose finish raised an error.
+    let mut encoder_of_pass = HashMap::new();
+    let mut failed = HashMap::new();
+
+    for (index, command) in commands.iter().enumerate() {
+        match method_of(command) {
+            "GPUCommandEncoder.beginRenderPass" | "GPUCommandEncoder.beginComputePass" => {
+                if let (Some(pass), Some(encoder)) = (local(&command[2]), local(&command[3])) {
+                    encoder_of_pass.insert(pass, encoder);
+                }
+            }
+            "GPUCommandEncoder.finish" if errors.contains_key(&(index as i64)) => {
+                if let Some(encoder) = local(&command[3]) {
+                    failed.insert(encoder, index as i64);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    body["draws"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .enumerate()
+        .filter_map(|(event, row)| {
+            let command = &commands[row["command"].as_u64()? as usize];
+            let receiver = local(&command[3])?;
+
+            // A pass's own calls are made on the pass; beginning one, and copies, on the encoder.
+            let encoder = encoder_of_pass.get(&receiver).copied().unwrap_or(receiver);
+
+            failed.get(&encoder).map(|cause| (event as i64, *cause))
+        })
+        .collect()
+}
+
+/// A setting that is on: WebGL's are numbers, WebGPU's are words.
+fn set(value: &Value) -> bool {
+    value.is_u64() || value.is_string()
+}
+
+fn is_webgpu(body: &Value) -> bool {
+    body["header"]["api"] == "webgpu"
+}
+
+/// One object of a WebGPU capture in a few words, and the bytes of its contents the capture holds.
+fn describe_gpu_object(object: &Value, body: &Value) -> (String, i64) {
+    let held = |index: &Value| index.as_u64().and_then(|index| body["blobs"][index as usize].as_i64()).unwrap_or(0);
+    let made = if object["createdInFrame"] == true { ", made during the frame" } else { "" };
+
+    match object["kind"].as_str().unwrap_or("") {
+        "texture" => {
+            let bytes: i64 = object["data"].as_array().into_iter().flatten().map(|part| held(&part["blob"])).sum();
+            let layers = object["depthOrArrayLayers"].as_i64().unwrap_or(1);
+
+            (
+                format!(
+                    "{}×{}{} {}{}{}{}{made}",
+                    object["width"],
+                    object["height"],
+                    if layers > 1 { format!("×{layers}") } else { String::new() },
+                    object["format"].as_str().unwrap_or("?"),
+                    if object["levels"].as_i64().unwrap_or(1) > 1 { format!(", {} levels", object["levels"]) } else { String::new() },
+                    if object["sampleCount"].as_i64().unwrap_or(1) > 1 { format!(", {}× multisampled", object["sampleCount"]) } else { String::new() },
+                    if object["renderTarget"] == true { ", render target" } else { "" }
+                ),
+                bytes,
+            )
+        }
+        "buffer" => (format!("{} bytes{made}", object["size"]), held(&object["data"])),
+        "shader" => (format!("WGSL module, {} characters{made}", object["source"].as_str().map_or(0, str::len)), 0),
+        "pipeline" => (format!("{} pipeline{made}", object["type"].as_str().unwrap_or("render")), 0),
+        "bind_group" => (format!("{}{made}", plural(object["descriptor"]["entries"].as_array().map_or(0, Vec::len) as i64, "binding")), 0),
+        "layout" => (
+            match object["pipeline"].as_i64() {
+                Some(pipeline) => format!("bind group layout {} of pip_{pipeline}", object["index"]),
+                None => format!("{} layout{made}", object["type"].as_str().unwrap_or("")),
+            },
+            0,
+        ),
+        "sampler" => (format!("sampler{made}"), 0),
+        "query" => (format!("{} {} queries", object["count"], object["type"].as_str().unwrap_or("")), 0),
+        _ => (String::new(), 0),
     }
 }
 
@@ -126,7 +234,516 @@ fn describe_object(object: &Value) -> (String, i64) {
 }
 
 /// Builds the tables a capture's queries read, from the capture as the probe sent it.
-fn tables(body: &Value, tag: u64) -> (Vec<Table>, Value) {
+fn gl_error_name(code: u64) -> String {
+    match code {
+        0x0500 => "INVALID_ENUM".into(),
+        0x0501 => "INVALID_VALUE".into(),
+        0x0502 => "INVALID_OPERATION".into(),
+        0x0505 => "OUT_OF_MEMORY".into(),
+        0x0506 => "INVALID_FRAMEBUFFER_OPERATION".into(),
+        0x9242 => "CONTEXT_LOST".into(),
+        other => format!("0x{other:04X}"),
+    }
+}
+
+/// A call's arguments for reading: object references become handles, uniform locations
+/// become `prg_1.name`, and where an argument is one of WebGL's named numbers, its name.
+fn readable(method: &str, args: &Value, tag: u64) -> Value {
+    fn objects(value: &Value, tag: u64) -> Value {
+        match value {
+            Value::Object(map) if map.contains_key("o") && map.contains_key("i") => {
+                json!(handle_for(map["o"].as_str().unwrap_or(""), &map["i"], tag).unwrap_or_default())
+            }
+            Value::Object(map) if map.contains_key("u") && map.contains_key("n") => {
+                json!(format!("{}.{}", handle_for("program", &map["u"], tag).unwrap_or_default(), map["n"].as_str().unwrap_or("")))
+            }
+            // WebGPU: objects made during the frame that have no handle, views, the device and its queue, data.
+            Value::Object(map) if map.len() == 1 && map.contains_key("l") => json!(format!("#{}", map["l"])),
+            Value::Object(map) if map.len() == 1 && map.contains_key("v") => match map["v"]["t"].as_i64() {
+                Some(texture) if texture > 0 => json!(format!("view of {}", handle_for("texture", &json!(texture), tag).unwrap_or_default())),
+                _ => json!("view of the canvas"),
+            },
+            Value::Object(map) if map.len() == 1 && map.contains_key("dev") => json!("device"),
+            Value::Object(map) if map.len() == 1 && map.contains_key("q") => json!("queue"),
+            Value::Object(map) if map.len() == 1 && map.contains_key("ctx") => json!("canvas context"),
+            Value::Object(map) if map.len() == 1 && map.contains_key("$u") => Value::Null,
+            Value::Object(map) if map.len() == 2 && map.contains_key("b") && map.contains_key("a") => {
+                json!(format!("<{} data>", map["a"].as_str().unwrap_or("")))
+            }
+            Value::Object(map) => Value::Object(map.iter().map(|(key, value)| (key.clone(), objects(value, tag))).collect()),
+            Value::Array(items) => Value::Array(items.iter().map(|item| objects(item, tag)).collect()),
+            other => other.clone(),
+        }
+    }
+
+    let mut out = objects(args, tag);
+
+    // Which arguments of which methods are named numbers.
+    let named: &[usize] = match method.strip_prefix("gl.").unwrap_or("") {
+        "enable" | "disable" | "depthFunc" | "cullFace" | "frontFace" | "activeTexture" | "bindTexture" | "bindBuffer" | "bindFramebuffer"
+        | "bindRenderbuffer" | "generateMipmap" | "stencilFunc" | "pixelStorei" | "drawArrays" | "blendEquation" | "bufferData" | "bufferSubData" => &[0],
+        "blendFunc" | "blendEquationSeparate" => &[0, 1],
+        "blendFuncSeparate" => &[0, 1, 2, 3],
+        "stencilOp" | "texParameteri" | "texParameterf" | "framebufferTexture2D" => &[0, 1, 2],
+        "drawElements" => &[0, 2],
+        _ => &[],
+    };
+
+    let blend = method.starts_with("gl.blendFunc");
+    let draw = method.starts_with("gl.draw");
+
+    for index in named {
+        let Some(code) = out[*index].as_u64() else { continue };
+        let value = json!(code);
+
+        let name = match code {
+            _ if blend => factor(&value),
+            _ if draw && *index == 0 => mode_name(&value).unwrap_or_default(),
+            0x84C0..=0x84FF => format!("TEXTURE{}", code - 0x84C0),
+            0x0DE1 => "TEXTURE_2D".into(),
+            0x8513 => "TEXTURE_CUBE_MAP".into(),
+            0x806F => "TEXTURE_3D".into(),
+            0x8C1A => "TEXTURE_2D_ARRAY".into(),
+            0x8892 => "ARRAY_BUFFER".into(),
+            0x8893 => "ELEMENT_ARRAY_BUFFER".into(),
+            0x8A11 => "UNIFORM_BUFFER".into(),
+            0x8D40 => "FRAMEBUFFER".into(),
+            0x8CA8 => "READ_FRAMEBUFFER".into(),
+            0x8CA9 => "DRAW_FRAMEBUFFER".into(),
+            0x8D41 => "RENDERBUFFER".into(),
+            0x8CE0 => "COLOR_ATTACHMENT0".into(),
+            0x8D00 => "DEPTH_ATTACHMENT".into(),
+            0x821A => "DEPTH_STENCIL_ATTACHMENT".into(),
+            _ => gl_name(&value),
+        };
+
+        // A number with no name here stays a number.
+        if !name.is_empty() && !name.starts_with("0x") {
+            out[*index] = json!(name);
+        }
+    }
+
+    out
+}
+
+/// The sizes of the capture's textures, by ID, and of its canvas.
+struct Sizes {
+    canvas: (i64, i64),
+    textures: HashMap<i64, (i64, i64)>,
+}
+
+impl Sizes {
+    fn of(body: &Value) -> Sizes {
+        Sizes {
+            canvas: (body["header"]["width"].as_i64().unwrap_or(0), body["header"]["height"].as_i64().unwrap_or(0)),
+            textures: body["objects"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|object| object["kind"] == "texture")
+                .map(|object| (object["id"].as_i64().unwrap_or(0), (object["width"].as_i64().unwrap_or(0), object["height"].as_i64().unwrap_or(0))))
+                .collect(),
+        }
+    }
+
+    /// The size of the target an event drew to.
+    fn target(&self, row: &Value) -> (i64, i64) {
+        match row["target"].as_i64().filter(|texture| *texture > 0).and_then(|texture| self.textures.get(&texture)) {
+            Some((width, height)) => {
+                let level = row["targetLevel"].as_i64().unwrap_or(0);
+
+                ((width >> level).max(1), (height >> level).max(1))
+            }
+            None => self.canvas,
+        }
+    }
+}
+
+/// Whether a box (x, y, width, height) leaves part of a target uncovered.
+fn partial(area: &Value, (width, height): (i64, i64)) -> bool {
+    let at = |index: usize| area[index].as_i64().unwrap_or(0);
+
+    area.is_array() && width > 0 && (at(0) > 0 || at(1) > 0 || at(0) + at(2) < width || at(1) + at(3) < height)
+}
+
+/// Numbers as a short list of runs: 5–8, 12.
+fn runs(numbers: &[i64]) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    let mut index = 0;
+
+    while index < numbers.len() {
+        let mut end = index;
+
+        while end + 1 < numbers.len() && numbers[end + 1] == numbers[end] + 1 {
+            end += 1;
+        }
+
+        parts.push(if end > index { format!("{}–{}", numbers[index], numbers[end]) } else { numbers[index].to_string() });
+        index = end + 1;
+    }
+
+    if parts.len() > 6 {
+        let more = parts.len() - 6;
+
+        parts.truncate(6);
+        parts.push(format!("and {more} more runs"));
+    }
+
+    parts.join(", ")
+}
+
+/// A draw rejected for drawing to a texture it also has bound: the unit and the texture.
+fn feedback(row: &Value, tag: u64) -> Option<(i64, String)> {
+    let target = row["target"].as_i64().filter(|texture| *texture > 0)?;
+
+    row["textures"].as_array()?.iter().find_map(|unit| {
+        ["t2d", "cube", "t3d", "array"]
+            .iter()
+            .any(|key| unit[*key].as_i64() == Some(target))
+            .then(|| (unit["unit"].as_i64().unwrap_or(0), handle_for("texture", &json!(target), tag).unwrap_or_default()))
+    })
+}
+
+fn plural(count: i64, noun: &str) -> String {
+    format!("{count} {noun}{}", if count == 1 { "" } else { "s" })
+}
+
+/// Things about the frame that are often the bug, found without being asked. Each is a
+/// plain fact about the capture; whether it is a mistake is for the reader to judge.
+fn findings(body: &Value, tag: u64, errors: &HashMap<i64, String>, effects: &HashMap<i64, Value>) -> Vec<String> {
+    let draws = body["draws"].as_array().cloned().unwrap_or_default();
+    let sizes = Sizes::of(body);
+    let methods: Vec<&str> = body["methods"].as_array().into_iter().flatten().map(|name| name.as_str().unwrap_or("")).collect();
+    let commands = body["commands"].as_array().cloned().unwrap_or_default();
+    let method_of = |command: &Value| command[0].as_u64().and_then(|id| methods.get(id as usize)).copied().unwrap_or("");
+    let rejected = |row: &Value| errors.contains_key(&row["command"].as_i64().unwrap_or(-1));
+    let mut found = Vec::new();
+
+    // Draws that did nothing.
+    let idle: Vec<i64> = draws
+        .iter()
+        .enumerate()
+        .filter(|(index, row)| row["kind"] == "draw" && !rejected(row) && effects.get(&(*index as i64)).is_some_and(|effect| effect["changed"] == 0))
+        .map(|(index, _)| index as i64)
+        .collect();
+
+    if !idle.is_empty() {
+        found.push(format!(
+            "{} changed no pixels: event{} {}. draw(draw: {}) says which test rejected it.",
+            plural(idle.len() as i64, "draw"),
+            if idle.len() == 1 { "" } else { "s" },
+            runs(&idle),
+            idle[0]
+        ));
+    }
+
+    // Runs of events on one target that all use one viewport that is not the target's size.
+    let mut start = 0;
+
+    while start < draws.len() {
+        let name = target_name(&draws[start], tag);
+        let mut end = start;
+
+        while end + 1 < draws.len() && target_name(&draws[end + 1], tag) == name {
+            end += 1;
+        }
+
+        let size = sizes.target(&draws[start]);
+        let viewport = &draws[start]["viewport"];
+        let drawn = draws[start..=end].iter().filter(|row| row["kind"] == "draw").count();
+
+        if drawn > 0 && partial(viewport, size) && draws[start..=end].iter().all(|row| row["viewport"] == *viewport) {
+            let set_in_frame =
+                commands[..draws[start]["command"].as_u64().unwrap_or(0) as usize].iter().rposition(|command| method_of(command) == "gl.viewport");
+
+            found.push(format!(
+                "Every event on {name} (events {start}–{end}) uses viewport {}, but {name} is {}×{}. {}",
+                list(viewport),
+                size.0,
+                size.1,
+                match set_in_frame {
+                    Some(call) => format!("The viewport was last set at call {call}."),
+                    None => "Nothing in the frame sets the viewport before them: it was left like that by an earlier frame.".to_string(),
+                }
+            ));
+        }
+
+        start = end + 1;
+    }
+
+    // Clears clipped by the scissor test.
+    let clipped: Vec<i64> = draws
+        .iter()
+        .enumerate()
+        .filter(|(_, row)| row["kind"] == "clear" && partial(&row["scissor"], sizes.target(row)))
+        .map(|(index, _)| index as i64)
+        .collect();
+
+    if let Some(first) = clipped.first() {
+        let row = &draws[*first as usize];
+        let switched_on = commands[..row["command"].as_u64().unwrap_or(0) as usize]
+            .iter()
+            .any(|command| method_of(command) == "gl.enable" && command[1][0].as_u64() == Some(0x0C11));
+
+        found.push(format!(
+            "Event{} {} clear{} with the scissor test on (box {}), so only that box is cleared.{}",
+            if clipped.len() == 1 { "" } else { "s" },
+            runs(&clipped),
+            if clipped.len() == 1 { "s" } else { "" },
+            list(&row["scissor"]),
+            if switched_on {
+                String::new()
+            } else {
+                let is = |command: &Value, method: &str| method_of(command) == method && command[1][0].as_u64() == Some(0x0C11);
+
+                // Where this frame does the same, which is very likely where the last one did.
+                let left_on = match commands.iter().rposition(|command| is(command, "gl.enable")) {
+                    Some(on) if !commands[on..].iter().any(|command| is(command, "gl.disable")) => {
+                        format!(" This frame does the same: call {on} switches it on and nothing after it switches it off.")
+                    }
+                    _ => String::new(),
+                };
+
+                format!(" The frame began with the scissor test already on: an earlier frame left it on.{left_on}")
+            }
+        ));
+    }
+
+    // Translucent draws followed by opaque ones that land on top of them.
+    let overlap = |a: &Value, b: &Value| {
+        let at = |effect: &Value, key: &str| effect[key].as_i64().unwrap_or(0);
+
+        a["changed"].as_i64().unwrap_or(0) > 0
+            && b["changed"].as_i64().unwrap_or(0) > 0
+            && at(a, "x") < at(b, "x") + at(b, "w")
+            && at(b, "x") < at(a, "x") + at(a, "w")
+            && at(a, "y") < at(b, "y") + at(b, "h")
+            && at(b, "y") < at(a, "y") + at(a, "h")
+    };
+
+    let mut out_of_order = 0;
+
+    for (index, row) in draws.iter().enumerate() {
+        if row["kind"] != "draw" || !row["blend"].is_object() || !row["depth"].is_object() || out_of_order == 2 {
+            continue;
+        }
+
+        let Some(mine) = effects.get(&(index as i64)) else { continue };
+        let target = target_name(row, tag);
+
+        let later: Vec<i64> = draws
+            .iter()
+            .enumerate()
+            .skip(index + 1)
+            .filter(|(_, other)| other["kind"] == "draw" && !other["blend"].is_object() && other["depth"]["write"] == true && target_name(other, tag) == target)
+            .filter(|(other, _)| effects.get(&(*other as i64)).is_some_and(|theirs| overlap(mine, theirs)))
+            .map(|(other, _)| other as i64)
+            .collect();
+
+        if !later.is_empty() {
+            out_of_order += 1;
+
+            found.push(format!(
+                "Event {index} blends, but opaque depth-written event{} {} drawn after it on the same pixels. A blended draw only tints what is already there, so what is drawn after it is not seen through it.",
+                if later.len() == 1 { "" } else { "s" },
+                if later.len() == 1 { format!("{} is", later[0]) } else { format!("{} are", runs(&later)) }
+            ));
+        }
+    }
+
+    // Blending off on a draw given a translucent colour.
+    let mut solid: Vec<(i64, String, f64)> = Vec::new();
+
+    for (index, row) in draws.iter().enumerate() {
+        if row["kind"] != "draw" || row["blend"].is_object() || effects.get(&(index as i64)).is_some_and(|effect| effect["changed"] == 0) {
+            continue;
+        }
+
+        for (name, value) in row["uniforms"].as_object().into_iter().flatten() {
+            let lower = name.to_lowercase();
+            let alpha = match value.as_array().map(Vec::as_slice) {
+                Some([_, _, _, alpha]) if ["color", "colour", "tint"].iter().any(|word| lower.contains(word)) => alpha.as_f64(),
+                Some([alpha]) if ["alpha", "opacity"].iter().any(|word| lower.contains(word)) => alpha.as_f64(),
+                _ => None,
+            };
+
+            if let Some(alpha) = alpha.filter(|alpha| *alpha > 0.0 && *alpha < 1.0) {
+                solid.push((index as i64, name.clone(), alpha));
+                break;
+            }
+        }
+    }
+
+    if let Some((first, name, alpha)) = solid.first() {
+        let events: Vec<i64> = solid.iter().map(|entry| entry.0).collect();
+
+        found.push(format!(
+            "Event{} {} drawn with blending off, but {} uniform {name} has an alpha of {alpha}. With blending off alpha does nothing: the draw replaces what is behind it.",
+            if events.len() == 1 { "" } else { "s" },
+            if events.len() == 1 { format!("{first} is") } else { format!("{} are", runs(&events)) },
+            if events.len() == 1 { "its" } else { "their" }
+        ));
+    }
+
+    // Textures a draw has bound that cannot be sampled.
+    // WebGL only: a WebGPU texture has no sampling state of its own.
+    for object in body["objects"].as_array().into_iter().flatten().filter(|object| object["kind"] == "texture" && !is_webgpu(body)) {
+        let filter = object["params"]["10241"].as_u64();
+        let needs_mips = filter.is_none_or(|filter| (0x2700..=0x2703).contains(&filter));
+
+        if !needs_mips || object["levels"].as_u64().unwrap_or(1) > 1 || object["width"].as_u64().unwrap_or(0) == 0 || object["renderTarget"] == true {
+            continue;
+        }
+
+        let id = object["id"].as_i64();
+        let users: Vec<i64> = draws
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| {
+                row["kind"] == "draw"
+                    && row["textures"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .any(|unit| unit["sampler"].is_null() && ["t2d", "cube", "t3d", "array"].iter().any(|key| unit[*key].as_i64() == id))
+            })
+            .map(|(index, _)| index as i64)
+            .collect();
+
+        if !users.is_empty() {
+            found.push(format!(
+                "{} is bound for event{} {} but is incomplete: it has one mip level and its MIN_FILTER ({}) needs mipmaps. A shader that samples it reads black.",
+                handle_for("texture", &object["id"], tag).unwrap_or_default(),
+                if users.len() == 1 { "" } else { "s" },
+                runs(&users),
+                match filter {
+                    Some(_) => gl_name(&object["params"]["10241"]),
+                    None => "never set, so NEAREST_MIPMAP_LINEAR".to_string(),
+                }
+            ));
+        }
+    }
+
+    // What the frame itself created and deleted.
+    let mut made: Vec<(&str, i64)> = Vec::new();
+    let mut deleted: Vec<(&str, i64)> = Vec::new();
+    let count = |name: &str| commands.iter().filter(|command| method_of(command) == name).count() as i64;
+
+    // WebGPU makes views, bind groups and encoders every frame as a matter of course. What
+    // is worth a word is what is costly or holds memory.
+    for (noun, methods) in [
+        (
+            "pipeline",
+            &[
+                "GPUDevice.createRenderPipeline",
+                "GPUDevice.createComputePipeline",
+                "GPUDevice.createRenderPipelineAsync",
+                "GPUDevice.createComputePipelineAsync",
+            ][..],
+        ),
+        ("shader module", &["GPUDevice.createShaderModule"][..]),
+        ("texture", &["GPUDevice.createTexture"][..]),
+        ("buffer", &["GPUDevice.createBuffer"][..]),
+    ] {
+        let created: i64 = methods.iter().map(|name| count(name)).sum();
+
+        if created > 0 {
+            made.push((noun, created));
+        }
+    }
+
+    for (noun, method) in [("texture", "GPUTexture.destroy"), ("buffer", "GPUBuffer.destroy")] {
+        if count(method) > 0 {
+            deleted.push((noun, count(method)));
+        }
+    }
+
+    for (noun, suffix) in [
+        ("program", "Program"),
+        ("shader", "Shader"),
+        ("texture", "Texture"),
+        ("buffer", "Buffer"),
+        ("framebuffer", "Framebuffer"),
+        ("renderbuffer", "Renderbuffer"),
+        ("vertex array", "VertexArray"),
+    ] {
+        let (created, removed) = (count(&format!("gl.create{suffix}")), count(&format!("gl.delete{suffix}")));
+
+        if created > 0 {
+            made.push((noun, created));
+        }
+
+        if removed > 0 {
+            deleted.push((noun, removed));
+        }
+    }
+
+    if !made.is_empty() {
+        let words = |items: &[(&str, i64)]| items.iter().map(|(noun, count)| plural(*count, noun)).collect::<Vec<_>>().join(", ");
+        let webgpu = is_webgpu(body);
+        let (compiled, linked) = if webgpu {
+            (
+                made.iter().filter(|entry| entry.0 == "shader module").map(|entry| entry.1).sum(),
+                made.iter().filter(|entry| entry.0 == "pipeline").map(|entry| entry.1).sum(),
+            )
+        } else {
+            (count("gl.compileShader"), count("gl.linkProgram"))
+        };
+
+        // The events drawn with a program the frame itself made.
+        let users: Vec<String> = commands
+            .iter()
+            .filter(|command| method_of(command) == "gl.createProgram")
+            .filter_map(|command| command[2]["i"].as_i64())
+            .filter_map(|program| {
+                let events: Vec<i64> =
+                    draws.iter().enumerate().filter(|(_, row)| row["program"].as_i64() == Some(program)).map(|(index, _)| index as i64).collect();
+
+                (!events.is_empty()).then(|| {
+                    format!(
+                        " {} is used by event{} {}.",
+                        handle_for("program", &json!(program), tag).unwrap_or_default(),
+                        if events.len() == 1 { "" } else { "s" },
+                        runs(&events)
+                    )
+                })
+            })
+            .take(3)
+            .collect();
+
+        found.push(format!(
+            "The frame itself created {}{}{}.{}{}{} resources() counts what is alive and what has been created in all; resources(kind: …, sort: \"created\") shows the line that creates each.",
+            words(&made),
+            if compiled + linked > 0 && !webgpu {
+                format!(" (compiled {}, linked {})", plural(compiled, "shader"), plural(linked, "program"))
+            } else {
+                String::new()
+            },
+            if deleted.is_empty() { " and deleted nothing".to_string() } else { format!(", and deleted {}", words(&deleted)) },
+            users.concat(),
+            if compiled + linked > 0 && webgpu {
+                " Compiling shader modules and building pipelines are slow: a page that does this every frame stutters."
+            } else if compiled + linked > 0 {
+                " Compiling and linking are slow: a page that does this every frame stutters."
+            } else {
+                ""
+            },
+            if made.iter().map(|entry| entry.1).sum::<i64>() > deleted.iter().map(|entry| entry.1).sum::<i64>() {
+                " It created more than it deleted: if every frame does, they pile up (a leak)."
+            } else {
+                ""
+            }
+        ));
+    }
+
+    found
+}
+
+/// `errors` maps a command's index to the GL error it raised when replayed; `effects` maps
+/// an event's number to what replaying it did to its target.
+fn tables(body: &Value, tag: u64, errors: &HashMap<i64, String>, effects: &HashMap<i64, Value>) -> (Vec<Table>, Value) {
+    let sizes = Sizes::of(body);
+    let webgpu = is_webgpu(body);
     let named = |kind: &str, id: &Value| text(handle_for(kind, id, tag));
     let draws = body["draws"].as_array().cloned().unwrap_or_default();
 
@@ -178,12 +795,22 @@ fn tables(body: &Value, tag: u64) -> (Vec<Table>, Value) {
 
         event_of_command.insert(row["command"].as_i64().unwrap_or(-1), index);
 
+        let size = sizes.target(row);
+        let effect = effects.get(&index).cloned().unwrap_or(Value::Null);
+
         let textures: Vec<String> = row["textures"]
             .as_array()
             .into_iter()
             .flatten()
             .flat_map(|unit| ["t2d", "cube", "t3d", "array"].into_iter().filter_map(move |key| handle_for("texture", &unit[key], tag)))
-            .collect();
+            .fold(Vec::new(), |mut seen: Vec<String>, texture| {
+                // A texture bound in several places is named once.
+                if !seen.contains(&texture) {
+                    seen.push(texture);
+                }
+
+                seen
+            });
 
         draw_rows.push(vec![
             Sql::Integer(index),
@@ -195,22 +822,27 @@ fn tables(body: &Value, tag: u64) -> (Vec<Table>, Value) {
             text(mode_name(&row["mode"])),
             int(&row["count"]),
             int(&row["instances"]),
-            Sql::Integer(row["indexType"].is_number() as i64),
-            named("program", &row["program"]),
+            Sql::Integer(!row["indexType"].is_null() as i64),
+            if row["pipeline"].is_number() { named("pipeline", &row["pipeline"]) } else { named("program", &row["program"]) },
             named("vertex_array", &row["vertexArray"]),
             named("framebuffer", &row["framebuffer"]),
             Sql::Integer(row["blend"].is_object() as i64),
-            text(row["blend"]["srcRgb"].as_u64().map(|_| factor(&row["blend"]["srcRgb"]))),
-            text(row["blend"]["dstRgb"].as_u64().map(|_| factor(&row["blend"]["dstRgb"]))),
+            text(set(&row["blend"]["srcRgb"]).then(|| factor(&row["blend"]["srcRgb"]))),
+            text(set(&row["blend"]["dstRgb"]).then(|| factor(&row["blend"]["dstRgb"]))),
             Sql::Integer(row["depth"].is_object() as i64),
             Sql::Integer((row["depth"]["write"] == true) as i64),
-            text(row["depth"]["func"].as_u64().map(|_| gl_name(&row["depth"]["func"]))),
+            text(set(&row["depth"]["func"]).then(|| gl_name(&row["depth"]["func"]))),
             Sql::Integer(row["stencil"].is_object() as i64),
-            text(row["cull"].as_u64().map(|_| gl_name(&row["cull"]))),
+            text(set(&row["cull"]).then(|| gl_name(&row["cull"]))),
             text(row["scissor"].as_array().map(|_| list(&row["scissor"]))),
             Sql::Text(list(&row["viewport"])),
             Sql::Text(list(&row["colorMask"])),
             Sql::Text(textures.join(" ")),
+            text(errors.get(&row["command"].as_i64().unwrap_or(-1)).cloned()),
+            Sql::Integer(size.0),
+            Sql::Integer(size.1),
+            int(&effect["changed"]),
+            text(effect["w"].as_i64().map(|_| format!("{}, {}, {}, {}", effect["x"], effect["y"], effect["w"], effect["h"]))),
             Sql::Text(row.to_string()),
         ]);
 
@@ -252,6 +884,17 @@ fn tables(body: &Value, tag: u64) -> (Vec<Table>, Value) {
     // The capture carries its own table of method names.
     let methods: Vec<String> = body["methods"].as_array().into_iter().flatten().map(|name| name.as_str().unwrap_or("").to_string()).collect();
 
+    // The event each call leads up to: the first one at or after it.
+    let mut event_commands: Vec<(i64, i64)> = event_of_command.iter().map(|(command, event)| (*command, *event)).collect();
+
+    event_commands.sort();
+
+    let leads_to = |command: i64| {
+        let at = event_commands.partition_point(|(event_command, _)| *event_command < command);
+
+        event_commands.get(at).map(|(_, event)| Sql::Integer(*event)).unwrap_or(Sql::Null)
+    };
+
     let command_rows: Vec<Vec<Sql>> = body["commands"]
         .as_array()
         .into_iter()
@@ -259,7 +902,7 @@ fn tables(body: &Value, tag: u64) -> (Vec<Table>, Value) {
         .enumerate()
         .map(|(index, command)| {
             let method = command[0].as_u64().and_then(|id| methods.get(id as usize)).cloned().unwrap_or_default();
-            let mut args = command[1].to_string();
+            let mut args = readable(&method, &command[1], tag).to_string();
 
             if args.len() > 400 {
                 args = format!("{}…", args.chars().take(400).collect::<String>());
@@ -270,6 +913,10 @@ fn tables(body: &Value, tag: u64) -> (Vec<Table>, Value) {
                 Sql::Text(method),
                 Sql::Text(args),
                 event_of_command.get(&(index as i64)).map(|draw| Sql::Integer(*draw)).unwrap_or(Sql::Null),
+                leads_to(index as i64),
+                text(errors.get(&(index as i64)).cloned()),
+                // What a WebGPU call was made on: "#4" is an encoder or a pass made during the frame.
+                text(command.get(3).map(|receiver| readable("", &json!([receiver]), tag)[0].as_str().map(str::to_string).unwrap_or_default())),
             ]
         })
         .collect();
@@ -283,7 +930,7 @@ fn tables(body: &Value, tag: u64) -> (Vec<Table>, Value) {
         .flatten()
         .map(|object| {
             let kind = object["kind"].as_str().unwrap_or("");
-            let (what, bytes) = describe_object(object);
+            let (what, bytes) = if webgpu { describe_gpu_object(object, body) } else { describe_object(object) };
 
             match kind {
                 "texture" => texture_bytes += bytes,
@@ -357,6 +1004,11 @@ fn tables(body: &Value, tag: u64) -> (Vec<Table>, Value) {
                 "viewport TEXT",
                 "color_mask TEXT",
                 "textures TEXT",
+                "gl_error TEXT",
+                "target_width INTEGER",
+                "target_height INTEGER",
+                "pixels_changed INTEGER",
+                "changed_box TEXT",
                 "state TEXT",
             ],
             rows: draw_rows,
@@ -381,7 +1033,11 @@ fn tables(body: &Value, tag: u64) -> (Vec<Table>, Value) {
             ],
             rows: object_rows,
         },
-        Table { name: "commands", columns: vec!["command INTEGER PRIMARY KEY", "method TEXT", "args TEXT", "draw INTEGER"], rows: command_rows },
+        Table {
+            name: "commands",
+            columns: vec!["command INTEGER PRIMARY KEY", "method TEXT", "args TEXT", "draw INTEGER", "for_draw INTEGER", "gl_error TEXT", "receiver TEXT"],
+            rows: command_rows,
+        },
         Table { name: "uniforms", columns: vec!["draw INTEGER", "name TEXT", "value TEXT"], rows: uniform_rows },
         Table { name: "bindings", columns: vec!["draw INTEGER", "unit INTEGER", "target TEXT", "texture TEXT", "sampler TEXT"], rows: binding_rows },
         Table {
@@ -435,14 +1091,32 @@ fn the_capture(host: &Host, params: &Value) -> Result<(String, Value)> {
     Ok((handle.to_string(), host.store.meta(handle)?))
 }
 
+/// What a capture is of, for the first line of every answer about one, and a warning when
+/// the session named alongside it has a different page open: handles are shared by every
+/// session on the host, so it is easy to pass someone else's.
+fn about(host: &Host, params: &Value, handle: &str, meta: &Value) -> String {
+    let url = meta["url"].as_str().unwrap_or("");
+    let mut text = format!("{handle} (frame {} of {})", meta["frame"], page_text(url, 80));
+
+    if let Some(session) = params["session"].as_str().and_then(|id| host.sessions.lock().ok()?.get(id).cloned()) {
+        let open = session.url();
+
+        if !url.is_empty() && !open.is_empty() && open != url {
+            text.push_str(&format!(
+                " [WARNING: not a capture of the page {} has open, which is {}; captures() lists them all]",
+                session.id,
+                page_text(&open, 80)
+            ));
+        }
+    }
+
+    text
+}
+
 // ---- Taking a capture ----
 
 pub async fn capture(host: &Arc<Host>, session: &Arc<Session>, params: &Value) -> Result<Value> {
     let context = choose_context(session, params).await?;
-
-    if context.api == "webgpu" {
-        bail!("{} is a WebGPU context, and capturing WebGPU frames is not built yet. WebGL 1 and WebGL 2 frames can be captured.", context.handle);
-    }
 
     let top = session.top()?;
     let was_running = session.probe(&top, "status", json!({}), SHORT).await?["paused"] == false;
@@ -494,10 +1168,8 @@ pub async fn capture(host: &Arc<Host>, session: &Arc<Session>, params: &Value) -
         session.probe_all("resume", json!({}), SHORT).await;
     }
 
-    let handle = host.store.next_handle();
+    let handle = host.store.reserve_handle()?;
     let tag = context.instance.tag as u64;
-    let (capture_tables, counts) = tables(&body, tag);
-
     body["blob_hashes"] = json!(hashes);
 
     // Run it again and compare. If the replay does not match the frame, every answer that
@@ -506,10 +1178,76 @@ pub async fn capture(host: &Arc<Host>, session: &Arc<Session>, params: &Value) -
 
     session.replay_load(&handle, &body, &|index| store.get_blob(&hashes[index])).await?;
 
-    let replayed = session.replay("image", &json!({ "key": handle }), LONG).await?;
-    let difference = original.difference(&replay_image(&replayed)?, 0);
+    // A capture that cannot be replayed is still kept: what it says can be read, and the
+    // verdict says why nothing can be asked of what it did.
+    let (replayed, difference) = match session.replay("image", &json!({ "key": handle }), LONG).await {
+        Ok(replayed) => {
+            let difference = replay_image(&replayed).and_then(|image| original.difference(&image, 0));
+
+            (replayed, difference)
+        }
+        Err(error) => (Value::Null, Err(anyhow!("the replay failed ({error})"))),
+    };
+
+    // If the frame left a GL error behind, find out which calls raised one. The browser
+    // rejects such a call outright, so a draw that raised one drew nothing.
+    let mut errors = HashMap::new();
+
+    if replayed["error"].as_u64().unwrap_or(0) != 0 {
+        if let Ok(found) = session.replay("errors", &json!({ "key": handle }), LONG).await {
+            for entry in found["errors"].as_array().into_iter().flatten() {
+                // WebGL gives a code; WebGPU gives the browser's own sentence.
+                let error = match entry["error"].as_str() {
+                    Some(message) => page_text(message, 400),
+                    None => gl_error_name(entry["error"].as_u64().unwrap_or(0)),
+                };
+
+                errors.insert(entry["command"].as_i64().unwrap_or(-1), error);
+            }
+        }
+    }
+
+    // What every event did to its target, measured in one more replay. A frame too big for
+    // that goes without: draw measures a single event when asked.
+    let mut effects = HashMap::new();
+    let mut effect_note = None;
+
+    match if replayed.is_null() { Err(anyhow!("the capture does not replay")) } else { session.replay("effects", &json!({ "key": handle }), LONG).await } {
+        Ok(measured) if measured["skipped"] == true => {
+            effect_note =
+                Some("The frame is too large to measure what every event changed, so draw_list does not say; draw(draw: n) measures one.".to_string());
+        }
+        Ok(measured) => {
+            for effect in measured["effects"].as_array().into_iter().flatten() {
+                effects.insert(effect["draw"].as_i64().unwrap_or(-1), effect.clone());
+            }
+        }
+        Err(error) => effect_note = Some(format!("What each event changed could not be measured: {error}")),
+    }
+
+    // WebGPU drops a whole command buffer for one bad call in it. Splitting the frame to
+    // measure each event hides that: the events before the bad call were submitted on their
+    // own and drew. In the page they did not, so they are marked as dropped.
+    let raised = errors.len();
+
+    if is_webgpu(&body) && !errors.is_empty() {
+        for (event, cause) in dropped_events(&body, &errors) {
+            let command = body["draws"][event as usize]["command"].as_i64().unwrap_or(-1);
+
+            effects.insert(event, json!({ "draw": event, "changed": 0 }));
+            errors.entry(command).or_insert(format!("{DROPPED} (call {cause})"));
+        }
+    }
+
+    let (capture_tables, mut counts) = tables(&body, tag, &errors, &effects);
+
+    counts["gl_errors"] = json!(raised);
+
+    let found = findings(&body, tag, &errors, &effects);
 
     let mut notes: Vec<String> = replayed["notes"].as_array().into_iter().flatten().filter_map(|note| note.as_str().map(str::to_string)).collect();
+
+    notes.extend(effect_note);
 
     for note in body["header"]["notes"].as_array().into_iter().flatten() {
         match note.as_str() {
@@ -545,6 +1283,7 @@ pub async fn capture(host: &Arc<Host>, session: &Arc<Session>, params: &Value) -
         "replay": fidelity,
         "replay_matches": fidelity == "identical",
         "notes": notes,
+        "findings": found,
         "counts": counts,
         "blob_bytes": taken["blobBytes"],
     });
@@ -567,6 +1306,15 @@ pub async fn capture(host: &Arc<Host>, session: &Arc<Session>, params: &Value) -
     ));
 
     Ok(value)
+}
+
+/// Why the browser rejected a draw, where the capture itself shows it.
+fn rejection(host: &Host, handle: &str, draw: i64, tag: u64) -> Option<String> {
+    let rows = host.store.query(handle, "SELECT state FROM draws WHERE draw = ?1", &[Sql::Integer(draw)], 1).ok()?;
+    let state: Value = serde_json::from_str(rows.rows.first()?[0].as_str()?).ok()?;
+    let (unit, texture) = feedback(&state, tag)?;
+
+    Some(format!(" — a feedback loop: {texture} is the target being drawn to and is also bound on texture unit {unit}"))
 }
 
 fn describe_capture(host: &Host, handle: &str, meta: &Value) -> Result<Value> {
@@ -610,6 +1358,62 @@ fn describe_capture(host: &Host, handle: &str, meta: &Value) -> Result<Value> {
         counts["buffers"],
         size(counts["buffer_bytes"].as_f64().unwrap_or(0.0))
     ));
+
+    // Calls the browser rejected. A rejected draw draws nothing, which is often the whole bug.
+    if counts["gl_errors"].as_u64().unwrap_or(0) > 0 {
+        let failed = host.store.query(
+            handle,
+            "SELECT c.command, c.method, c.gl_error, c.draw FROM commands c WHERE c.gl_error IS NOT NULL AND c.gl_error NOT LIKE 'dropped with%' ORDER BY c.command",
+            &[],
+            6,
+        )?;
+
+        lines.push(format!(
+            "{} call{} raised {} when replayed. {}:",
+            counts["gl_errors"],
+            if counts["gl_errors"] == 1 { "" } else { "s" },
+            if meta["api"] == "webgpu" { "a validation error" } else { "a GL error" },
+            if meta["api"] == "webgpu" {
+                "WebGPU drops the whole command buffer such a call is encoded in, so none of its passes drew"
+            } else {
+                "The browser rejects such a call, so it did nothing"
+            }
+        ));
+
+        for row in &failed.rows {
+            let event = row[3].as_i64().map(|draw| format!("event {draw}, ")).unwrap_or_default();
+            let why = row[3].as_i64().and_then(|draw| rejection(host, handle, draw, meta["instance_tag"].as_u64().unwrap_or(0))).unwrap_or_default();
+
+            lines.push(format!("  {event}call {} {}: {}{why}", row[0], row[1].as_str().unwrap_or(""), page_text(row[2].as_str().unwrap_or(""), 300)));
+        }
+
+        if failed.truncated {
+            lines.push("  … and more: query \"select command, method, gl_error from commands where gl_error is not null\".".into());
+        }
+
+        if meta["api"] != "webgpu" {
+            lines.push("  console(level: \"error\") has the browser's own message for each.".into());
+        } else {
+            let dropped = host.store.query(handle, "SELECT draw FROM draws WHERE gl_error LIKE 'dropped with%' ORDER BY draw", &[], 500)?;
+            let events: Vec<i64> = dropped.rows.iter().filter_map(|row| row[0].as_i64()).collect();
+
+            if !events.is_empty() {
+                lines.push(format!(
+                    "  So event{} {} did not run in the page, whatever {} would have drawn.",
+                    if events.len() == 1 { "" } else { "s" },
+                    runs(&events),
+                    if events.len() == 1 { "it" } else { "they" }
+                ));
+            }
+        }
+    }
+
+    let found: Vec<&str> = meta["findings"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+
+    if !found.is_empty() {
+        lines.push("Worth a look (facts about this frame that are often the bug):".into());
+        lines.extend(found.iter().map(|finding| format!("  • {finding}")));
+    }
 
     lines.push(if meta["replay_matches"] == true {
         "Replay check: replaying the capture gives an image identical to the frame's own, so answers from replay can be trusted.".to_string()
@@ -667,10 +1471,11 @@ pub fn captures(host: &Arc<Host>, params: &Value) -> Result<Value> {
 // ---- What the frame says: answered from the capture's tables ----
 
 pub fn pass_tree(host: &Arc<Host>, params: &Value) -> Result<Value> {
-    let (handle, _) = the_capture(host, params)?;
+    let (handle, meta) = the_capture(host, params)?;
     let passes = host.store.query(&handle, "SELECT pass, target, first_draw, last_draw, draws, clears FROM passes ORDER BY pass", &[], 500)?;
+    let handle_text = about(host, params, &handle, &meta);
     let mut lines =
-        vec![format!("{handle}: {} pass{}. A pass is a run of events on one target.", passes.rows.len(), if passes.rows.len() == 1 { "" } else { "es" })];
+        vec![format!("{handle_text}: {} pass{}. A pass is a run of events on one target.", passes.rows.len(), if passes.rows.len() == 1 { "" } else { "es" })];
 
     for row in &passes.rows {
         let some = |count: &Value, noun: &str| format!("{count} {noun}{}", if count == 1 { "" } else { "s" });
@@ -703,6 +1508,7 @@ fn describe_event(row: &serde_json::Map<String, Value>) -> String {
     match word("kind").as_str() {
         "clear" => text.push_str(&format!("clear          → {}", word("target"))),
         "blit" => text.push_str(&format!("blit           → {}", word("target"))),
+        "dispatch" => text.push_str(&format!("dispatch       {} (compute)", word("program"))),
         _ => {
             let instances = get("instances").as_i64().unwrap_or(1);
 
@@ -728,28 +1534,55 @@ fn describe_event(row: &serde_json::Map<String, Value>) -> String {
                 text.push_str(&format!("  cull {}", word("cull")));
             }
 
-            if !word("scissor").is_empty() {
-                text.push_str(&format!("  scissor {}", word("scissor")));
-            }
-
             if !word("textures").is_empty() {
                 text.push_str(&format!("  textures {}", word("textures")));
             }
         }
     }
 
+    let size = (get("target_width").as_i64().unwrap_or(0), get("target_height").as_i64().unwrap_or(0));
+    let area = |key: &str| json!(word(key).split(", ").filter_map(|part| part.parse::<i64>().ok()).collect::<Vec<_>>());
+
+    if word("kind") != "blit" {
+        if !word("scissor").is_empty() {
+            text.push_str(&format!("  scissor ON {}", word("scissor")));
+        }
+
+        // The viewport is only worth a line's space when it is not the whole target.
+        if word("kind") == "draw" && partial(&area("viewport"), size) {
+            text.push_str(&format!("  viewport {} (target is {}×{})", word("viewport"), size.0, size.1));
+        }
+    }
+
+    match get("pixels_changed").as_i64() {
+        Some(0) => text.push_str("  ⇒ changed nothing"),
+        Some(changed) => text.push_str(&format!("  ⇒ {changed} px at {}", word("changed_box"))),
+        None => {}
+    }
+
+    let error = word("gl_error");
+
+    if error.starts_with(DROPPED) {
+        text.push_str(&format!("  DID NOT RUN: {error}"));
+    } else if error.contains(' ') {
+        // WebGPU's errors are sentences.
+        text.push_str(&format!("  REJECTED: {}", page_text(&error, 100)));
+    } else if !error.is_empty() {
+        text.push_str(&format!("  REJECTED: GL_{error}"));
+    }
+
     text
 }
 
 pub fn draw_list(host: &Arc<Host>, params: &Value) -> Result<Value> {
-    let (handle, _) = the_capture(host, params)?;
+    let (handle, meta) = the_capture(host, params)?;
     let limit = params["limit"].as_u64().unwrap_or(25).clamp(1, 200);
     let cursor = params["cursor"].as_u64().unwrap_or(0);
     let filter = params["filter"].as_str().map(str::trim).filter(|filter| !filter.is_empty());
 
     // The filter is a SQL condition on the draws table. The database is read-only.
     let condition = filter.map(|filter| format!(" WHERE ({filter})")).unwrap_or_default();
-    let columns = "draw, kind, method, pass, target, mode, count, instances, indexed, program, blend, blend_src, blend_dst, depth_test, depth_write, depth_func, cull, scissor, textures";
+    let columns = "draw, kind, method, pass, target, mode, count, instances, indexed, program, blend, blend_src, blend_dst, depth_test, depth_write, depth_func, cull, scissor, viewport, textures, gl_error, target_width, target_height, pixels_changed, changed_box";
 
     let explain = |error: anyhow::Error| {
         anyhow!(
@@ -765,7 +1598,12 @@ pub fn draw_list(host: &Arc<Host>, params: &Value) -> Result<Value> {
 
     let objects = rows_as_objects(&rows);
     let matching = filter.map(|filter| format!(" matching \"{filter}\"")).unwrap_or_default();
-    let mut lines = vec![format!("{handle}: {total} event{}{matching} (draws, clears and blits, in order).", if total == 1 { "" } else { "s" })];
+    let mut lines = vec![format!(
+        "{}: {total} event{}{matching} (draws, clears and blits, in order). ⇒ is what replaying the event changed on its target: pixels, and the box they fall in (x, y, w, h from the top-left).{}",
+        about(host, params, &handle, &meta),
+        if total == 1 { "" } else { "s" },
+        if meta["api"] == "webgpu" { "" } else { " Scissor and viewport boxes are as WebGL has them: x, y from the bottom-left." }
+    )];
 
     lines.extend(objects.iter().filter_map(Value::as_object).map(describe_event));
 
@@ -776,7 +1614,11 @@ pub fn draw_list(host: &Arc<Host>, params: &Value) -> Result<Value> {
     }
 
     if total > 0 {
-        lines.push(format!("draw(capture: \"{handle}\", draw: n) gives one in full."));
+        lines.push(if meta["api"] == "webgpu" {
+            format!("draw(capture: \"{handle}\", draw: n) gives one in full, with its pipeline and what its bind groups hold.")
+        } else {
+            format!("draw(capture: \"{handle}\", draw: n) gives one in full, with its uniforms and where each was set.")
+        });
     }
 
     Ok(result(
@@ -787,7 +1629,12 @@ pub fn draw_list(host: &Arc<Host>, params: &Value) -> Result<Value> {
 
 fn draw_state(host: &Host, handle: &str, draw: &Value) -> Result<Value> {
     let Some(index) = draw.as_i64() else { bail!("A draw is named by its number in the capture, from 0. Call draw_list to see them.") };
-    let rows = host.store.query(handle, "SELECT state, pass, target, program FROM draws WHERE draw = ?1", &[Sql::Integer(index)], 1)?;
+    let rows = host.store.query(
+        handle,
+        "SELECT state, pass, target, program, gl_error, pixels_changed, changed_box, target_width, target_height FROM draws WHERE draw = ?1",
+        &[Sql::Integer(index)],
+        1,
+    )?;
 
     let Some(row) = rows.rows.first() else {
         let total = host.store.query(handle, "SELECT count(*) FROM draws", &[], 1)?.rows[0][0].clone();
@@ -800,6 +1647,10 @@ fn draw_state(host: &Host, handle: &str, draw: &Value) -> Result<Value> {
     state["pass"] = row[1].clone();
     state["targetName"] = row[2].clone();
     state["programName"] = row[3].clone();
+    state["glError"] = row[4].clone();
+    state["pixelsChanged"] = row[5].clone();
+    state["changedBox"] = row[6].clone();
+    state["targetSize"] = json!([row[7], row[8]]);
 
     Ok(state)
 }
@@ -812,15 +1663,43 @@ pub async fn draw(host: &Arc<Host>, params: &Value) -> Result<Value> {
     let named = |kind: &str, id: &Value| handle_for(kind, id, tag).unwrap_or_else(|| "none".into());
     let kind = state["kind"].as_str().unwrap_or("draw");
 
+    let size = (state["targetSize"][0].as_i64().unwrap_or(0), state["targetSize"][1].as_i64().unwrap_or(0));
+    let webgpu = meta["api"] == "webgpu";
+
     let mut lines = vec![format!(
-        "{handle} event {index}: {} to {} (pass {}, call {}).",
+        "{} event {index}: {} to {} (pass {}, call {}).",
+        about(host, params, &handle, &meta),
         state["method"].as_str().unwrap_or(""),
         state["targetName"].as_str().unwrap_or("?"),
         state["pass"],
         state["command"]
     )];
 
-    if kind == "clear" {
+    if kind == "clear" && webgpu {
+        // A WebGPU pass clears what it is told to as it begins.
+        let mut cleared = Vec::new();
+
+        if state["mask"].as_u64().unwrap_or(0) & 0x4000 != 0 {
+            let colour: Vec<String> = state["clearColor"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|channel| format!("{}", (channel.as_f64().unwrap_or(0.0) * 1e4).round() / 1e4))
+                .collect();
+
+            cleared.push(format!("colour to {}", colour.join(", ")));
+        }
+
+        if !state["clearDepth"].is_null() {
+            cleared.push(format!("depth to {}", state["clearDepth"]));
+        }
+
+        if !state["clearStencil"].is_null() {
+            cleared.push(format!("stencil to {}", state["clearStencil"]));
+        }
+
+        lines.push(format!("  the pass begins by clearing {}", cleared.join(", ")));
+    } else if kind == "clear" {
         lines.push(format!(
             "  clears to colour {}, depth {}, stencil {}; mask 0x{:X}",
             list(&state["clearColor"]),
@@ -828,6 +1707,8 @@ pub async fn draw(host: &Arc<Host>, params: &Value) -> Result<Value> {
             state["clearStencil"],
             state["mask"].as_u64().unwrap_or(0)
         ));
+    } else if webgpu && (kind == "draw" || kind == "dispatch") {
+        lines.extend(gpu_draw_lines(host, &handle, &state, tag));
     } else if kind == "draw" {
         lines.push(format!(
             "  {} × {}{}{}",
@@ -845,9 +1726,10 @@ pub async fn draw(host: &Arc<Host>, params: &Value) -> Result<Value> {
     }
 
     lines.push(format!(
-        "  viewport {}; scissor {}; colour mask {}",
+        "  viewport {}{}; scissor {}; colour mask {}",
         list(&state["viewport"]),
-        if state["scissor"].is_array() { list(&state["scissor"]) } else { "off".into() },
+        if partial(&state["viewport"], size) { format!(" (NOT the whole target, which is {}×{})", size.0, size.1) } else { String::new() },
+        if state["scissor"].is_array() { format!("test ON, box {}", list(&state["scissor"])) } else { "test off".into() },
         list(&state["colorMask"])
     ));
 
@@ -870,7 +1752,18 @@ pub async fn draw(host: &Arc<Host>, params: &Value) -> Result<Value> {
             None => "  depth: test off".to_string(),
         });
 
-        if state["stencil"].is_object() {
+        if webgpu && state["stencil"].is_object() {
+            let front = &state["stencil"]["front"];
+
+            lines.push(format!(
+                "  stencil: {} against reference {}; fail {}, depth fail {}, pass {}",
+                front["compare"].as_str().unwrap_or("always"),
+                state["stencil"]["reference"],
+                front["failOp"].as_str().unwrap_or("keep"),
+                front["depthFailOp"].as_str().unwrap_or("keep"),
+                front["passOp"].as_str().unwrap_or("keep")
+            ));
+        } else if state["stencil"].is_object() {
             let front = &state["stencil"]["front"];
 
             lines.push(format!(
@@ -884,19 +1777,49 @@ pub async fn draw(host: &Arc<Host>, params: &Value) -> Result<Value> {
             ));
         }
 
-        lines.push(match state["cull"].as_u64() {
-            Some(_) => format!("  cull {}, front face {}", gl_name(&state["cull"]), gl_name(&state["frontFace"])),
-            None => "  cull: off".to_string(),
+        lines.push(if set(&state["cull"]) {
+            format!("  cull {}, front face {}", gl_name(&state["cull"]), gl_name(&state["frontFace"]))
+        } else {
+            "  cull: off".to_string()
         });
 
-        for unit in state["textures"].as_array().into_iter().flatten() {
+        // WebGPU has no bindings that carry over from one draw to the next within a frame's
+        // state: what a draw reads is its bind groups, listed above.
+        let history = if webgpu { None } else { history(host, &handle, &state) };
+        let no_units = Vec::new();
+
+        for unit in if webgpu { &no_units } else { state["textures"].as_array().unwrap_or(&no_units) } {
             let bound: Vec<String> = [("t2d", "2D"), ("cube", "cube"), ("t3d", "3D"), ("array", "2D array")]
                 .iter()
                 .filter(|(key, _)| !unit[*key].is_null())
                 .map(|(key, name)| format!("{name} {}", named("texture", &unit[*key])))
                 .collect();
 
-            lines.push(format!("  unit {}: {}", unit["unit"], bound.join(", ")));
+            // What each bound texture is, so the wrong one stands out.
+            let facts: Vec<String> = ["t2d", "cube", "t3d", "array"]
+                .iter()
+                .filter_map(|key| handle_for("texture", &unit[*key], tag))
+                .filter_map(|texture| {
+                    let rows = host.store.query(&handle, "SELECT what, label FROM objects WHERE handle = ?1", &[Sql::Text(texture)], 1).ok()?;
+                    let row = rows.rows.first()?;
+
+                    Some(format!("{}{}", row[0].as_str()?, row[1].as_str().map(|label| format!(" «{}»", page_text(label, 40))).unwrap_or_default()))
+                })
+                .collect();
+
+            let source = match history.as_ref().map(|history| history.1.get(&unit["unit"].as_i64().unwrap_or(-1))) {
+                Some(Some((call, event))) if *event == index => format!("   ← bound for this draw, at call {call}"),
+                Some(Some((call, event))) => format!("   ← last bound at call {call}, for event {event}; not bound again for this draw"),
+                Some(None) => "   ← not bound in this frame: left bound by an earlier frame".to_string(),
+                None => String::new(),
+            };
+
+            lines.push(format!(
+                "  unit {}: {}{}{source}",
+                unit["unit"],
+                bound.join(", "),
+                if facts.is_empty() { String::new() } else { format!("  ({})", facts.join("; ")) }
+            ));
         }
 
         for attribute in state["attributes"].as_array().into_iter().flatten() {
@@ -916,7 +1839,13 @@ pub async fn draw(host: &Arc<Host>, params: &Value) -> Result<Value> {
         let uniforms = state["uniforms"].as_object().cloned().unwrap_or_default();
 
         if !uniforms.is_empty() {
-            lines.push(format!("  {} uniform{} set (those never set hold their default):", uniforms.len(), if uniforms.len() == 1 { "" } else { "s" }));
+            lines.push(format!(
+                "  {} uniform{} set (those never set hold their default). A program keeps a uniform's value until it is set again, so one not set for this draw still holds what an earlier draw gave it:",
+                uniforms.len(),
+                if uniforms.len() == 1 { "" } else { "s" }
+            ));
+
+            let set_at = history.as_ref().map(|history| &history.0);
 
             for (name, value) in uniforms.iter().take(40) {
                 let values: Vec<String> = value
@@ -927,9 +1856,36 @@ pub async fn draw(host: &Arc<Host>, params: &Value) -> Result<Value> {
                     .map(|number| number.as_f64().map(|n| format!("{}", (n * 1e6).round() / 1e6)).unwrap_or_default())
                     .collect();
 
-                lines.push(format!("    {name} = {}{}", values.join(", "), if value.as_array().map_or(0, Vec::len) > 16 { ", …" } else { "" }));
+                let source = match set_at.as_ref().map(|calls| calls.get(name)) {
+                    Some(Some((call, event))) if *event == index => format!("   ← set for this draw, at call {call}"),
+                    Some(Some((call, event))) => format!("   ← last set at call {call}, for event {event}; not set again for this draw"),
+                    Some(None) => "   ← not set in this frame: carried over from an earlier frame".to_string(),
+                    None => String::new(),
+                };
+
+                lines.push(format!("    {name} = {}{}{source}", values.join(", "), if value.as_array().map_or(0, Vec::len) > 16 { ", …" } else { "" }));
             }
         }
+    }
+
+    if let Some(error) = state["glError"].as_str().filter(|_| webgpu) {
+        lines.push(if error.starts_with(DROPPED) {
+            format!(
+                "  THIS EVENT DID NOT RUN in the page: it was {error}. WebGPU rejects a whole command buffer for one invalid call in it. The capture's summary has the browser's message."
+            )
+        } else {
+            format!("  THIS CALL WAS REJECTED when replayed: {}", page_text(error, 400))
+        });
+    } else if let Some(error) = state["glError"].as_str() {
+        lines.push(format!(
+            "  THIS CALL RAISED GL_{error} when replayed: the browser rejected it, so it drew nothing.{}",
+            match feedback(&state, tag) {
+                Some((unit, texture)) => format!(
+                    " It is a feedback loop: {texture} is the target being drawn to and is also bound on texture unit {unit}. Bind something else on that unit (or nothing) before drawing to {texture}."
+                ),
+                None => " console(level: \"error\") has the browser's message saying why.".to_string(),
+            }
+        ));
     }
 
     let mut value = result("", json!({ "capture": handle, "draw": index, "state": state }));
@@ -945,7 +1901,17 @@ pub async fn draw(host: &Arc<Host>, params: &Value) -> Result<Value> {
             Err(error) => lines.push(format!("  Its effect could not be measured: {error}")),
         }
     } else {
-        lines.push("  Its effect on the target is measured by replay, which needs an open session.".into());
+        // No browser to replay in: what was measured when the capture was taken still stands.
+        match (state["pixelsChanged"].as_i64(), state["changedBox"].as_str()) {
+            (Some(0), _) => lines.push(
+                "  Effect: it changed no pixels of its target (measured when captured). Finding which test rejected it needs an open session to replay in."
+                    .into(),
+            ),
+            (Some(changed), Some(area)) => {
+                lines.push(format!("  Effect: it changed {changed} pixels of its target, within x, y, w, h = {area} (measured when captured)."))
+            }
+            _ => lines.push("  Its effect on the target is measured by replay, which needs an open session.".into()),
+        }
     }
 
     if meta["replay_matches"] != true {
@@ -959,7 +1925,31 @@ pub async fn draw(host: &Arc<Host>, params: &Value) -> Result<Value> {
 
 /// The difference an event made to its target: the target before it against the target after it.
 async fn effect(host: &Arc<Host>, session: &Arc<Session>, handle: &str, index: i64, params: &Value) -> Result<(String, Value, Value)> {
+    let state = draw_state(host, handle, &json!(index))?;
+
     load_into(host, session, handle).await?;
+
+    // Measured when the capture was taken, unless the frame was too large for that.
+    if params["output"] != true {
+        match state["pixelsChanged"].as_i64() {
+            Some(0) if state["glError"].is_null() => return Ok((unchanged(host, session, handle, index, &state).await, json!({ "changed": 0 }), json!([]))),
+            Some(0) => return Ok(("  Effect: it changed no pixels of its target (gpu-measured).".into(), json!({ "changed": 0 }), json!([]))),
+            Some(changed) => {
+                return Ok((
+                    format!(
+                        "  Effect: it changed {changed} pixels of its target, within x, y, w, h = {} (gpu-measured). Pass output: true to see the target after it.",
+                        state["changedBox"].as_str().unwrap_or("?")
+                    ),
+                    match state["changedBox"].as_str().map(|text| text.split(", ").filter_map(|part| part.parse::<i64>().ok()).collect::<Vec<_>>()).as_deref() {
+                        Some([x, y, w, h]) => json!({ "changed": changed, "bounds": { "x": x, "y": y, "w": w, "h": h } }),
+                        _ => json!({ "changed": changed }),
+                    },
+                    json!([]),
+                ));
+            }
+            None => {}
+        }
+    }
 
     let after = replay_image(&session.replay("image", &json!({ "key": handle, "draw": index }), LONG).await?)?;
 
@@ -980,11 +1970,7 @@ async fn effect(host: &Arc<Host>, session: &Arc<Session>, handle: &str, index: i
     let difference = before.difference(&after, 0)?;
 
     if difference.changed == 0 {
-        return Ok((
-            "  Effect: it changed no pixels of its target (gpu-measured). Every fragment was rejected, clipped or wrote what was already there.".into(),
-            json!({ "changed": 0 }),
-            json!([]),
-        ));
+        return Ok((unchanged(host, session, handle, index, &state).await, json!({ "changed": 0 }), json!([])));
     }
 
     let (x, y, w, h) = difference.bounds.unwrap();
@@ -1003,6 +1989,257 @@ async fn effect(host: &Arc<Host>, session: &Arc<Session>, handle: &str, index: i
     }
 
     Ok((line, json!({ "changed": difference.changed, "bounds": { "x": x, "y": y, "w": w, "h": h } }), images))
+}
+
+/// What a WebGPU draw runs with: its pipeline, what its bind groups hold, and its buffers.
+fn gpu_draw_lines(host: &Host, handle: &str, state: &Value, tag: u64) -> Vec<String> {
+    let named = |kind: &str, id: &Value| handle_for(kind, id, tag).unwrap_or_else(|| "none".into());
+
+    // An object's few words and label from the capture, for the end of a line.
+    let about = |name: &str| -> String {
+        let Ok(rows) = host.store.query(handle, "SELECT what, label FROM objects WHERE handle = ?1", &[Sql::Text(name.to_string())], 1) else {
+            return String::new();
+        };
+
+        rows.rows
+            .first()
+            .map(|row| {
+                format!("  ({}{})", row[0].as_str().unwrap_or(""), row[1].as_str().map(|label| format!(" «{}»", page_text(label, 40))).unwrap_or_default())
+            })
+            .unwrap_or_default()
+    };
+
+    let mut lines = Vec::new();
+
+    if state["kind"] == "dispatch" {
+        lines.push(match state["count"].as_array() {
+            Some(_) => format!("  dispatches {} workgroups", list(&state["count"]).replace(", ", " × ")),
+            None => "  dispatches workgroups counted in a buffer (indirect)".to_string(),
+        });
+    } else if state["method"] == "executeBundles" {
+        lines.push(format!(
+            "  runs {} render bundle{}: what they draw was decided when they were built",
+            state["bundles"],
+            if state["bundles"] == 1 { "" } else { "s" }
+        ));
+    } else if state["indirect"].is_object() {
+        lines.push(format!(
+            "  {}, counts read from {} at byte {} (indirect)",
+            state["mode"].as_str().unwrap_or(""),
+            named("buffer", &state["indirect"]["buffer"]),
+            state["indirect"]["offset"]
+        ));
+    } else {
+        lines.push(format!(
+            "  {} × {}{}{}",
+            state["mode"].as_str().unwrap_or(""),
+            state["count"],
+            match state["indexBuffer"].as_object() {
+                Some(index) => format!(
+                    ", indexed ({} from {} at byte {}), from index {}, base vertex {}",
+                    index["format"].as_str().unwrap_or(""),
+                    named("buffer", &index["buffer"]),
+                    index["offset"],
+                    state["first"],
+                    state["baseVertex"]
+                ),
+                None => format!(", from vertex {}", state["first"]),
+            },
+            if state["instances"].as_i64().unwrap_or(1) != 1 { format!(", {} instances", state["instances"]) } else { String::new() }
+        ));
+    }
+
+    let pipeline = named("pipeline", &state["pipeline"]);
+
+    lines.push(format!("  pipeline {pipeline}{}", about(&pipeline)));
+
+    for (slot, group) in state["bindGroups"].as_array().into_iter().flatten().enumerate() {
+        if group.is_null() {
+            continue;
+        }
+
+        let name = named("bind_group", group);
+
+        lines.push(format!("  bind group {slot}: {name}{}", about(&name)));
+
+        let detail = host
+            .store
+            .query(handle, "SELECT detail FROM objects WHERE handle = ?1", &[Sql::Text(name.clone())], 1)
+            .ok()
+            .and_then(|rows| rows.rows.first().and_then(|row| serde_json::from_str::<Value>(row[0].as_str().unwrap_or("")).ok()))
+            .unwrap_or(Value::Null);
+
+        for entry in detail["descriptor"]["entries"].as_array().into_iter().flatten() {
+            let resource = &entry["resource"];
+
+            let what = match resource["ref"].as_str() {
+                Some("texture") => {
+                    let texture = named("texture", &resource["id"]);
+
+                    format!("a view of {texture}{}", about(&texture))
+                }
+                Some("sampler") => named("sampler", &resource["id"]),
+                Some(_) => named(resource["ref"].as_str().unwrap_or(""), &resource["id"]),
+                // A buffer binding: { buffer, offset, size }.
+                None if resource["buffer"]["ref"] == "buffer" => {
+                    let buffer = named("buffer", &resource["buffer"]["id"]);
+
+                    format!(
+                        "{buffer}{}{}{}",
+                        if resource["offset"].as_u64().unwrap_or(0) > 0 { format!(" from byte {}", resource["offset"]) } else { String::new() },
+                        if resource["size"].is_number() { format!(", {} bytes", resource["size"]) } else { String::new() },
+                        about(&buffer)
+                    )
+                }
+                None => "something a capture cannot hold".to_string(),
+            };
+
+            lines.push(format!("    binding {}: {what}", entry["binding"]));
+        }
+    }
+
+    for buffer in state["vertexBuffers"].as_array().into_iter().flatten() {
+        lines.push(format!("  vertex buffer {}: {} from byte {}", buffer["slot"], named("buffer", &buffer["buffer"]), buffer["offset"]));
+    }
+
+    if state["kind"] != "dispatch" && !state["bindGroups"].as_array().is_none_or(Vec::is_empty) {
+        lines.push("  Uniform values are bytes in the buffers bound above. resource(handle: \"buf_N\") reads a live buffer; WGSL reflection is not built, so they are not named here.".into());
+    }
+
+    lines
+}
+
+/// Why an event changed nothing: it is replayed with each test that is on switched off in
+/// turn, and whichever then lets it change pixels is what rejected it.
+async fn unchanged(host: &Arc<Host>, session: &Arc<Session>, handle: &str, index: i64, state: &Value) -> String {
+    let start = "  Effect: it changed no pixels of its target (gpu-measured).";
+
+    if state["kind"] != "draw" {
+        return format!("{start} It wrote what was already there, or the scissor box or colour mask kept it out.");
+    }
+
+    let Ok(tried) = session.replay("why", &json!({ "key": handle, "draw": index }), LONG).await else {
+        return format!("{start} Every fragment was rejected, clipped or wrote what was already there.");
+    };
+
+    if tried["unsupported"] == true {
+        return format!(
+            "{start} Every fragment was rejected, clipped or wrote what was already there. Which test rejected it is not worked out for WebGPU yet: the tests are part of the pipeline (cull mode, depth compare, stencil), listed above."
+        );
+    }
+
+    let mut causes = Vec::new();
+
+    for attempt in tried["tried"].as_array().into_iter().flatten() {
+        let changed = attempt["changed"].as_i64().unwrap_or(0);
+
+        if changed == 0 {
+            continue;
+        }
+
+        causes.push(match attempt["what"].as_str().unwrap_or("") {
+            "cull" => format!(
+                "With face culling off it changes {changed} pixels: every triangle is culled (cull {}, front face {}). The triangles face away from the viewer: the winding order, or a negative scale or size flipping them.",
+                gl_name(&state["cull"]),
+                gl_name(&state["frontFace"])
+            ),
+            "depth" => format!(
+                "With the depth test off it changes {changed} pixels: every fragment fails the depth test ({}).{}",
+                gl_name(&state["depth"]["func"]),
+                last_depth_clear(host, handle, index, state).unwrap_or_default()
+            ),
+            "scissor" => format!("With the scissor test off it changes {changed} pixels: it falls outside the scissor box ({}).", list(&state["scissor"])),
+            "stencil" => format!("With the stencil test off it changes {changed} pixels: every fragment fails the stencil test."),
+            "blend" => format!("With blending off it changes {changed} pixels: it is drawn, but the blend leaves the target as it was (a source alpha of 0, or factors that cancel)."),
+            "color_mask" => format!("With every colour channel writable it changes {changed} pixels: the colour mask ({}) keeps it out.", list(&state["colorMask"])),
+            "rasterizer_discard" => format!("With RASTERIZER_DISCARD off it changes {changed} pixels: rasterisation is switched off for this draw."),
+            "viewport" => format!(
+                "With the viewport set to the whole target it changes {changed} pixels: the viewport ({}) puts it somewhere it cannot be seen.",
+                list(&state["viewport"])
+            ),
+            other => format!("With {other} off it changes {changed} pixels."),
+        });
+    }
+
+    if causes.is_empty() {
+        let together = tried["together"].as_i64().unwrap_or(0);
+
+        causes.push(if together > 0 {
+            format!("No single test explains it, but with every test that is on switched off together it changes {together} pixels: more than one of them rejects it.")
+        } else {
+            "It changes nothing even with culling, the depth, scissor and stencil tests and blending all off and the viewport set to the whole target. So the geometry is off the target or has no area (check the vertex data and the uniforms that place it), the shader discards every fragment, or it writes exactly what was already there.".to_string()
+        });
+    }
+
+    format!("{start}\n  Why: {}", causes.join("\n       "))
+}
+
+/// The value the depth buffer of a draw's target was last cleared to, when the frame did so.
+fn last_depth_clear(host: &Host, handle: &str, index: i64, state: &Value) -> Option<String> {
+    let rows = host
+        .store
+        .query(
+            handle,
+            "SELECT draw, state FROM draws WHERE kind = 'clear' AND draw < ?1 AND target = ?2 ORDER BY draw DESC",
+            &[Sql::Integer(index), Sql::Text(state["targetName"].as_str()?.to_string())],
+            20,
+        )
+        .ok()?;
+
+    for row in &rows.rows {
+        let clear: Value = serde_json::from_str(row[1].as_str()?).ok()?;
+
+        if clear["mask"].as_u64().unwrap_or(0) & 0x100 != 0 {
+            let depth = clear["clearDepth"].as_f64().unwrap_or(1.0);
+            let hopeless = match state["depth"]["func"].as_u64() {
+                Some(0x0201) => depth <= 0.0,
+                Some(0x0204) => depth >= 1.0,
+                _ => false,
+            };
+
+            return Some(format!(
+                " The depth buffer was last cleared to {depth} by event {}{}",
+                row[0],
+                if hopeless { ", and nothing can pass that test against that value: the clear depth is wrong for this depth function." } else { "." }
+            ));
+        }
+    }
+
+    Some(" Nothing in the frame clears this target's depth buffer before it.".to_string())
+}
+
+/// Where a draw's inputs came from: for each uniform of its program, and for each texture
+/// unit, the call that last set it before the draw and the event that call was leading up to.
+fn history(host: &Host, handle: &str, state: &Value) -> Option<(HashMap<String, (i64, i64)>, HashMap<i64, (i64, i64)>)> {
+    let stream = host.store.stream(handle).ok()?;
+    let methods: Vec<&str> = stream["methods"].as_array()?.iter().map(|name| name.as_str().unwrap_or("")).collect();
+    let program = state["program"].as_i64();
+    let end = state["command"].as_u64()? as usize;
+    let events: Vec<i64> = stream["draws"].as_array()?.iter().map(|row| row["command"].as_i64().unwrap_or(-1)).collect();
+    let leads_to = |index: usize| events.partition_point(|event_command| *event_command < index as i64) as i64;
+    let mut uniforms = HashMap::new();
+    let mut units = HashMap::new();
+    let mut active = stream["initial"]["unit"].as_i64().unwrap_or(0);
+
+    for (index, command) in stream["commands"].as_array()?.iter().enumerate().take(end) {
+        let method = command[0].as_u64().and_then(|id| methods.get(id as usize)).copied().unwrap_or("");
+        let first = &command[1][0];
+
+        match method {
+            "gl.activeTexture" => active = first.as_i64().unwrap_or(0x84C0) - 0x84C0,
+            "gl.bindTexture" => {
+                units.insert(active, (index as i64, leads_to(index)));
+            }
+            _ if method.starts_with("gl.uniform") && program.is_some() && first["u"].as_i64() == program => {
+                if let Some(name) = first["n"].as_str() {
+                    uniforms.insert(name.to_string(), (index as i64, leads_to(index)));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Some((uniforms, units))
 }
 
 fn flatten(prefix: &str, value: &Value, out: &mut std::collections::BTreeMap<String, String>) {
@@ -1040,7 +2277,8 @@ fn named_value(key: &str, value: &Value) -> String {
 }
 
 pub fn draw_diff(host: &Arc<Host>, params: &Value) -> Result<Value> {
-    let (handle, _) = the_capture(host, params)?;
+    let (handle, meta) = the_capture(host, params)?;
+    let handle_text = about(host, params, &handle, &meta);
 
     if !params["a"].is_i64() || !params["b"].is_i64() {
         bail!("draw_diff needs a and b: the numbers of two events in the capture.");
@@ -1051,7 +2289,7 @@ pub fn draw_diff(host: &Arc<Host>, params: &Value) -> Result<Value> {
     flatten("", &draw_state(host, &handle, &params["a"])?, &mut a);
     flatten("", &draw_state(host, &handle, &params["b"])?, &mut b);
 
-    let ignored = ["command", "pass"];
+    let ignored = ["command", "pass", "pixelsChanged", "changedBox"];
     let keys: std::collections::BTreeSet<&String> = a.keys().chain(b.keys()).filter(|key| !ignored.contains(&key.as_str())).collect();
     let missing = "(absent)".to_string();
     let mut rows = Vec::new();
@@ -1065,9 +2303,9 @@ pub fn draw_diff(host: &Arc<Host>, params: &Value) -> Result<Value> {
     }
 
     let mut lines = vec![if rows.is_empty() {
-        format!("{handle}: events {} and {} have the same state, bindings and uniforms.", params["a"], params["b"])
+        format!("{handle_text}: events {} and {} have the same state, bindings and uniforms.", params["a"], params["b"])
     } else {
-        format!("{handle}: events {} and {} differ in {} value{}.", params["a"], params["b"], rows.len(), if rows.len() == 1 { "" } else { "s" })
+        format!("{handle_text}: events {} and {} differ in {} value{}.", params["a"], params["b"], rows.len(), if rows.len() == 1 { "" } else { "s" })
     }];
 
     for row in rows.iter().take(60) {
@@ -1087,19 +2325,23 @@ pub fn draw_diff(host: &Arc<Host>, params: &Value) -> Result<Value> {
 }
 
 pub fn query(host: &Arc<Host>, params: &Value) -> Result<Value> {
-    let (handle, _) = the_capture(host, params)?;
+    let (handle, meta) = the_capture(host, params)?;
     let sql = params["sql"].as_str().ok_or_else(|| anyhow!("query needs sql: one SELECT statement. help(topic: \"sql\") lists the tables."))?;
     let limit = params["limit"].as_u64().unwrap_or(50).clamp(1, 500) as usize;
-    let rows = host.store.query(&handle, sql, &[], limit).map_err(|error| {
-        anyhow!("{error}. Tables: draws, passes, objects, commands, uniforms, bindings, attributes, capture. help(topic: \"sql\") lists their columns.")
-    })?;
+    let rows = host.store.query(&handle, sql, &[], limit).map_err(|error| anyhow!("{error}.\n{}", schema(host, &handle)))?;
+
+    let hint = (rows.rows.is_empty() && sql.to_lowercase().contains("method") && !sql.contains("gl.") && !sql.contains('%')).then_some(
+        "\nNo rows. Method names carry their owner, as in 'gl.bindTexture' or 'ext.drawBuffersWEBGL'; or match loosely: method like '%bindTexture%'.",
+    );
 
     let mut lines = vec![format!(
-        "{} row{}{}. Columns: {}",
+        "{}: {} row{}{}. Columns: {}{}",
+        about(host, params, &handle, &meta),
         rows.rows.len(),
         if rows.rows.len() == 1 { "" } else { "s" },
         if rows.truncated { format!(" (the first {limit}; add LIMIT and OFFSET, or pass limit up to 500)") } else { String::new() },
-        rows.columns.join(" | ")
+        rows.columns.join(" | "),
+        hint.unwrap_or("")
     )];
     let mut used = 0;
 
@@ -1126,6 +2368,24 @@ pub fn query(host: &Arc<Host>, params: &Value) -> Result<Value> {
     }
 
     Ok(result(lines.join("\n"), json!({ "capture": handle, "columns": rows.columns, "rows": rows.rows, "truncated": rows.truncated })))
+}
+
+/// The capture's tables and their columns, for a query that named one wrongly.
+fn schema(host: &Host, handle: &str) -> String {
+    let found = host.store.query(
+        handle,
+        "SELECT m.name, group_concat(p.name, ', ') FROM sqlite_master m JOIN pragma_table_info(m.name) p WHERE m.type = 'table' GROUP BY m.name ORDER BY m.name",
+        &[],
+        40,
+    );
+
+    match found {
+        Ok(tables) if !tables.rows.is_empty() => format!(
+            "The tables and their columns:\n{}",
+            tables.rows.iter().map(|row| format!("  {}: {}", row[0].as_str().unwrap_or(""), row[1].as_str().unwrap_or(""))).collect::<Vec<_>>().join("\n")
+        ),
+        _ => "Tables: draws, passes, objects, commands, uniforms, bindings, attributes, capture. help(topic: \"sql\") lists their columns.".to_string(),
+    }
 }
 
 // ---- What the frame did: answered by replay ----
@@ -1185,7 +2445,8 @@ pub async fn pixel_source(host: &Arc<Host>, params: &Value) -> Result<Value> {
         let last = changes.last().unwrap();
 
         lines.push(format!(
-            "{handle} pixel ({x}, {y}) of {target_name}: its final value {} was produced by event {}. gpu-measured.",
+            "{} pixel ({x}, {y}) of {target_name}: its final value {} was produced by event {}. gpu-measured.",
+            about(host, params, &handle, &meta),
             show(&last["after"]),
             last["draw"]
         ));
@@ -1214,7 +2475,7 @@ pub async fn pixel_source(host: &Arc<Host>, params: &Value) -> Result<Value> {
             rows.push(json!({ "draw": index, "before": change["before"], "after": change["after"] }));
         }
 
-        lines.push("Events that drew there without changing the value (rejected by a test, or writing the same colour) are not listed; full pixel history is not built yet.".into());
+        lines.push("Events that covered the pixel without changing its value (rejected by a test, or writing the same colour) are not listed. draw_list shows the box each event changed; draw(draw: n) says why one changed nothing.".into());
         lines.push(format!("draw(capture: \"{handle}\", draw: {}) gives the state of the one that produced it.", last["draw"]));
     }
 

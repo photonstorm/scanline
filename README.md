@@ -8,7 +8,7 @@ Scanline runs any page in a Chromium it launches and supervises, with instrument
 
 ## Status
 
-Early. The first two milestones of the build plan ("eyes and hands" and "inventory") work on macOS, and the third ("capture") works for WebGL.
+Early. The first three milestones of the build plan ("eyes and hands", "inventory" and "capture") work on macOS.
 
 **Works**
 
@@ -22,16 +22,19 @@ Early. The first two milestones of the build plan ("eyes and hands" and "invento
 - WebGL state: a mirror of the context's whole state, kept by watching every call, checked against the context on request.
 - Memory: estimates by category; named snapshots and diffs grouped by creating line, which is how a leak is found.
 - Timing: frame pacing, CPU time in frame callbacks, GPU time per frame (WebGL) and per pass (WebGPU), per-frame draw, instance, triangle and call counts.
-- Frame capture, for WebGL 1 and 2: every call of a frame, the state and uniforms at each draw, and the contents of what the frame used, kept on disk after the page closes. Each capture is replayed at once on the same GPU and compared with the frame, pixel for pixel.
+- Frame capture, for WebGL 1, WebGL 2 and WebGPU: every call of a frame, the state and uniforms at each draw, and the contents of what the frame used, kept on disk after the page closes. Each capture is replayed at once on the same GPU and compared with the frame, pixel for pixel.
 - Questions of a capture: the draw list (with a SQL filter), one draw in full and how many pixels it changed, what differs between two draws, the target as it stood after any draw, which draws changed a pixel and what was there before, and SQL over the whole capture.
+- What a capture volunteers: draws that changed nothing, calls the browser rejected, a viewport that is not its target's size, a clear clipped by a scissor box left on, translucent draws in the wrong order or with blending off, a bound texture that cannot be sampled, and what the frame created and deleted. For a draw that changed nothing, which test rejected it, found by replaying it with each test off in turn. For each uniform at a draw, the call that set it.
+- Leaks and churn: many live objects from one line of code, or objects made and destroyed every frame, are flagged by `resources` and `memory`.
+- Planted bugs: one scene with twelve known bugs (`fixtures/bugs/`), tests that pin down what Scanline says about each, and an evaluation in which agents diagnose them with nothing but Scanline (`evals/`).
 - Console, uncaught errors and browser GPU warnings, each with its frame.
 - The host survives the GPU process or the whole browser being killed, and says what happened.
 
 **Not built yet**
 
-- Capturing WebGPU frames.
-- Planted-bug fixtures and the agent evaluation harness.
-- Full pixel history (rejected fragments), overdraw and other views, per-draw GPU time, lints.
+- For WebGPU captures: which test rejected a draw, uniform values by name (WGSL reflection), render bundles built before the frame, external textures.
+- A runner that starts the evaluation's agents by itself (the bugs, prompts and scorer exist: see `evals/`).
+- Full pixel history (rejected fragments, pixel by pixel), overdraw and other views, per-draw GPU time.
 - Live patching of shaders, uniforms and state.
 - The window: control strip, Debug button and hotkey, capture viewer. Hand-off to a person, the flight recorder, input replay.
 - The browser's real GPU memory. WGSL reflection. Readback of compressed, depth and multisampled textures.
@@ -112,7 +115,7 @@ scanline run_until --until '{"expr": "game.scene === \"level2\""}'
 scanline stop
 ```
 
-`scanline --help` lists every command. `scanline help` explains the workflow, `scanline help input` the input events, and `scanline help limits` what is not built. Add `--json` to any command for the whole result.
+`scanline --help` lists every command and `scanline <command> --help` one command's arguments. `scanline help` explains the workflow, `scanline help capture` taking a frame apart, `scanline help input` the input events, and `scanline help limits` what is not built. Add `--json` to any command for the whole result.
 
 The first command starts a background host that holds the browsers; `scanline stop` ends it and closes them. Images and the host's log are kept under `~/Library/Application Support/Scanline` (set `SCANLINE_HOME` to move them).
 
@@ -147,7 +150,8 @@ The tools are the same commands with a `gfx_` prefix: `gfx_launch`, `gfx_step`, 
 | `probe/` | The script injected into every page and worker (TypeScript, built to one file) |
 | `probe/tools/` | The generator that writes the WebGL and WebGPU hook wrappers from the published interface definitions |
 | `replay/` | The replay page: runs a capture again in a hidden page of the same browser |
-| `fixtures/` | Test pages: a known scene on each API and engine, and the spike pages |
+| `fixtures/` | Test pages: a known scene on each API and engine, a scene with twelve planted bugs, and the spike pages |
+| `evals/` | The agent evaluation: each planted bug's expected diagnosis, the prompt, the scorer and each round's results |
 | `spikes/` | The experiments the build plan asked for before milestone 1, and the Node launcher they share |
 | `docs/` | Spike results, and where the build departs from the specification |
 | `skills/` | Skills that teach an agent to use Scanline |
@@ -159,7 +163,7 @@ The tools are the same commands with a `gfx_` prefix: `gfx_launch`, `gfx_step`, 
 npm test
 ```
 
-That builds the probe and the replay page, checks their types, runs the probe's browser tests (about a minute), the Rust unit tests, and the end-to-end tests of the binary (about 15 s). The browser tests launch headless Chromium with throwaway profiles. The parts can be run alone: `npm run test:probe`, `cargo test`, `npm run test:e2e`.
+That builds the probe and the replay page, checks their types, runs the probe's browser tests (about a minute), the planted-bug checks, the Rust unit tests, the end-to-end tests of the binary and the tests of what Scanline says about each planted bug (about 15 s each). The browser tests launch headless Chromium with throwaway profiles. The parts can be run alone: `npm run test:probe`, `npm run test:bugs`, `cargo test`, `npm run test:e2e`, `npm run test:findings`.
 
 After changing `probe/tools/method-table.mjs`, run `npm run gen:hooks`. `node spikes/s5-replay.mjs` checks that captured frames replay to identical images, `node spikes/s9-overhead.mjs` measures what the hooks cost per call, and `node spikes/m2-verify.mjs` checks the WebGL state mirror against the context after 1,000 frames on every WebGL page.
 

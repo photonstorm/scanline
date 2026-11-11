@@ -1,0 +1,19 @@
+CAUSE: The glass panel is drawn (event 9) with blending disabled (gl.BLEND never enabled / no blendFunc before it). Its tint alpha of 0.4 is therefore ignored and the fragment output replaces the crates already in the framebuffer.
+
+EVIDENCE: cap_11 draw_list shows events 5-9 as opaque prg_1 draws with no blend. Event 9 is the only one with depth write off, and draw_diff 8 9 shows tint [0.2,0.4,1,0.4], textured 0, rect [150,120,220,160], depth 0.3. `draw cap_11 9` reports "blend: off (the draw replaces what is there)", depth test LESS with write false, and "changed 35200 pixels within x150 y120 220x160" (the full 220x160 rect, so every pixel was overwritten). The later additive spark draws (10-21) do enable blend SRC_ALPHA/ONE, so the page knows how to blend and simply does not for the glass. (I did not run pixel_source on a glass pixel; the identification of event 9 as the glass rests on its tint and rect.)
+
+FIX: Before draw 9 call gl.enable(gl.BLEND) and gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA). Make sure the blend state is restored or disabled again for later draws as needed. Keep depth write off and draw the glass after the crates, as it already is.
+
+CALLS: 7
+COMMANDS:
+help capture
+--help
+launch http://127.0.0.1:8765/fixtures/bugs/b03.html --headless
+capture --session ses_10   (the first attempt failed because of my shell quoting, so it was only run once successfully)
+draw_list cap_11 --session ses_10
+draw_diff cap_11 8 9 --session ses_10
+draw cap_11 9 --session ses_10
+close --session ses_10
+(Command count is approximate. That is 8 invocations including the help calls, and the one failed shell attempt was not a scanline run.)
+
+FRICTION: Very little. draw_list prints blend state per event, so the missing blend on the glass-like draw stood out immediately, and draw_diff against the previous opaque draw was concise. Things I wished for: (1) draw_list gave no hint of which draw is "the glass", so I had to infer from the tint uniform; a per-draw uniform summary or a hint like "alpha < 1 with blend off" would have been a useful warning. (2) draw says "blend: off" but does not flag that the fragment alpha is below 1 while blending is off. (3) The "Next:" hint after capture was helpful. (4) I did not need pixel_source; one call to confirm event 9 as the last writer at a glass pixel would have been the rigorous step.

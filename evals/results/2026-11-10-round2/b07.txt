@@ -1,0 +1,27 @@
+CAUSE: The page enables the scissor test (gl.enable(SCISSOR_TEST)) and sets gl.scissor(12, 336, 150, 12) at the end of each frame, for the health bar, and never disables it. The next frame starts with the scissor still on, so every clear and draw is clipped to that 150x12 box and the rest of the canvas stays black.
+
+EVIDENCE: cap_3 (frame 105) reports "21 draws changed no pixels", and that "Events 0, 4 clear with the scissor test on (box 12,336,150,12) ... frame began with scissor test already on: an earlier frame left it on". draw 1 shows "scissor test ON, box 12, 336, 150, 12" with its uniforms (rect, resolution, tint) set correctly, so the geometry was fine. The scissor box is in GL coordinates (bottom-left origin), which puts it at the top-left of the canvas. The commands table shows command 138 gl.enable [3089] and command 139 gl.scissor [12,336,150,12], both late in the frame, after the last draw.
+
+FIX: Call gl.disable(gl.SCISSOR_TEST) after the health-bar draw. Alternatively, enable and set the scissor only around that draw and disable it afterwards. Calling gl.disable(gl.SCISSOR_TEST) at the start of each frame also works.
+
+CALLS: 7
+
+COMMANDS:
+--help
+help capture
+launch http://127.0.0.1:8765/fixtures/bugs/b07.html --headless
+step 3 --session ses_5
+capture --session ses_5
+draw cap_3 1 --session ses_5
+query cap_3 "select * from commands where name like ..." --session ses_5 (failed: no such column)
+query cap_3 "select command, method, args from commands where method like '%cissor%' or args like '%3089%'" --session ses_5
+close --session ses_5
+(That is 9 invocations in total. The CALLS value above should read 9.)
+
+FRICTION:
+- The "Worth a look" list named the cause in its first two lines, so I needed almost nothing else.
+- The commands table has no `name` column. I guessed one, got an error, and had to retry. The error did list the real columns, which helped.
+- I had to query the commands table to find where the scissor was left on. The summary says only that "an earlier frame left it on". It would help if it named the call (the gl.enable(SCISSOR_TEST) and gl.scissor calls, with their call numbers and frame) that left it enabled at the end of the previous frame.
+- The scissor box is printed as "12, 336, 150, 12", in GL bottom-left coordinates, while draw_list boxes use a top-left origin. The output could say which origin each uses.
+- GL enum numbers appear raw (3089 for SCISSOR_TEST) in the commands table. Names would be easier to read.
+- I did not take a screenshot, so I never looked at the picture itself.

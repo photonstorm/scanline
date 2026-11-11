@@ -9,10 +9,11 @@ import type { Handlers } from '../hooks/install';
 import { hub, type Rec } from '../hooks/hub';
 import { declare } from '../mods';
 import { G, type Fn } from '../natives';
-import { all, alive, create, destroy, entryOf, noteDevice, type Entry, type Kind } from '../registry';
+import { all, alive, create, destroy, deviceFor, entryOf, noteDevice, type Entry, type Kind } from '../registry';
 import type { Tag } from '../tag';
 import { gpuDeviceTag, gpuViewTag } from '../tags.generated';
 import { textureBytes } from './formats';
+import { mapWatch, recordIntercepted } from './rec';
 
 const TEXTURE_COPY_SRC = 0x01;
 const TEXTURE_TRANSIENT = 0x20;
@@ -48,7 +49,12 @@ function label (descriptor: any): string | null
 
 // A descriptor as plain data: page objects become references to their records, and
 // anything unreadable or too deep is left out. Never throws.
-function snapshot (value: any, depth = 0): unknown
+export function viewOf (view: object): { texture: Entry | undefined; descriptor: unknown } | undefined
+{
+    return viewTag.get(view);
+}
+
+export function snapshot (value: any, depth = 0): unknown
 {
     if (value === null || value === undefined || typeof value === 'number' || typeof value === 'boolean')
     {
@@ -57,7 +63,8 @@ function snapshot (value: any, depth = 0): unknown
 
     if (typeof value === 'string')
     {
-        return value.length > 200 ? `${value.slice(0, 200)}…` : value;
+        // Long enough for any label or entry point; a capture recreates objects from these.
+        return value.length > 4000 ? `${value.slice(0, 4000)}…` : value;
     }
 
     if (typeof value !== 'object' || depth > 6)
@@ -91,19 +98,26 @@ function snapshot (value: any, depth = 0): unknown
             return G.Array.from(value as Iterable<unknown>, (item: unknown) => snapshot(item, depth + 1));
         }
 
-        const proto = G.Object.getPrototypeOf(value);
+        const tag = G.Object.prototype.toString.call(value).slice(8, -1);
 
-        if (proto !== G.Object.prototype && proto !== null)
+        if (tag !== 'Object')
         {
-            // A platform object the probe has no record of (an automatic layout, an external texture).
-            return { object: G.Object.prototype.toString.call(value).slice(8, -1), label: label(value) };
+            // A platform object the probe has no record of (an external texture, say).
+            return { object: tag, label: label(value) };
         }
 
         const out: Record<string, unknown> = {};
 
-        for (const key of G.Object.keys(value))
+        // Inherited members too: an engine may pass an instance of its own class as a
+        // descriptor, and the browser reads those members like any others.
+        for (const key in value)
         {
-            out[key] = snapshot(value[key], depth + 1);
+            const member = value[key];
+
+            if (member !== undefined && typeof member !== 'function')
+            {
+                out[key] = snapshot(member, depth + 1);
+            }
         }
 
         return out;
@@ -178,6 +192,42 @@ function pipeline (type: 'render' | 'compute', device: object, result: any, desc
     else
     {
         register('pipeline', device, result, p, descriptor);
+    }
+}
+
+// A bind group layout a pipeline made for itself. It is recreated by asking a pipeline again.
+function derivedLayout (pipeline: object, layout: object | null | undefined, index: unknown): void
+{
+    const from = entryOf(pipeline);
+    const device = deviceFor(pipeline);
+
+    if (layout && from && device && !entryOf(layout))
+    {
+        register('layout', device, layout, { type: 'bind group', pipeline: from.id, index: G.Number(index) || 0 }, null);
+    }
+}
+
+// Marks the textures a render pass draws to, so a capture knows to read them before a frame.
+export function noteTargets (descriptor: any): void
+{
+    try
+    {
+        for (const attachment of descriptor?.colorAttachments ?? [])
+        {
+            for (const view of [attachment?.view, attachment?.resolveTarget])
+            {
+                const texture = view ? viewTag.get(view)?.texture : undefined;
+
+                if (texture)
+                {
+                    texture.p.renderTarget = true;
+                }
+            }
+        }
+    }
+    catch
+    {
+        // A descriptor the probe cannot read is the page's business.
     }
 }
 
@@ -277,6 +327,24 @@ const post: Record<string, Post> = {
         destroy(entryOf(buffer));
     },
 
+    'GPUBuffer.getMappedRange' (_c, buffer, range, offset)
+    {
+        if (mapWatch.range !== null && range)
+        {
+            mapWatch.range(buffer, range, G.Number(offset) || 0);
+        }
+    },
+
+    'GPURenderPipeline.getBindGroupLayout' (_c, pipeline, layout, index)
+    {
+        derivedLayout(pipeline, layout, index);
+    },
+
+    'GPUComputePipeline.getBindGroupLayout' (_c, pipeline, layout, index)
+    {
+        derivedLayout(pipeline, layout, index);
+    },
+
     'GPUQueue.writeBuffer' (_c, _queue, _r, buffer)
     {
         const entry = entryOf(buffer);
@@ -345,6 +413,7 @@ const intercept: Record<string, Intercept> = {
             const dimension = G.String(given.dimension ?? '2d');
 
             const entry = register('texture', device, texture, {
+                descriptor: snapshot(given),
                 width,
                 height,
                 depthOrArrayLayers: depth,
@@ -365,6 +434,8 @@ const intercept: Record<string, Intercept> = {
         {
             // A descriptor the probe cannot read is the page's business; the texture still exists.
         }
+
+        recordIntercepted('GPUDevice.createTexture', device, texture, args);
 
         return texture;
     },
@@ -413,7 +484,26 @@ const intercept: Record<string, Intercept> = {
             // As above.
         }
 
+        recordIntercepted('GPUDevice.createBuffer', device, buffer, args);
+
         return buffer;
+    },
+
+    'GPUBuffer.unmap' (buffer, native, args)
+    {
+        hub.gpu.calls++;
+
+        // Before the browser detaches the mapped ranges, and their bytes with them.
+        if (mapWatch.unmap !== null)
+        {
+            mapWatch.unmap(buffer);
+        }
+
+        const result = native.apply(buffer, args as any);
+
+        recordIntercepted('GPUBuffer.unmap', buffer, result, args);
+
+        return result;
     }
 };
 

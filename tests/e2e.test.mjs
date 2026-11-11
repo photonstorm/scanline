@@ -547,6 +547,136 @@ describe('frame capture', () =>
         assert.match((await scanline('captures')).out, new RegExp(`${cap} {2}frame \\d+ of webgl2 320×240, 1 draws, replay identical`));
     });
 
+    test('webgpu: capture a frame, replay it, and ask the same questions', async () =>
+    {
+        await scanline('launch', server.url('fixtures/matrix/inventory-webgpu.html'), '--paused', '--headless');
+        await scanline('step', '3');
+
+        const taken = await scanline('capture', '--json');
+
+        assert.equal(taken.code, 0, taken.out);
+
+        const cap = taken.json.data.capture;
+
+        assert.equal(taken.json.data.api, 'webgpu');
+        assert.equal(taken.json.data.replay, 'identical', taken.json.summary);
+        assert.deepEqual(taken.json.data.findings, [], 'nothing about a correct frame is worth a look');
+        assert.match(taken.json.summary, /2 draws, 2 clears in 2 passes/);
+        assert.match(taken.json.summary, /pass 0: 1 draw, 1 clear to tex_\d+\n {2}pass 1: 1 draw, 1 clear to canvas/);
+
+        // A pass that clears as it begins is an event, like a draw. Each has its effect measured:
+        // the frame is split after it, submitted and read.
+        const list = await scanline('draw_list', cap, '--json');
+        const events = list.json.data.events;
+
+        assert.deepEqual(events.map((event) => event.kind), ['clear', 'draw', 'clear', 'draw']);
+        assert.equal(events[3].target, 'canvas');
+        assert.equal(events[3].mode, 'triangle-strip');
+        assert.match(events[3].program, /^pip_\d+$/);
+        assert.equal(events[2].pixels_changed, 320 * 240);
+        assert.deepEqual([events[3].pixels_changed, events[3].changed_box], [160 * 120, '80, 60, 160, 120']);
+        assert.match(list.out, /viewport 0, 8, 32, 8 \(target is 32×16\)/);
+        assert.doesNotMatch(list.out, /bottom-left/);
+
+        // One draw: its pipeline, and what its bind groups hold.
+        const draw = await scanline('draw', cap, '3');
+
+        assert.match(draw.out, /event 3: draw to canvas/);
+        assert.match(draw.out, /triangle-strip × 4, from vertex 0/);
+        assert.match(draw.out, /pipeline pip_\d+ {2}\(render pipeline/);
+        assert.match(draw.out, /bind group 0: bgr_\d+/);
+        assert.match(draw.out, /binding \d+: a view of tex_\d+ {2}\(/);
+        assert.match(draw.out, /binding \d+: smp_\d+/);
+        assert.match(draw.out, /Effect: it changed 19200 pixels/);
+
+        const clear = await scanline('draw', cap, '2');
+
+        assert.match(clear.out, /the pass begins by clearing colour to /);
+
+        // Which event produced a pixel, on the canvas and on the texture the frame drew to first.
+        const source = await scanline('pixel_source', cap, '160', '120', '--json');
+
+        assert.deepEqual(source.json.data.changes.map((change) => change.draw), [2, 3]);
+
+        const target = events[0].target;
+        const inner = await scanline('pixel_source', cap, '3', '12', '--target', target, '--json');
+
+        assert.deepEqual(inner.json.data.changes.map((change) => change.draw), [0, 1]);
+
+        // The canvas part-way through the frame: cleared, not yet drawn on.
+        const before = await scanline('pixels', '160', '120', '--capture', cap, '--at-draw', '2', '--json');
+        const after = await scanline('pixels', '160', '120', '--capture', cap, '--at-draw', '3', '--json');
+
+        assert.notDeepEqual(before.json.data.rgba8, after.json.data.rgba8);
+        assert.deepEqual(after.json.data.rgba8, source.json.data.changes[1].after);
+
+        // The stream reads as WebGPU calls, each with what it was made on.
+        const calls = await scanline('query', cap, "select method, receiver from commands where method like '%.draw' or method like '%submit'", '--json');
+
+        assert.deepEqual(calls.json.data.rows.map((row) => row[0]), ['GPURenderPassEncoder.draw', 'GPURenderPassEncoder.draw', 'GPUQueue.submit']);
+        assert.match(calls.json.data.rows[0][1], /^#\d+$/);
+        assert.equal(calls.json.data.rows[2][1], 'queue');
+
+        const objects = await scanline('query', cap, 'select kind, count(*) from objects group by kind order by kind', '--json');
+
+        assert.ok(objects.json.data.rows.some((row) => row[0] === 'pipeline' && row[1] === 2), JSON.stringify(objects.json.data.rows));
+        assert.ok(objects.json.data.rows.some((row) => row[0] === 'bind_group'));
+    });
+
+    test('webgpu: a frame the browser rejects is reported as one that did not run', async () =>
+    {
+        await scanline('launch', server.url('fixtures/matrix/webgpu-invalid.html'), '--paused', '--headless');
+
+        // The page catches nothing, so the browser logs the error: a step reports it.
+        const stepped = await scanline('step', '2');
+
+        assert.match(stepped.out, /errors? raised/);
+        assert.match(stepped.out, /Vertex range \(first: 0, count: 3\) requires a larger buffer/);
+
+        const taken = await scanline('capture', '--json');
+
+        assert.equal(taken.code, 0, taken.out);
+        assert.equal(taken.json.data.replay, 'identical');
+        assert.equal(taken.json.data.counts.gl_errors, 2);
+        assert.match(taken.json.summary, /2 calls raised a validation error when replayed/);
+        assert.match(taken.json.summary, /call \d+ GPUCommandEncoder\.finish: Vertex range \(first: 0, count: 3\) requires a larger buffer \(24\) than the bound buffer size \(8\)/);
+        assert.match(taken.json.summary, /So events 0–1 did not run in the page/);
+        assert.doesNotMatch(taken.json.summary, /changed no pixels/);
+
+        const list = await scanline('draw_list', taken.json.data.capture);
+
+        assert.equal(list.out.match(/DID NOT RUN: dropped with its command buffer/g).length, 2);
+
+        const draw = await scanline('draw', taken.json.data.capture, '1');
+
+        assert.match(draw.out, /THIS EVENT DID NOT RUN in the page/);
+    });
+
+    test('webgpu: frames of three.js and PixiJS replay to identical images', async () =>
+    {
+        for (const page of ['fixtures/engines/three.html?renderer=webgpu', 'fixtures/engines/pixi.html?renderer=webgpu'])
+        {
+            const launched = await scanline('launch', server.url(page), '--paused', '--headless', '--json');
+            const session = launched.json.data.session;
+
+            await scanline('step', '5', '--session', session);
+
+            const taken = await scanline('capture', '--session', session, '--json');
+
+            assert.equal(taken.code, 0, `${page}: ${taken.out}`);
+            assert.equal(taken.json.data.api, 'webgpu', page);
+            assert.equal(taken.json.data.replay, 'identical', `${page}: ${taken.json.summary}`);
+            assert.ok(taken.json.data.counts.draws >= 1, page);
+
+            // Every event's effect could be measured: none came back unreadable.
+            const list = await scanline('draw_list', taken.json.data.capture, '--session', session, '--json');
+
+            assert.ok(list.json.data.events.every((event) => typeof event.pixels_changed === 'number'), `${page}: ${list.out}`);
+
+            await scanline('close', '--session', session);
+        }
+    });
+
     test('mistakes with captures are explained', async () =>
     {
         const missing = await scanline('draw_list', 'cap_999');
@@ -570,12 +700,13 @@ describe('frame capture', () =>
         assert.match(badTarget.out, /"tex_99" is not a texture in cap_\d+\. Targets the frame drew to: canvas\./);
 
         await scanline('close');
-        await scanline('launch', server.url('fixtures/matrix/webgpu.html'), '--headless');
+        await scanline('launch', server.url('fixtures/spikes/blank.html'), '--headless');
 
-        const webgpu = await scanline('capture');
+        // A page with nothing to capture.
+        const nothing = await scanline('capture');
 
-        assert.equal(webgpu.code, 1);
-        assert.match(webgpu.out, /capturing WebGPU frames is not built yet/);
+        assert.equal(nothing.code, 1);
+        assert.match(nothing.out, /context/i);
     });
 });
 

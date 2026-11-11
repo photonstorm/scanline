@@ -71,11 +71,101 @@ pub fn usage() -> String {
         String::new(),
         "Exit status: 0 done, 1 error, 2 ran but found nothing (a wait that timed out, a run_until not met).".into(),
         String::new(),
-        "`scanline help` explains the workflow; `scanline help input` and `scanline help limits` the rest.".into(),
+        "`scanline help` explains the workflow; `scanline help capture`, `input`, `sql` and `limits` the rest.".into(),
+        "`scanline <command> --help` lists one command's arguments, with an example.".into(),
         format!("Files are kept in {} (set SCANLINE_HOME to move them).", scanline_core::default_home().display()),
     ]);
 
     lines.join("\n")
+}
+
+/// How the help's examples, written as calls, are typed on the command line.
+const CALLS: &str = "\
+On the command line a call such as draw(capture: \"cap_1\", draw: 7) is typed
+  scanline draw --capture cap_1 --draw 7        every argument as --name value
+  scanline draw cap_1 7                         or its leading arguments by position
+`scanline <command> --help` lists one command's arguments. `scanline --help` lists the commands.
+";
+
+/// One command's arguments, from its schema.
+pub fn command_usage(name: &str) -> Option<String> {
+    let tool = TOOLS.iter().find(|tool| tool.name == name)?;
+    let schema: Value = serde_json::from_str(tool.schema).ok()?;
+    let places = positional(name);
+    let required: Vec<&str> = schema["required"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+    let properties = schema["properties"].as_object().cloned().unwrap_or_default();
+
+    let mut lines = vec![
+        format!(
+            "scanline {name}{}{}",
+            places.iter().map(|place| if required.contains(place) { format!(" <{place}>") } else { format!(" [{place}]") }).collect::<String>(),
+            if properties.keys().any(|key| !places.contains(&key.as_str())) { " [--name value …]" } else { "" }
+        ),
+        String::new(),
+        tool.description.to_string(),
+    ];
+
+    if !properties.is_empty() {
+        lines.push(String::new());
+        lines.push("Arguments (each can be given as --name value)".into());
+
+        // Positional ones first, in their order.
+        let mut names: Vec<&String> = properties.keys().collect();
+
+        names.sort_by_key(|key| places.iter().position(|place| place == key).unwrap_or(places.len()));
+
+        for key in names {
+            let property = &properties[key];
+            let kind = match property["enum"].as_array() {
+                Some(values) => values.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" | "),
+                None => property["type"].as_str().unwrap_or("value").to_string(),
+            };
+            let mut notes = Vec::new();
+
+            if let Some(place) = places.iter().position(|place| place == key) {
+                notes.push(format!("position {}", place + 1));
+            }
+
+            if required.contains(&key.as_str()) {
+                notes.push("required".into());
+            }
+
+            lines.push(format!(
+                "  --{:<14} {kind}{}{}",
+                key,
+                if notes.is_empty() { String::new() } else { format!("  ({})", notes.join(", ")) },
+                property["description"].as_str().map(|text| format!("\n                   {text}")).unwrap_or_default()
+            ));
+        }
+    }
+
+    let example = match name {
+        "launch" => "scanline launch http://localhost:5173 --paused --headless",
+        "step" => "scanline step 30 --screenshot 512 --session ses_1",
+        "capture" => "scanline capture --session ses_1",
+        "draw_list" => "scanline draw_list cap_1 --filter \"blend = 1\"",
+        "draw" => "scanline draw cap_1 7",
+        "draw_diff" => "scanline draw_diff cap_1 6 7",
+        "pixel_source" => "scanline pixel_source cap_1 240 200",
+        "query" => "scanline query cap_1 \"select draw, viewport from draws\"",
+        "resources" => "scanline resources texture --sort created",
+        "resource" => "scanline resource tex_3 --preview",
+        "pixels" => "scanline pixels 640 600",
+        "screenshot" => "scanline screenshot --region 0,0,64,64 --zoom 8",
+        "run_until" => "scanline run_until --until '{\"expr\": \"game.level === 2\"}'",
+        "eval" => "scanline eval \"game.score\"",
+        "memory" => "scanline memory --snapshot before",
+        _ => "",
+    };
+
+    if !example.is_empty() {
+        lines.push(String::new());
+        lines.push(format!("Example: {example}"));
+    }
+
+    lines.push("Also: --json prints the whole result; --out file.png copies the returned image.".into());
+
+    Some(lines.join("\n"))
 }
 
 /// A value from the command line: JSON where it parses as JSON, text otherwise.
@@ -88,6 +178,7 @@ struct Parsed {
     params: Value,
     json: bool,
     out: Option<String>,
+    help: bool,
 }
 
 fn parse(args: Vec<String>) -> Result<Parsed> {
@@ -101,6 +192,7 @@ fn parse(args: Vec<String>) -> Result<Parsed> {
     let mut params = json!({});
     let mut json_out = false;
     let mut out = None;
+    let mut help = false;
     let mut placed = 0;
     let mut i = 1;
 
@@ -144,6 +236,7 @@ fn parse(args: Vec<String>) -> Result<Parsed> {
 
         match name.as_str() {
             "json" => json_out = true,
+            "help" => help = true,
             "out" => out = Some(take(&mut i).ok_or_else(|| anyhow!("--out needs a file path."))?),
             "paused" => params["start"] = json!("paused"),
             "screenshot" => {
@@ -177,15 +270,25 @@ fn parse(args: Vec<String>) -> Result<Parsed> {
         }
     }
 
-    Ok(Parsed { command, params, json: json_out, out })
+    Ok(Parsed { command, params, json: json_out, out, help })
 }
 
 pub async fn run(args: Vec<String>) -> Result<ExitCode> {
     let parsed = parse(args)?;
 
     // Help needs no host and no browser.
-    let result = if parsed.command == "help" {
-        json!({ "summary": scanline_core::help(parsed.params["topic"].as_str()), "data": {}, "images": [] })
+    let result = if parsed.help {
+        json!({ "summary": command_usage(&parsed.command).unwrap_or_else(usage), "data": {}, "images": [] })
+    } else if parsed.command == "help" {
+        // A command's name is a topic too.
+        let topic = parsed.params["topic"].as_str();
+        let is_topic = |topic: &str| ["workflow", "input", "capture", "sql", "limits", "help"].contains(&topic);
+        let text = match topic.filter(|topic| !is_topic(topic)).and_then(|topic| command_usage(&topic.replace('-', "_"))) {
+            Some(usage) => usage,
+            None => format!("{}\n\n{CALLS}", scanline_core::help(topic)),
+        };
+
+        json!({ "summary": text, "data": {}, "images": [] })
     } else {
         Link::connect().await?.call(&parsed.command, parsed.params).await?
     };
@@ -242,6 +345,21 @@ mod tests {
         let parsed = parse(vec!["eval".into(), "42".into()]).unwrap();
 
         assert_eq!(parsed.params, json!({ "expression": "42" }));
+    }
+
+    #[test]
+    fn every_command_explains_itself() {
+        for tool in TOOLS {
+            let usage = command_usage(tool.name).unwrap();
+
+            assert!(usage.starts_with(&format!("scanline {}", tool.name)), "{usage}");
+        }
+
+        let usage = command_usage("draw").unwrap();
+
+        assert!(usage.starts_with("scanline draw <capture> <draw>"), "{usage}");
+        assert!(usage.contains("--capture") && usage.contains("position 1"), "{usage}");
+        assert!(parse(vec!["launch".into(), "--help".into()]).unwrap().help);
     }
 
     #[test]

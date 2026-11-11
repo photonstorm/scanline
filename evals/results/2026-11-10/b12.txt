@@ -1,0 +1,18 @@
+CAUSE: The minimap pass renders into the 64x64 offscreen texture tex_3 while tex_3 is still bound to texture unit 0 (a feedback loop). The browser rejects all 3 minimap draws with GL_INVALID_OPERATION, so nothing is drawn into the minimap. A second likely bug: these draws set resolution = 480,360 while the viewport is 64x64, and the dot rects (80,120,40,40) are in main-scene coordinates.
+
+EVIDENCE: The capture summary says 3 calls raised GL errors, event 1/2/3 gl.drawArrays: INVALID_OPERATION, all in pass 0 (the 3 draws to tex_3). Console error: "Feedback loop formed between Framebuffer and active Texture". draw 1 shows "to tex_3 (pass 0)", "unit 0: 2D tex_3", viewport 0,0,64,64, and effect "changed no pixels". Uniforms on that draw: textured=0, rect=80,120,40,40, resolution=480,360.
+
+FIX: Before drawing into the minimap FBO, unbind tex_3 from unit 0 (bindTexture(TEXTURE_2D, null)) or bind a different texture there. Bind tex_3 only when sampling it in the main pass. For untextured dot draws (textured=0) the unit-0 binding is irrelevant, so leaving it bound is the bug. Also set resolution to 64x64 (or the minimap's coordinate space) for the minimap pass.
+
+CALLS: 6
+
+COMMANDS:
+help
+help capture
+launch http://127.0.0.1:8765/fixtures/bugs/b12.html --headless --start paused
+step --session ses_8 --frames 2
+capture --session ses_8
+draw --session ses_8 --capture cap_6 --draw 1
+close --session ses_8
+
+FRICTION: Very little. The capture summary pointed straight at the failing calls. I guessed the flag names (--frames, --start, --capture, --draw) and they worked. The step output printed the errors, which helped. The draw output did not say which texture was the framebuffer attachment versus the bound texture beyond "to tex_3" and "unit 0: tex_3". An explicit "feedback loop: tex_3 is both the target and bound on unit 0" line would be better. A "likely cause" hint on INVALID_OPERATION calls would also help. The resolution=480,360 against a 64x64 viewport mismatch was noticed only by me; a warning could flag it. The count is 7 including close and help (the 6 I gave excludes close).

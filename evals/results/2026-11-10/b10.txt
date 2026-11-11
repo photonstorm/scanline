@@ -1,0 +1,22 @@
+CAUSE: Every frame the page calls makeMapTarget (scene.js:159), which creates a brand-new 256x256 RGBA8 render-target texture for the minimap, and it never deletes the previous one. Only the single framebuffer (fbo_1) is reused, so one texture leaks per frame.
+
+EVIDENCE: memory() after 10 more frames showed 122 textures alive and about 30 MB of render targets. After 100 more frames it showed 222 textures and 55 MB, which is exactly one texture and 256 KB per frame. resources(kind: texture) lists tex_3, tex_4, tex_5 and so on, each 256x256 RGBA8 render target created at makeMapTarget (fixtures/bugs/scene.js:159:28), with creation frame f0, f1, f2 and so on, and each one used only in its own creation frame. resources(kind: framebuffer) shows just 1 framebuffer alive (fbo_1, created at run, scene.js:172), so the framebuffer is reused but the textures are not.
+
+FIX: Create the minimap render-target texture once at startup and reuse it each frame, re-attaching it to the framebuffer if needed. If a per-frame target is really needed, call gl.deleteTexture on the old one before making a new one.
+
+CALLS: 13
+
+COMMANDS:
+help
+help capture
+launch http://127.0.0.1:8765/fixtures/bugs/b10.html --headless
+step --session ses_3 --frames 10
+memory --session ses_3
+step --session ses_3 --frames 100
+memory --session ses_3
+resources --session ses_3   (errored: no kind given)
+resources --session ses_3 --kind texture
+resources --session ses_3 --kind framebuffer
+close --session ses_3
+
+FRICTION: The tool worked well for this bug. The texture list gave the creating line and frame, which made the diagnosis quick. Small issues: (1) `resources` with no kind gives only an error, where a short list of counts per kind would be more useful. (2) The memory output mentions snapshot/diff, but I did not use it and did not check the flag syntax. (3) It would help if the tool flagged "N textures created at the same call site, none deleted" as a likely leak directly, rather than leaving me to spot the pattern. (4) The resources listing shows only the 25 largest of 222, with no way to group by creation site. (5) Textures show "used fN" with no hint that they were never used again.

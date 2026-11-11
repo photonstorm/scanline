@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
+use base64::Engine as _;
 use scanline_browser::{Browser, LaunchOptions, Profile};
 use scanline_cdp::{Client, Event};
 use serde_json::{Value, json};
@@ -141,6 +142,8 @@ pub struct Session {
     source: String,
     /// The hidden page captures are replayed in, once one has been needed.
     replay: tokio::sync::Mutex<Option<ReplayPage>>,
+    /// The `seq` of the last browser event the pump has dealt with.
+    handled: std::sync::atomic::AtomicU64,
 }
 
 /// The replay page: a second, hidden target in the session's browser, on the same GPU.
@@ -149,6 +152,9 @@ struct ReplayPage {
     /// Captures whose stream and blobs it already holds.
     loaded: HashSet<String>,
 }
+
+/// Where the replay page lives. Nothing is fetched from it: the host answers the request.
+const REPLAY_URL: &str = "https://replay.scanline.invalid/";
 
 /// The replay page's script, built by `npm run build:replay`.
 const REPLAY: &str = include_str!("../../../replay/dist/replay.js");
@@ -233,10 +239,15 @@ impl Session {
             binding,
             source,
             replay: tokio::sync::Mutex::new(None),
+            handled: std::sync::atomic::AtomicU64::new(0),
         });
 
         // Listen before anything can happen.
-        tokio::spawn(pump(session.clone(), client.subscribe()));
+        let events = client.subscribe();
+
+        // Events from before the pump was listening will never reach it.
+        session.handled.store(client.last_event(), std::sync::atomic::Ordering::SeqCst);
+        tokio::spawn(pump(session.clone(), events));
 
         let p = Some(page.as_str());
 
@@ -301,6 +312,20 @@ impl Session {
         }
 
         Ok(())
+    }
+
+    /// Waits until everything the browser has reported so far is in the session's records.
+    ///
+    /// A command's reply and the events it caused (an exception, a console line) arrive in
+    /// order but are handled by different tasks, so a command that has just been answered
+    /// can otherwise read the console before the error it raised has been written there.
+    pub async fn settle(&self) {
+        let reported = self.client.last_event();
+        let give_up = tokio::time::Instant::now() + Duration::from_millis(300);
+
+        while self.handled.load(std::sync::atomic::Ordering::SeqCst) < reported && tokio::time::Instant::now() < give_up {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
     }
 
     pub fn url(&self) -> String {
@@ -529,6 +554,44 @@ impl Session {
             let attached = self.client.send("Target.attachToTarget", json!({ "targetId": target, "flatten": true }), None).await?;
             let cdp_session = attached["sessionId"].as_str().ok_or_else(|| anyhow!("The browser gave no session for the replay page."))?.to_string();
 
+            // WebGPU exists only in a secure context, which about:blank is not. The page is
+            // sent to an address that is never fetched: the request is answered here.
+            let s = Some(cdp_session.as_str());
+            let paused = self.client.subscribe();
+            let loaded = self.client.subscribe();
+
+            self.client.send("Page.enable", json!({}), s).await?;
+            self.client.send("Fetch.enable", json!({ "patterns": [{ "urlPattern": format!("{REPLAY_URL}*") }] }), s).await?;
+            self.client.post("Page.navigate", json!({ "url": REPLAY_URL }), s)?;
+
+            let mine = cdp_session.clone();
+            let request = self
+                .client
+                .wait_for(paused, Duration::from_secs(10), |event| event.method == "Fetch.requestPaused" && event.session.as_deref() == Some(mine.as_str()))
+                .await
+                .context("opening the replay page")?;
+
+            self.client
+                .send(
+                    "Fetch.fulfillRequest",
+                    json!({
+                        "requestId": request.params["requestId"],
+                        "responseCode": 200,
+                        "responseHeaders": [{ "name": "Content-Type", "value": "text/html; charset=utf-8" }],
+                        "body": base64::engine::general_purpose::STANDARD.encode("<!doctype html><title>Scanline replay</title>"),
+                    }),
+                    s,
+                )
+                .await?;
+
+            let mine = cdp_session.clone();
+
+            self.client
+                .wait_for(loaded, Duration::from_secs(10), |event| event.method == "Page.loadEventFired" && event.session.as_deref() == Some(mine.as_str()))
+                .await
+                .context("loading the replay page")?;
+
+            self.client.send("Fetch.disable", json!({}), s).await?;
             self.client.send("Runtime.evaluate", json!({ "expression": REPLAY }), Some(&cdp_session)).await.context("loading the replay script")?;
 
             *page = Some(ReplayPage { cdp_session, loaded: HashSet::new() });
@@ -662,7 +725,10 @@ async fn pump(session: Arc<Session>, mut events: tokio::sync::broadcast::Receive
             break;
         }
 
+        let seq = event.seq;
+
         handle(&session, event);
+        session.handled.fetch_max(seq, std::sync::atomic::Ordering::SeqCst);
     }
 }
 

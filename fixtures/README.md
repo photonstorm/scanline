@@ -26,6 +26,7 @@ Each page sets `window.fixture` (or posts it from a worker) to
 | `webgl1.html` | WebGL 1 | 5 `drawArrays` | One uniform-coloured quad per draw. |
 | `webgl2.html` | WebGL 2 | 1 `drawArraysInstanced`, 5 instances | Vertex array object, instance buffer updated each frame. |
 | `webgpu.html` | WebGPU | 1 `draw`, 5 instances, 1 pass | Instance buffer written each frame. |
+| `webgpu-invalid.html` | WebGPU | 1 `draw` the browser rejects | The draw reads past its vertex buffer, so the command buffer is dropped and nothing is drawn. For checking that rejected calls are reported. |
 | `worker.html` | WebGL 2 in a worker | as `webgl2.html` | `transferControlToOffscreen`, frame loop in the worker. |
 | `timers.html` | WebGL 1 | 5 `drawArrays` | Frame loop on `setInterval`, no `requestAnimationFrame`. |
 

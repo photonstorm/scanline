@@ -1,0 +1,20 @@
+CAUSE: The three crate draws (events 6, 7, 8) pass a rect uniform with a negative width, and the matching negative height is not there to compensate. That flips the quad's winding, and with CULL_FACE (BACK, front face CW) enabled every fragment is culled, so nothing is drawn.
+
+EVIDENCE: In cap_2, draw 6 reports "it changed no pixels of its target. Every fragment was rejected, clipped or wrote what was already there." Its state: cull BACK, depth LESS with write on, blend off, tex_1 bound, rect = 140,180,-80,80. Draws 7 and 8 have rect = 300,160,-100,100 and 410,190,-70,70. All three have a negative width (rect is x, y, w, h). The working quads (draw 5 ground rect 0,260,480,100; draw 9 glass rect 150,120,220,160) have positive widths. Depth, blend, texture and the other uniforms looked fine.
+
+FIX: Give the crate rects positive widths (e.g. 60,180,80,80 so the crate still spans the same x range), or drop the negative width and flip the triangle-strip vertex order. Alternatively disable CULL_FACE for those draws.
+
+CALLS: 9
+
+COMMANDS:
+help capture
+--help
+launch http://127.0.0.1:8765/fixtures/bugs/b01.html --headless
+capture --session ses_4
+draw_list cap_2 --session ses_4
+draw cap_2 6 --session ses_4
+draw_diff cap_2 5 6 --session ses_4
+query cap_2 "select draw, name, value from uniforms where name='rect' and draw in (7,8,9)" --session ses_4
+close --session ses_4
+
+FRICTION: The tool worked well. Things I wanted: (1) draw's "Effect: changed no pixels" line says "rejected, clipped or wrote what was already there" but does not say which. A per-draw hint such as "all triangles back-face culled" or "0 fragments passed depth" would have given the cause directly; I had to infer culling from the state plus the negative width. (2) draw_list shows no uniforms, so I had to open each draw or query the uniforms table. A column showing the pixels changed per draw in draw_list would have pointed me at 6, 7, 8 at once. (3) draw_diff against a good draw showed lots of expected differences (tint, texture), which is noise; there was no automatic comparison among the same-program draws. (4) I had to guess that the crates were draws 6 to 8, and the tool does not say which draws are the crates (it cannot know, but a changed-pixel count per draw would help).

@@ -18,7 +18,7 @@ const TYPES = {
     '.css': 'text/css'
 };
 
-export function serve ({ root = repoRoot, headers = {} } = {})
+export function serve ({ root = repoRoot, headers = {}, port = 0 } = {})
 {
     const server = createServer(async (request, response) =>
     {
@@ -60,7 +60,7 @@ export function serve ({ root = repoRoot, headers = {} } = {})
 
     return new Promise((done) =>
     {
-        server.listen(0, '127.0.0.1', () =>
+        server.listen(port, '127.0.0.1', () =>
         {
             const { port } = server.address();
 

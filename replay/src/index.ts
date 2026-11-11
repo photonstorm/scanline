@@ -7,6 +7,7 @@
 // as far as the question needs and the result read back. Answers are `gpu-measured`.
 
 import { METHOD_NAMES } from '../../probe/src/hooks/generated';
+import { gpuApi } from './gpu';
 
 type Json = any;
 
@@ -889,7 +890,7 @@ class Run
     }
 
     // Runs the capture from its start up to, but not including, command `end`.
-    play (end: number, each?: (index: number) => void): void
+    play (end: number, each?: (index: number) => void, before?: (index: number) => void): void
     {
         this.createObjects();
         this.applyInitialState();
@@ -899,9 +900,24 @@ class Run
 
         for (let i = 0; i < stop; i++)
         {
+            before?.(i);
             this.execute(commands[i]);
             each?.(i);
         }
+    }
+
+    // A target exactly as read, bottom row first, for comparing with another read of it.
+    raw (target: Json): { width: number; height: number; data: Uint8Array | Float32Array }
+    {
+        const { framebuffer, width, height, float, scratch } = this.targetFramebuffer(target);
+        const data = this.read(framebuffer, 0, 0, width, height, float);
+
+        if (scratch)
+        {
+            this.gl.deleteFramebuffer(scratch);
+        }
+
+        return { width, height, data };
     }
 
     // ---- Reading back ----
@@ -1037,6 +1053,16 @@ class Run
     }
 }
 
+function isGpu (item: Loaded): boolean
+{
+    return item.data.header.api === 'webgpu';
+}
+
+function methodsOf (item: Loaded): string[]
+{
+    return (item.data.methods ?? METHOD_NAMES) as string[];
+}
+
 function capture (key: string): Loaded
 {
     const found = loaded.get(key);
@@ -1117,6 +1143,14 @@ const api = {
     async image (args: { key: string; draw?: number | null; target?: Json }): Promise<Json>
     {
         const item = capture(args.key);
+
+        if (isGpu(item))
+        {
+            const image = await gpuApi.image(item, methodsOf(item), args);
+
+            return { ...image, ...(await packed(image)) };
+        }
+
         const run = new Run(item);
         const started = performance.now();
 
@@ -1137,11 +1171,305 @@ const api = {
         }
     },
 
+    // Which calls raised a GL error, found by asking after every one. Slow (a round trip to
+    // the GPU process per call), so only run for a frame known to have raised one.
+    errors (args: { key: string }): Json
+    {
+        const item = capture(args.key);
+
+        if (isGpu(item))
+        {
+            return gpuApi.errors(item, methodsOf(item));
+        }
+
+        const run = new Run(item);
+        const found: Json[] = [];
+
+        try
+        {
+            // Whatever recreating the objects raised is not the frame's doing.
+            run.createObjects();
+            run.applyInitialState();
+            run.gl.getError();
+
+            const commands = item.data.commands;
+
+            for (let i = 0; i < commands.length && found.length < 200; i++)
+            {
+                run.execute(commands[i]);
+
+                const error: number = run.gl.getError();
+
+                if (error !== 0)
+                {
+                    found.push({ command: i, error });
+                }
+            }
+
+            return { errors: found };
+        }
+        finally
+        {
+            run.dispose();
+        }
+    },
+
+    // What each event did to its own target: how many pixels it changed, and the box they
+    // fall in (top-left origin). One pass over the frame, reading the target back around
+    // every event, so it is refused for a frame too big to do that in reasonable time.
+    effects (args: { key: string; budget?: number }): Json
+    {
+        const item = capture(args.key);
+
+        if (isGpu(item))
+        {
+            return gpuApi.effects(item, methodsOf(item), args);
+        }
+
+        const data = item.data;
+        const started = performance.now();
+        const budget = args.budget ?? 600e6;
+
+        // An upper bound on the pixels to read: every event's target, once.
+        let cost = 0;
+
+        for (const row of data.draws)
+        {
+            const texture = row.target ? data.objects.find((object) => object.kind === 'texture' && object.id === row.target) : null;
+            const level = row.targetLevel || 0;
+
+            cost += texture ? Math.max(1, texture.width >> level) * Math.max(1, texture.height >> level) : data.header.width * data.header.height;
+        }
+
+        if (cost > budget)
+        {
+            return { skipped: true, cost, budget };
+        }
+
+        const run = new Run(item);
+
+        try
+        {
+            const byCommand = new Map<number, number>();
+
+            data.draws.forEach((row, index) => byCommand.set(row.command, index));
+
+            const targetOf = (row: Json): Json => (row.target ? { texture: row.target, level: row.targetLevel || 0 } : null);
+            const keyOf = (row: Json): string => (row.target ? `${row.target}:${row.targetLevel || 0}` : 'canvas');
+            const methods = data.methods ?? METHOD_NAMES;
+
+            // The last read of each target stays good until something other than an event
+            // could have written to a texture: an upload, a copy, a mipmap build.
+            const held = new Map<string, { width: number; height: number; data: Uint8Array | Float32Array }>();
+            const effects: Json[] = [];
+            let before: { width: number; height: number; data: Uint8Array | Float32Array } | null = null;
+
+            run.play(data.commands.length, (index) =>
+            {
+                const draw = byCommand.get(index);
+
+                if (draw === undefined)
+                {
+                    return;
+                }
+
+                const row = data.draws[draw];
+                let after;
+
+                try
+                {
+                    after = run.raw(targetOf(row));
+                }
+                catch
+                {
+                    effects.push({ draw, unreadable: true });
+
+                    return;
+                }
+
+                held.set(keyOf(row), after);
+
+                if (!before || before.width !== after.width || before.height !== after.height)
+                {
+                    effects.push({ draw, first: true });
+
+                    return;
+                }
+
+                const a = before.data;
+                const b = after.data;
+                const { width, height } = after;
+                let changed = 0;
+                let left = width;
+                let right = -1;
+                let bottom = height;
+                let top = -1;
+
+                for (let y = 0; y < height; y++)
+                {
+                    const offset = y * width * 4;
+
+                    for (let x = 0; x < width; x++)
+                    {
+                        const i = offset + x * 4;
+
+                        if (a[i] !== b[i] || a[i + 1] !== b[i + 1] || a[i + 2] !== b[i + 2] || a[i + 3] !== b[i + 3])
+                        {
+                            changed++;
+
+                            if (x < left) { left = x; }
+                            if (x > right) { right = x; }
+                            if (y < bottom) { bottom = y; }
+                            if (y > top) { top = y; }
+                        }
+                    }
+                }
+
+                // Rows were read bottom first; the box is given from the top.
+                effects.push(changed === 0 ? { draw, changed } : { draw, changed, x: left, y: height - 1 - top, w: right - left + 1, h: top - bottom + 1 });
+            },
+            (index) =>
+            {
+                const draw = byCommand.get(index);
+
+                if (draw === undefined)
+                {
+                    if (/\.(tex|copyTex|compressedTex|generateMipmap|framebuffer|deleteTexture|renderbufferStorage)/.test(methods[data.commands[index][0]]))
+                    {
+                        held.clear();
+                    }
+
+                    return;
+                }
+
+                const row = data.draws[draw];
+
+                before = held.get(keyOf(row)) ?? null;
+
+                if (!before)
+                {
+                    // Reading sets no state the event depends on, but the target's framebuffer
+                    // may not be complete yet, or the texture may have no storage.
+                    try
+                    {
+                        before = run.raw(targetOf(row));
+                    }
+                    catch
+                    {
+                        before = null;
+                    }
+                }
+            });
+
+            return { effects, cost, ms: performance.now() - started };
+        }
+        finally
+        {
+            run.dispose();
+        }
+    },
+
+    // Why a draw changed nothing: the draw run again with one test switched off at a time,
+    // counting the pixels it then changes. Each try is the frame replayed up to the draw.
+    why (args: { key: string; draw: number }): Json
+    {
+        const item = capture(args.key);
+
+        if (isGpu(item))
+        {
+            // A WebGPU draw's tests are part of its pipeline: trying it without one means
+            // making the pipeline again without it, which is not built.
+            return { unsupported: true };
+        }
+
+        const row = item.data.draws[args.draw];
+
+        if (!row)
+        {
+            throw new Error(`The capture has ${item.data.draws.length} events, numbered from 0; there is no draw ${args.draw}.`);
+        }
+
+        const target = row.target ? { texture: row.target, level: row.targetLevel || 0 } : null;
+        const started = performance.now();
+
+        const attempt = (change: ((gl: any, width: number, height: number) => void) | null): number =>
+        {
+            const run = new Run(item);
+
+            try
+            {
+                run.play(row.command);
+
+                const before = run.raw(target);
+
+                change?.(run.gl, before.width, before.height);
+                run.execute(item.data.commands[row.command]);
+
+                const after = run.raw(target).data;
+                let changed = 0;
+
+                for (let i = 0; i < after.length; i += 4)
+                {
+                    if (after[i] !== before.data[i] || after[i + 1] !== before.data[i + 1] || after[i + 2] !== before.data[i + 2] || after[i + 3] !== before.data[i + 3])
+                    {
+                        changed++;
+                    }
+                }
+
+                return changed;
+            }
+            finally
+            {
+                run.dispose();
+            }
+        };
+
+        const enabled: number[] = row.enabled ?? [];
+        const mask: boolean[] = row.colorMask ?? [true, true, true, true];
+
+        // Only what is switched on for this draw can have rejected it.
+        const tests: { what: string; change: (gl: any, width: number, height: number) => void }[] = [];
+
+        if (enabled.includes(0x0B44)) { tests.push({ what: 'cull', change: (gl) => gl.disable(0x0B44) }); }
+        if (enabled.includes(0x0B71)) { tests.push({ what: 'depth', change: (gl) => gl.disable(0x0B71) }); }
+        if (enabled.includes(0x0C11)) { tests.push({ what: 'scissor', change: (gl) => gl.disable(0x0C11) }); }
+        if (enabled.includes(0x0B90)) { tests.push({ what: 'stencil', change: (gl) => gl.disable(0x0B90) }); }
+        if (enabled.includes(0x0BE2)) { tests.push({ what: 'blend', change: (gl) => gl.disable(0x0BE2) }); }
+        if (enabled.includes(0x8C89)) { tests.push({ what: 'rasterizer_discard', change: (gl) => gl.disable(0x8C89) }); }
+        if (mask.some((channel) => !channel)) { tests.push({ what: 'color_mask', change: (gl) => gl.colorMask(true, true, true, true) }); }
+
+        const texture = row.target ? item.data.objects.find((object) => object.kind === 'texture' && object.id === row.target) : null;
+        const level = row.targetLevel || 0;
+        const size = texture ? [Math.max(1, texture.width >> level), Math.max(1, texture.height >> level)] : [item.data.header.width, item.data.header.height];
+        const viewport: number[] = row.viewport ?? [0, 0, size[0], size[1]];
+
+        if (viewport[0] !== 0 || viewport[1] !== 0 || viewport[2] !== size[0] || viewport[3] !== size[1])
+        {
+            tests.push({ what: 'viewport', change: (gl, width, height) => gl.viewport(0, 0, width, height) });
+        }
+
+        const unchanged = attempt(null);
+        const tried = tests.map((test) => ({ what: test.what, changed: attempt(test.change) }));
+
+        // Two tests can each be enough to reject a draw; then no single one shows it.
+        const together = tried.every((entry) => entry.changed === 0) && tests.length > 1
+            ? attempt((gl, width, height) => tests.forEach((test) => test.change(gl, width, height)))
+            : null;
+
+        return { unchanged, tried, together, ms: performance.now() - started };
+    },
+
     // Every event that changed one pixel of a target, in order, with the value before and
     // after. The last is the draw that produced the pixel's final value.
     trace (args: { key: string; x: number; y: number; target?: Json }): Json
     {
         const item = capture(args.key);
+
+        if (isGpu(item))
+        {
+            return gpuApi.trace(item, methodsOf(item), args);
+        }
+
         const run = new Run(item);
         const started = performance.now();
 

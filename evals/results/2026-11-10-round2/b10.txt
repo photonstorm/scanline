@@ -1,0 +1,14 @@
+CAUSE: Every frame the minimap pass (renderMap) calls makeMapTarget, which creates a new render-target texture, and the texture is never deleted or reused. GPU memory grows by about 250 KB per frame.
+EVIDENCE: memory() after 30 frames reported "LIKELY LEAK: 30 textures still alive (7.5 MB) were all created by one line, over frames 1 to 30 (about 1 a frame): makeMapTarget (fixtures/bugs/scene.js:159:28) < renderMap (scene.js:227:26) < frame (scene.js:367:9)". resources() showed 33 textures alive and 1 framebuffer, with 7.8 MB of render targets. The page reported no errors.
+FIX: Create the minimap target once, outside the per-frame loop, and reuse it each frame (re-attach it to the framebuffer, or cache it). Alternatively call gl.deleteTexture on the old target (and its framebuffer, if one is made each time) at the end of renderMap. Do this inside makeMapTarget or renderMap at scene.js:159 and 227.
+CALLS: 6
+COMMANDS:
+help
+help capture
+launch http://127.0.0.1:8765/fixtures/bugs/b10.html --headless --start paused
+step --session ses_3 --frames 30
+memory --session ses_3
+resources --session ses_3
+close --session ses_3
+(The count above is 6 invocations if the batched shell lines are counted separately, and 7 listed lines is the exact number: 7.)
+FRICTION: Very little. memory() named the leaking line and its call chain straight away, which was all that was needed. Small gaps: (1) memory() says "if that count keeps rising", so I had to infer growth from one run of 30 frames and could not confirm it directly without a second step and a diff; a built-in growth check across two points would remove the doubt. (2) The texture size (about 250 KB, so 480x360 RGBA) was only given as a total. (3) The command-line form of launch's start option was a guess; it worked as --start paused. (4) It did not say whether the textures were attached to the framebuffer or whether the old targets were ever deleted, so the fix is inferred rather than shown.

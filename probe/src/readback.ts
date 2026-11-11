@@ -238,7 +238,8 @@ export function readGlTexture (entry: Entry, info: ContextInfo, level: number, l
 
 // ---- WebGPU ----
 
-async function readGpuTexture (entry: Entry, level: number, layer: number, region: Region): Promise<Pixels>
+// A texture level's bytes exactly as stored, rows packed with no padding.
+export async function readGpuRaw (entry: Entry, level: number, layer: number, region: Region = {}): Promise<{ width: number; height: number; w: number; h: number; packed: Uint8Array; format: string; bytes: number }>
 {
     const p = entry.p;
     const texture = entry.ref.deref() as any;
@@ -294,6 +295,14 @@ async function readGpuTexture (entry: Entry, level: number, layer: number, regio
 
     n.GPUBuffer.unmap.call(buffer);
     n.GPUBuffer.destroy.call(buffer);
+
+    return { width, height, w: area.w, h: area.h, packed, format, bytes };
+}
+
+async function readGpuTexture (entry: Entry, level: number, layer: number, region: Region): Promise<Pixels>
+{
+    const { width, height, w, h, packed, format, bytes } = await readGpuRaw(entry, level, layer, region);
+    const area = { w, h };
 
     // Spread whatever the format holds across four channels: missing colour channels are 0, missing alpha is 1.
     const pixels = area.w * area.h;

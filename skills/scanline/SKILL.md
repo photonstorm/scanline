@@ -54,21 +54,32 @@ Sizes are estimates from dimensions and formats, and results say so.
 
 `gfx_screenshot` returns the path of a lossless original. `gfx_diff(a, b)` on two of those says how many pixels changed, where, and by how much, and returns a heat map. `gfx_region_stats(region: {…})` answers "is this area blank or one colour?" without an image.
 
-## Taking a frame apart (WebGL)
+## Taking a frame apart
 
 `gfx_capture()` records one frame: every call, the state at each draw, and what the frame used. It returns a handle, `cap_1`, that never goes stale.
+
+Read the capture's summary first. Under "Worth a look" it lists facts about the frame that are often the bug: draws that changed nothing, calls the browser rejected (a feedback loop is named as one), a viewport that is not its target's size, a clear clipped by a scissor box left on, a blended draw with opaque ones drawn over it, blending off on a draw given a translucent colour, a bound texture that cannot be sampled, and what the frame created and deleted. They are facts, not verdicts: pick the one that matches the symptom and confirm it.
 
 From a wrong pixel to its cause:
 
 1. `gfx_capture()`, then `gfx_pixel_source(capture, x, y)` at the wrong pixel. It lists each event that changed the pixel, with the value before and after. The last one produced it.
-2. `gfx_draw(capture, draw: n)` gives that draw's state and every uniform: is blending on, is the texture the one you expect, is a uniform at its default? It also says how many pixels the draw changed. Zero means every fragment was rejected.
-3. `gfx_draw_diff(capture, a, b)` against a draw that looks right narrows it to what differs.
-4. `gfx_screenshot(capture, at_draw: n)` shows the target as it stood after any draw.
+2. `gfx_draw(capture, draw: n)` gives that draw's state, what each bound texture is, and every uniform with where it was set: for this draw, for an earlier one (so this draw inherited it), or not in this frame at all. It also says how many pixels the draw changed and where.
+3. If the draw changed nothing, `gfx_draw` has already replayed it with each test switched off in turn, and says which one rejected it: culling, depth (and what the depth buffer was cleared to), scissor, stencil, the colour mask, a blend that cancels, or the viewport.
+4. `gfx_draw_diff(capture, a, b)` against a draw that looks right narrows it to what differs.
+5. `gfx_screenshot(capture, at_draw: n)` shows the target as it stood after any draw.
 
-`gfx_draw_list(capture, filter: "blend = 1 and depth_test = 0")` lists events; the filter is a SQL condition. `gfx_query(capture, sql)` answers anything else; `gfx_help(topic: "sql")` lists the tables.
+`gfx_draw_list(capture)` lists the events, each with the pixels it changed and the box they fall in, which is how to tell which draw is which thing on screen. Its `filter` is a SQL condition (`"blend = 1 and depth_test = 0"`). `gfx_query(capture, sql)` answers anything else; `gfx_help(topic: "sql")` lists the tables. `select method, args from commands where for_draw = 7` gives the calls that set up event 7.
 
-The capture's summary says whether replaying it matched the original frame. If it did not, treat answers from replay with suspicion.
+The capture's summary says whether replaying it matched the original frame. If it did not, treat answers from replay with suspicion. Capture handles are shared by every session on the host; each answer names the page and frame its capture is of.
+
+On WebGPU the commands are the same, with these differences. A pass that clears as it begins is an event, as are copies into a texture and compute dispatches. `gfx_draw` shows the pipeline and what each bind group holds (buffers, texture views, samplers); uniform values are bytes in those buffers and are not named. Which test rejected a draw is not worked out: read the pipeline's cull mode and depth compare in `gfx_draw`. A call the browser rejects takes its whole command buffer with it, so the summary quotes the browser's message and marks every event that was in that command buffer DID NOT RUN. That is the usual reason a WebGPU canvas is blank.
+
+## Slow, or growing
+
+- `gfx_stats()` says whether frames are actually slow.
+- `gfx_resources()` with no kind counts what is alive and what has been created in all. `gfx_memory()` adds sizes. Both flag a likely leak (many live objects from one line of code, made over many frames) and churn (objects made and destroyed again and again, which for shaders and programs means compiling every frame).
+- A capture's summary says what that one frame created and deleted.
 
 ## What it cannot do yet
 
-No capture of WebGPU frames, no full pixel history (fragments a test rejected), no per-draw timing or live shader editing. `gfx_help(topic: "limits")` has the current list. If the bug needs those, say so rather than guessing from screenshots.
+No full pixel history (which fragments of a draw a test rejected, pixel by pixel), no per-draw timing or live shader editing. `gfx_help(topic: "limits")` has the current list. If the bug needs those, say so rather than guessing from screenshots.

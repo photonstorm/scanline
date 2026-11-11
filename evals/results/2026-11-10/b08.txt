@@ -1,0 +1,31 @@
+CAUSE: The crate draws sample the wrong texture. The page binds tex_2, the 32x1 health-bar texture (makeBarTexture), on unit 0 for the crate draws. The 64x64 mipmapped crate texture tex_1 (makeCrateTexture) is created but never used in the frame. A bind call (or the texture variable) for the crate pass most likely points at the bar texture.
+
+EVIDENCE:
+- draw_list cap_4: every draw in the frame (1-3, 5-23) lists "textures tex_2". Only the final minimap blit (draw 24) uses tex_3, the render target.
+- Draw 6 is a crate: rect = 60,180,80,80, textured=1, depth test LESS, no blend. It shows "unit 0: 2D tex_2", and it changed 6400 pixels at x60 y180 80x80.
+- `resources --kind texture` shows tex_1 (64x64, 7 mip levels, makeCrateTexture, scene.js:123) as "created f0, used f0", so it was never drawn with after creation. tex_2 is 32x1 (makeBarTexture) and was used up to f506.
+- prg_1 has a single sampler, `map`, "never set since linking: holds its default (0)". It therefore reads texture unit 0, and unit 0 holds tex_2.
+
+FIX: Before the crate draws (draws 5-8 and the other textured prg_1 draws that should show the crate), bind tex_1 (the crate texture) to TEXTURE0 with gl.bindTexture(gl.TEXTURE_2D, crateTex). Rebind the bar texture only for the health-bar draw. The crate texture was last used in frame 0, so a bind of it is probably missing or overwritten after creation.
+
+CALLS: 8
+
+COMMANDS:
+help capture
+launch http://127.0.0.1:8765/fixtures/bugs/b08.html --headless
+capture --session ses_5
+draw_list --capture cap_4 --session ses_5
+draw --capture cap_4 --draw 6 --session ses_5
+resources --kind texture --session ses_5
+resource --handle tex_2 --preview true --session ses_5
+resource --handle prg_1 --session ses_5
+query --capture cap_4 --sql "select * from texture_bindings" --session ses_5
+close --session ses_5
+(Counting these, I ran 10 commands, not 8. The `help draw` call piped inside the draw command also counts.)
+
+FRICTION:
+- I had to guess the argument syntax. In `draw_list --capture cap_4 --session ses_5 || draw_list cap_4` the first form worked, but the help text shows function-call style such as draw_list(capture), so the CLI flag form was not obvious. `scanline help <cmd>` does not show a CLI example line.
+- draw_list tells you every draw uses tex_2 but gives no per-draw labels (crate vs ground vs bar). I had to infer which draw was a crate from rect uniforms. Naming the draw's target or rect in draw_list would help.
+- No single command says "this texture was created but never bound/used in this capture". I inferred it from `resources` ("used f0") and from the bindings in the draw output. A flag for unused or never-bound textures would have been a shortcut.
+- I guessed the SQL table name (texture_bindings) and it was wrong. The error did list the right tables, which was helpful.
+- I did not look at draw 1-3 or draw 5, so I did not check whether tex_1 is bound in any of them. Every draw_list entry says tex_2, so I believe it is not.

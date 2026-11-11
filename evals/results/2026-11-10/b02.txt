@@ -1,0 +1,15 @@
+CAUSE: The crate texture (tex_1, 64x64 RGBA8, created by makeCrateTexture) is incomplete. It has only one mip level and never had gl.generateMipmap called, and its MIN_FILTER was never set. It keeps the default NEAREST_MIPMAP_LINEAR, so sampling returns black.
+EVIDENCE: draw_list of the capture shows the crate draws as events 7-9. Draw 7 is prg_1 with rect=200,160,100,100, textured=1, tint=1,1,1,1, unit 0 bound to tex_1, and it changed 10000 pixels. The uniforms are all fine, so it is not a uniform or blend problem. `resource tex_1` says "Sampling parameters set: none (defaults: MIN_FILTER NEAREST_MIPMAP_LINEAR...)" and "the default MIN_FILTER uses mipmaps and this texture has one level, so it samples as black until mipmaps are generated or MIN_FILTER is set." Created at scene.js:123 (makeCrateTexture).
+FIX: In makeCrateTexture, after texImage2D, call gl.generateMipmap(gl.TEXTURE_2D). Alternatively set gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR) (or NEAREST).
+CALLS: 5
+COMMANDS:
+help
+help capture
+launch http://127.0.0.1:8765/fixtures/bugs/b02.html --headless
+capture --session ses_9
+draw_list --session ses_9 --capture cap_1
+draw --session ses_9 --capture cap_8 --draw 7
+resource --session ses_9 --handle tex_1
+close --session ses_9
+(8 scanline invocations in total, counting help and close; the number in CALLS counts only the 5 diagnostic commands and is therefore understated. The correct total is 8.)
+FRICTION: Very little. Two things stand out. (1) I guessed the CLI syntax (--capture, --draw, --handle flags) and it worked, but `help` showed only the tool-style call form (draw(capture: "cap_8", draw: n)), not the CLI flag form. (2) I made a slip: `capture` returned cap_8, but I ran draw_list on cap_1, which belongs to another evaluator on the shared host. It returned the same-looking list, so nothing flagged that I was reading someone else's capture. A warning or a session-ownership check on foreign capture handles would help. The resource note on tex_1 stating the mipmap/black-sampling cause directly was excellent, and it made pixel_source unnecessary.

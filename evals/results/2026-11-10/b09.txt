@@ -1,0 +1,14 @@
+CAUSE: The page renders the minimap into a 64x64 offscreen texture (tex_3) with gl.viewport(0,0,64,64), then draws the main scene to the 480x360 canvas without resetting the viewport. The 64x64 viewport persists, so the whole scene is squashed into a 64x64 area at the bottom-left of the canvas.
+EVIDENCE: In cap_9, the minimap pass (draws 0-3 → tex_3, 64x64) has viewport 0,0,64,64, which is correct. The canvas pass (clear at event 4, draws 5-24) also has viewport 0,0,64,64 (query on draws.viewport for draws 4, 5 and 24). The uniform resolution is [480,360] and the rects are in 480x360 pixel units (for example rect [80,120,40,40]), so the canvas viewport should be 0,0,480,360. Draw 24, which blits the minimap texture to the canvas, has the same stale viewport.
+FIX: After the minimap render-target pass, and before drawing to the canvas (rebinding framebuffer null), call gl.viewport(0, 0, canvas.width, canvas.height), i.e. 480x360. Setting the viewport every time a framebuffer is bound avoids the stale-state bug.
+CALLS: 7
+COMMANDS:
+help capture
+--help
+launch http://127.0.0.1:8765/fixtures/bugs/b09.html --headless
+capture --session ses_12
+draw_list cap_9 --session ses_12
+query cap_9 "select * from draws limit 30" --session ses_12 --json
+query cap_9 "select draw,target,viewport from draws where draw in (0,1,4,5,24)" --session ses_12
+close --session ses_12
+FRICTION: (The CALLS count of 7 leaves out the close, and I ran help and --help in one batch.) The draw_list lines show cull, depth, blend and scissor but not the viewport, even though viewport is the first thing to check for a "squashed into a corner" symptom. A viewport column, or a marker when the viewport differs from the target size, would have found this at once. `query ... select *` with --json is very verbose because every row carries a big state blob. I should have selected specific columns, but a compact default would help. A warning such as "viewport 64x64 on a 480x360 target" in draw_list or the capture summary would be ideal. The query output is plain-text tabular without --json, which is good. I did not take a screenshot, so I did not check that the image showed the symptom.

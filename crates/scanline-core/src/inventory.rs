@@ -121,10 +121,28 @@ fn describe_row(session: &Session, instance: &Instance, row: &Value, full: bool)
 
 pub async fn resources(session: &Arc<Session>, params: &Value) -> Result<Value> {
     let Some(kind) = params["kind"].as_str() else {
-        bail!(
-            "resources needs kind: one of {}, context. For totals across kinds, call memory.",
-            OBJECT_KINDS.iter().map(|entry| entry.0).collect::<Vec<_>>().join(", ")
-        );
+        // No kind: what there is to list.
+        let (kinds, sites, _) = overview(session).await?;
+        let mut lines = vec!["GPU objects alive now, by kind. Pass kind to list one:".to_string()];
+
+        for (kind, _) in OBJECT_KINDS {
+            if let Some((alive, bytes, created)) = kinds.get(*kind).filter(|entry| entry.2 > 0) {
+                lines.push(format!(
+                    "  {:<14} {alive} alive{}{}",
+                    kind,
+                    if *bytes > 0.0 { format!(", {}", size(*bytes)) } else { String::new() },
+                    if created > alive { format!(" ({created} created in all)") } else { String::new() }
+                ));
+            }
+        }
+
+        lines.extend(growth(&kinds, &sites));
+        lines.push("resources(kind: \"texture\") lists the textures, largest first; kind: \"context\" the rendering contexts.".into());
+
+        return Ok(result(
+            lines.join("\n"),
+            json!({ "kinds": kinds.iter().map(|(kind, entry)| (kind.clone(), json!({ "alive": entry.0, "bytes": entry.1, "created": entry.2 }))).collect::<serde_json::Map<_, _>>(), "sites": sites }),
+        ));
     };
 
     if kind == "context" {
@@ -209,6 +227,14 @@ pub async fn resources(session: &Arc<Session>, params: &Value) -> Result<Value> 
         lines.push("Call resource(handle) for one in full. Text between « » is from the page.".into());
     }
 
+    // Many alive from one line of code, or many made and destroyed: say so here too.
+    if let Ok((kinds, sites, _)) = overview(session).await {
+        let (mine, here): (BTreeMap<String, (u64, f64, u64)>, Vec<Value>) =
+            (kinds.into_iter().filter(|(name, _)| name == kind).collect(), sites.into_iter().filter(|site| site["kind"] == kind).collect());
+
+        lines.extend(growth(&mine, &here));
+    }
+
     Ok(result(
         lines.join("\n"),
         json!({
@@ -225,6 +251,11 @@ pub async fn resources(session: &Arc<Session>, params: &Value) -> Result<Value> 
 // ---- One object ----
 
 pub(crate) fn gl_name(value: &Value) -> String {
+    // WebGPU's settings are already words.
+    if let Some(word) = value.as_str() {
+        return word.to_string();
+    }
+
     let Some(code) = value.as_u64() else { return value.to_string() };
 
     let name = match code {
@@ -553,7 +584,15 @@ fn describe_program(session: &Session, object: &ObjectRef, detail: &Value, lines
         return;
     }
 
-    lines.push(if detail["linked"] == true { "Linked.".into() } else { "LINK FAILED.".into() });
+    lines.push(match detail["linked"].as_bool() {
+        Some(true) => "Linked.".into(),
+        Some(false) => "LINK FAILED.".into(),
+        // A destroyed program cannot be asked.
+        None => format!(
+            "Linked {}. It has since been destroyed, so its link status, log and uniforms can no longer be read.",
+            if detail["links"] == 1 { "once".to_string() } else { format!("{} times", detail["links"]) }
+        ),
+    });
 
     let log = detail["log"].as_str().unwrap_or("").trim();
 
@@ -999,6 +1038,67 @@ async fn memory_diff(session: &Arc<Session>, params: &Value) -> Result<Value> {
     ))
 }
 
+/// Counts by kind (alive, bytes, created in all), the lines of code many live objects came
+/// from, and the frame the page is on.
+async fn overview(session: &Arc<Session>) -> Result<(BTreeMap<String, (u64, f64, u64)>, Vec<Value>, u64)> {
+    let reports = session.probe_all("registry.summary", json!({}), SHORT).await;
+
+    if reports.is_empty() {
+        session.top()?;
+    }
+
+    let mut kinds: BTreeMap<String, (u64, f64, u64)> = BTreeMap::new();
+    let mut sites = Vec::new();
+    let mut frame = 0;
+
+    for (_, report) in &reports {
+        for (kind, entry) in report["byKind"].as_object().into_iter().flatten() {
+            let total = kinds.entry(kind.clone()).or_default();
+
+            total.0 += entry["alive"].as_u64().unwrap_or(0);
+            total.1 += entry["bytes"].as_f64().unwrap_or(0.0);
+            total.2 += entry["created"].as_u64().unwrap_or(0);
+        }
+
+        sites.extend(report["sites"].as_array().cloned().unwrap_or_default());
+        frame = frame.max(report["frame"].as_u64().unwrap_or(0));
+    }
+
+    sites.sort_by_key(|site| std::cmp::Reverse(site["alive"].as_u64().unwrap_or(0)));
+
+    Ok((kinds, sites, frame))
+}
+
+/// What the counts say about objects made again and again: kept (a leak) or thrown away (churn).
+fn growth(kinds: &BTreeMap<String, (u64, f64, u64)>, sites: &[Value]) -> Vec<String> {
+    let mut lines = Vec::new();
+
+    for site in sites.iter().take(3) {
+        let (alive, first, last) = (site["alive"].as_u64().unwrap_or(0), site["first"].as_u64().unwrap_or(0), site["last"].as_u64().unwrap_or(0));
+
+        lines.push(format!(
+            "LIKELY LEAK: {} still alive{} were all created by one line, over frames {first} to {last} (about {} a frame): {}. If that count keeps rising as the page runs, they are never destroyed.",
+            plural(site["kind"].as_str().unwrap_or("object"), alive),
+            if site["bytes"].as_f64().unwrap_or(0.0) > 0.0 { format!(" ({})", size(site["bytes"].as_f64().unwrap_or(0.0))) } else { String::new() },
+            (alive as f64 / (last - first).max(1) as f64 * 10.0).round() / 10.0,
+            frames_of(site["site"].as_str().unwrap_or(""), 3)
+        ));
+    }
+
+    for (kind, (alive, _, created)) in kinds {
+        if *created >= alive + 20 && *created >= alive * 3 {
+            lines.push(format!(
+                "CHURN: {created} {} have been created in all and {} destroyed: the page keeps making and discarding them{}. resources(kind: \"{kind}\", sort: \"created\", dead: true) shows the newest and the line that creates them.",
+                plural(kind, *created).split_once(' ').map(|parts| parts.1).unwrap_or(kind),
+                created - alive,
+                if kind == "program" || kind == "shader" { ", and compiling and linking are slow" } else { "" }
+            ));
+        }
+    }
+
+    lines
+}
+
 pub async fn memory(session: &Arc<Session>, params: &Value) -> Result<Value> {
     if !params["diff"].is_null() {
         return memory_diff(session, params).await;
@@ -1052,6 +1152,11 @@ pub async fn memory(session: &Arc<Session>, params: &Value) -> Result<Value> {
         .collect();
 
     lines.push(format!("Alive now: {}.", if counts.is_empty() { "nothing".into() } else { counts.join(", ") }));
+
+    let mut sites: Vec<Value> = reports.iter().flat_map(|(_, report)| report["sites"].as_array().cloned().unwrap_or_default()).collect();
+
+    sites.sort_by_key(|site| std::cmp::Reverse(site["alive"].as_u64().unwrap_or(0)));
+    lines.extend(growth(&kinds, &sites));
 
     let mut data = json!({
         "total_bytes": total,

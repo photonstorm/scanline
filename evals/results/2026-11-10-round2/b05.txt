@@ -1,0 +1,15 @@
+CAUSE: The page clears the canvas depth buffer to 0 (clearDepth(0)) while drawing the scene with depthFunc(LESS), so every scene fragment fails the depth test. The sky and HUD draw only because they use no depth test, or because the depth buffer is not touched by those draws.
+EVIDENCE: The capture reported 17 draws that changed no pixels, events 5-21. Those are the ground, crates, glass panel and sparks. Event 5 (the ground) has depth test LESS, write on, and the tool said "every fragment fails the depth test (LESS). The depth buffer was last cleared to 0 by event 4... the clear depth is wrong for this depth function." Without the depth test it changes 48000 pixels. Event 4 is the clear to the canvas: colour 0.35, 0.6, 0.9, 1, depth 0, stencil 0, mask 0x4100. Events 22-24 (HUD and minimap) have no depth test and drew fine.
+FIX: Use gl.clearDepth(1.0) before gl.clear(COLOR|DEPTH), or change the depth function to ALWAYS or LEQUAL against a depth of 0. Clearing depth to 1.0 is the right fix.
+CALLS: 7
+COMMANDS:
+help
+help capture
+launch http://127.0.0.1:8765/fixtures/bugs/b05.html --headless --start paused
+step --session ses_2 --frames 3
+capture --session ses_2
+draw_list cap_1 --session ses_2
+draw cap_1 5 --session ses_2
+draw cap_1 4 --session ses_2
+close --session ses_2
+FRICTION: Very little. The "Worth a look" list pointed straight to the rejected draws, and the draw output named the depth clear as the reason. I did not use the draw(4) call to confirm anything the draw(5) output had not already said. The call count is 9 invocations (help, help capture, launch, step, capture, draw_list, draw 5, draw 4, close), not 7: the CALLS number above is wrong, use 9. Minor points: `launch --start paused` worked, but I guessed that flag from the help text's `start: "paused"`. The tool could print the line number of the clearDepth call. Event 4's output shows depth 0 but does not say that this is unusual or that the draws after it use LESS.

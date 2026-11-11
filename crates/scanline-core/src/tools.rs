@@ -177,9 +177,9 @@ pub const TOOLS: &[Tool] = &[
         name: "resources",
         description: "List the GPU objects the page has created, of one kind: textures, buffers, shaders, programs, pipelines, framebuffers and more. Each row has a handle, what it is, its estimated size, when it was created and the line of code that created it. Largest first by default.",
         schema: schema!(
-            r#"["kind"]"#,
+            "[]",
             session!(),
-            r#""kind": { "type": "string", "enum": ["texture", "buffer", "shader", "program", "pipeline", "framebuffer", "renderbuffer", "sampler", "bind_group", "vertex_array", "layout", "query", "context"] }"#,
+            r#""kind": { "type": "string", "description": "Left out: counts of every kind.", "enum": ["texture", "buffer", "shader", "program", "pipeline", "framebuffer", "renderbuffer", "sampler", "bind_group", "vertex_array", "layout", "query", "context"] }"#,
             r#""filter": { "type": "string", "description": "Text to find in the label, description or call site." }"#,
             r#""sort": { "type": "string", "enum": ["bytes", "created", "last_used"] }"#,
             r#""limit": { "type": "integer", "description": "Default 25." }"#,
@@ -246,7 +246,7 @@ pub const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "capture",
-        description: "Capture one frame: every call, the state at each draw, and the contents of what the frame used. Returns a capture handle (cap_3) and a summary: draws, passes, textures and buffers used. The capture is replayed at once and compared with the frame, so you know whether answers from replay can be trusted. WebGL only for now.",
+        description: "Capture one frame: every call, the state at each draw, and the contents of what the frame used. Returns a capture handle (cap_3) and a summary: draws, passes, textures and buffers used. The capture is replayed at once and compared with the frame, so you know whether answers from replay can be trusted. WebGL and WebGPU.",
         schema: schema!(
             "[]",
             session!(),
@@ -375,7 +375,10 @@ Looking inside
   resource(handle: \"shd_2\")            a shader: source, compile log, the browser's translation
   resource(handle: \"tex_3\", preview: true)   a texture's facts and contents
   resource(handle: \"ctx_1\")            the WebGL state a draw would use right now
-  memory()                               estimated GPU memory by category
+  resources()                            how many of each kind are alive, and created in all
+  memory()                               estimated GPU memory by category; flags a likely leak
+                                         (many alive from one line) and churn (made and destroyed)
+  stats()                                frame times and draw counts: is it actually slow?
   region_stats(region: {…})             is this area blank, clipped, one colour?
   diff(a, b)                             what changed between two screenshots
   capture()                              a whole frame to take apart: see help(topic: \"capture\")
@@ -436,14 +439,19 @@ objects with their creation sites, shader sources and logs, uniform values, WebG
 buffer contents, memory estimates and snapshot diffs, region statistics, image diff, GPU time
 per frame (WebGL) and per pass (WebGPU).
 
-For WebGL: frame capture and replay, the draw list, state and uniforms at each draw, the
-target at any draw, which draw produced a pixel, SQL over a capture.
+Frame capture and replay for WebGL 1, WebGL 2 and WebGPU: the draw list with what each
+event changed, the state at each draw, the target at any draw, which draw produced a pixel,
+calls the browser rejected, SQL over a capture, and a list of what is worth a look.
+WebGL adds uniforms and texture bindings with the call that set each, and which test
+rejected a draw that changed nothing.
 
 Not built yet (planned, in this order):
-  - Capturing WebGPU frames.
+  - For WebGPU captures: which test rejected a draw; uniform values by name (needs WGSL
+    reflection; the buffers and textures in each bind group are listed).
   - The browser's real GPU memory; GPU time per pass on WebGL.
   - Hand-off to a person: the Debug button and hotkey, the flight recorder, input replay.
-  - Analysis: pixel history, overdraw and other views, per-draw GPU time, lints.
+  - Analysis: pixel history, overdraw and other views, per-draw GPU time. A first set of
+    lints is built: the capture's \"Worth a look\" list.
   - Live patching: shader replacement, uniform and state overrides.
 
 Known limits
@@ -456,30 +464,70 @@ Known limits
   - Draw and triangle counts are per frame as issued; WebGPU triangle counts are not known yet.
   - Texture readback: compressed, depth and stencil formats are not read yet, nor multisampled
     textures. A capture that uses one replays it empty, and its replay check says so.
-  - pixel_source lists the events that changed a pixel. Fragments a test rejected are not listed.
+  - pixel_source lists the events that changed a pixel. Fragments a test rejected are not listed;
+    draw says which test rejected a draw that changed nothing at all.
+  - What each event changed is measured when a capture is taken, by reading its target back
+    around every event. A frame too large for that (many events on large targets) goes without.
   - \"Last used\" is tracked for WebGL objects only.
+  - A WebGPU capture does not hold: render bundles built before the frame, external (video)
+    textures, or the contents of depth, stencil, multisampled and compressed textures. The
+    first two make the calls that use them fail in replay; the summary says so.
+  - A WebGPU frame that reads what the GPU wrote in an earlier frame through a buffer or a
+    storage texture (a simulation stepped by a compute pass) is captured with their contents
+    as the frame left them, so its replay is one step ahead. Render targets are read before
+    the frame and do not have this problem. The replay check shows when it matters.
+  - Capturing WebGPU has been run on raw WebGPU, three.js and PixiJS, on one device, in a window.
+    A device in a worker, and other engines, are untried.
   - WGSL reflection (bindings, struct layouts) is not built; WGSL source and messages are.";
 
 const CAPTURE: &str = "\
 Capturing a frame
 
-  capture()                              one frame, with everything it used. Returns cap_N.
-  draw_list(capture)                     its draws, clears and blits, in order
+  capture()                              one frame, with everything it used. Returns cap_N, and
+                                         a \"Worth a look\" list: read it first (see below).
+  draw_list(capture)                     its draws, clears and blits, in order, each with what
+                                         it changed on its target (pixels, and the box they fall in)
   pixel_source(capture, x, y)            which draw produced this pixel, and what was there before
-  draw(capture, draw: n)                 that draw's full state, uniforms, and what it changed
+  draw(capture, draw: n)                 that draw's full state; its uniforms and where each was
+                                         set; what it changed, or which test stopped it
   draw_diff(capture, a, b)               what differs between a wrong draw and a right one
   screenshot(capture, at_draw: n)        the target as it stood after draw n
   pixels(capture, at_draw: n, x, y)      a pixel's value at that point
   pass_tree(capture)                     the frame's passes
   query(capture, sql)                    anything else: see help(topic: \"sql\")
 
+Worth a look
+  The capture's summary lists facts about the frame that are often the bug: draws that
+  changed nothing, calls the browser rejected (and feedback loops), a viewport that is not
+  the target's size, a clear clipped by a scissor box left on, a blended draw with opaque
+  ones drawn over it, a bound texture that cannot be sampled, and what the frame created
+  and deleted (a program compiled every frame, a texture made every frame). They are
+  facts, not verdicts: check the one that matches the symptom.
+
 From a wrong pixel to its cause
   1. capture(), then pixel_source(capture, x, y) at the wrong pixel.
   2. The last event listed produced it. draw(capture, draw: n) shows its state:
-     is blending on, is the texture the one you expect, is a uniform at its default?
-  3. If nothing drew there at all, find the draw that should have: draw_list, then
-     draw(n) says how many pixels it changed. Zero means every fragment was rejected.
+     is blending on, is the texture the one you expect, and for each uniform, was it set
+     for this draw or left over from an earlier one?
+  3. If nothing drew there at all, find the draw that should have: draw_list marks each
+     event with the box it changed, or \"changed nothing\". For one that changed nothing,
+     draw(n) replays it with each test off in turn and says which one rejected it.
   4. draw_diff against a draw that looks right narrows it to what differs.
+
+Which event is which: draw_list's box (x, y, w, h from the top-left) says where on the
+target each event landed. Match it to what you see in the picture.
+
+Capture handles belong to the host, not to a session: cap_N may be someone else's. Every
+answer names the page and frame its capture is of.
+
+WebGPU
+  The same commands. A pass that clears as it begins is an event (\"clear\"), as are copies
+  into a texture (\"blit\") and compute dispatches. draw shows the pipeline and what each
+  bind group holds instead of uniforms. Nothing happens in WebGPU until commands are
+  submitted, so to show a target after one draw the replay splits the frame there; the
+  page's own frame is not affected. A call the browser rejects takes its whole command
+  buffer with it: the summary gives the browser's message, and every event that was in that
+  command buffer is marked DID NOT RUN.
 
 A capture is immutable and stays on disk after its page closes. Reading what the frame says
 (draw_list, draw's state, query) needs nothing. Asking what it did (pixel_source, screenshot
@@ -495,10 +543,18 @@ draws        one row per event (draw, clear or blit), in order
   draw, command, kind, method, pass, target, mode, count, instances, indexed,
   program, vertex_array, framebuffer, blend, blend_src, blend_dst, depth_test,
   depth_write, depth_func, stencil_test, cull, scissor, viewport, color_mask,
-  textures (handles, space-separated), state (the full state, JSON)
+  textures (handles, space-separated), gl_error (if the browser rejected the call),
+  target_width, target_height, pixels_changed and changed_box (\"x, y, w, h\": what
+  replaying the event changed on its target), state (the full state, JSON: large, so
+  name the columns you want rather than select *)
 passes       pass, target, first_draw, last_draw, draws, clears
 objects      handle, kind, id, label, what, bytes, created, source (shaders), detail (JSON)
-commands     command, method, args (JSON), draw (the event this call is, if it is one)
+commands     command, method ('gl.bindTexture', 'GPURenderPassEncoder.draw': the owner is part
+             of the name), receiver (WebGPU: what the call was made on; '#4' is an encoder
+             or pass made during the frame), args (JSON,
+             with handles and WebGL's names: [\"TEXTURE_2D\",\"tex_3\"], [\"prg_1.tint\",1,0,0,1]),
+             draw (the event this call is, if it is one), for_draw (the event this call
+             leads up to), gl_error
 uniforms     draw, name, value
 bindings     draw, unit, target, texture, sampler
 attributes   draw, location, buffer, size, type, normalized, stride, offset, divisor
@@ -512,7 +568,11 @@ Examples
   select draw from bindings where texture = 'tex_3'
   select d.draw, u.value from draws d join uniforms u using (draw) where u.name = 'tint'
   select handle, what from objects where kind = 'texture' order by bytes desc
-  select method, count(*) from commands group by method order by 2 desc limit 10";
+  select method, count(*) from commands group by method order by 2 desc limit 10
+  select command, method, args from commands where for_draw = 7      the calls that set up event 7
+  select command, for_draw, args from commands where method = 'gl.bindTexture'
+  select command, method from commands where args like '%SCISSOR_TEST%'
+  select draw, viewport, pixels_changed, changed_box from draws where pixels_changed = 0";
 
 pub fn help(topic: Option<&str>) -> String {
     match topic {

@@ -1,0 +1,24 @@
+CAUSE: The page enables the scissor test with a box of 12,336,150,12 (the health bar) to draw the HUD, and never disables it (or resets it to the full canvas). On the next frame the scissor is still on, so the clear and every draw are clipped to that strip.
+
+EVIDENCE: In a capture of frame 106 (cap_5), draw_list shows "scissor 12, 336, 150, 12" on every draw and on the offscreen pass, from event 1 through 24. In the first frame (cap_1, taken by another evaluator but visible to me), only draw 23 (the health bar) had that scissor. pixel_source at (240,200) shows the pixel was produced by event 4, the canvas clear, with final value (0,0,0,255). Nothing else changed it, because the scissor rejected every later draw there. The strip at the bottom of the 150x12 box is the only part still drawn. (I did not verify which screen corner the strip appears at.)
+
+FIX: Call gl.disable(gl.SCISSOR_TEST) right after the health-bar draw. Alternatively, enable the scissor before that draw and disable it after. Or reset the scissor to the full canvas at the start of each frame, before the clears.
+
+CALLS: 5
+
+COMMANDS:
+help
+help capture
+launch http://127.0.0.1:8765/fixtures/bugs/b07.html --headless
+capture --session ses_6
+draw_list --session ses_6 --capture cap_1
+draw_list --session ses_6 --capture cap_5
+pixel_source --session ses_6 --capture cap_5 --x 240 --y 200
+close --session ses_6
+(Actual count: 8 scanline commands. The "CALLS: 5" above is wrong; the correct number is 8. Note that `help` and `help capture` were run in one bash call, and `capture` plus `draw_list` in another.)
+
+FRICTION:
+- The capture command printed cap_5 even though it was my first capture. The host is shared, so the numbering is global. I first ran draw_list on cap_1 by mistake, which belonged to another evaluator. The output looked plausible, and I only noticed because cap_5 was the one named in my own output. The tool could say "this capture belongs to a different session" when I pass a capture my session did not take.
+- draw_list shows the scissor only as raw numbers, in every row. It does not say that the scissor test is enabled, or flag "scissor identical on all draws, including the clear", which would have pointed at the cause at once. A "state that never changes across the frame" or "state leaked from the previous frame" hint would help.
+- A capture shows only one frame. To see that the scissor leaked across frames I had to compare against another evaluator's first-frame capture. A note like "the state at frame start differs from the default" would make this plain.
+- pixel_source says "full pixel history is not built yet". It lists only events that changed the pixel, so it could not say that draws 5 and later were rejected by the scissor test.

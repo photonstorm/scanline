@@ -23,6 +23,20 @@ pub(crate) fn page_text(text: &str, limit: usize) -> String {
     if flat.chars().count() > limit { format!("{}…", flat.chars().take(limit).collect::<String>()) } else { flat }
 }
 
+/// Whether a console line reports something going wrong. The browser logs a rejected
+/// WebGL call as a warning, but to the page it is an error: the call did nothing. The same
+/// goes for a WebGPU validation error the page did not catch, which the browser words as
+/// what went wrong followed by " - While calling [Queue].Submit(…)" and the like.
+pub(crate) fn is_error(level: &str, text: &str) -> bool {
+    matches!(level, "error" | "exception")
+        || (level == "warning"
+            && (text.contains("GL_INVALID_")
+                || text.contains("GL_OUT_OF_MEMORY")
+                || text.contains("WebGL: INVALID_")
+                || text.contains("WebGL: CONTEXT_LOST")
+                || (text.contains(" - While ") && text.contains('['))))
+}
+
 pub(crate) fn number(value: &Value, digits: usize) -> String {
     value.as_f64().map(|n| format!("{n:.digits$}")).unwrap_or_else(|| "?".into())
 }
@@ -148,6 +162,8 @@ fn is_gpu(context: &Value) -> bool {
 }
 
 pub async fn status(session: &Arc<Session>) -> Result<Value> {
+    session.settle().await;
+
     let Overview { top, contexts } = overview(session).await?;
     let gpu: Vec<&(ContextRef, Value)> = contexts.iter().filter(|(_, context)| is_gpu(context)).collect();
     let other = contexts.len() - gpu.len();
@@ -206,7 +222,7 @@ pub async fn status(session: &Arc<Session>) -> Result<Value> {
         lines.push(format!("{workers} worker{} with a probe.", if workers == 1 { "" } else { "s" }));
     }
 
-    let errors = session.state.lock().unwrap().console.iter().filter(|line| matches!(line.level.as_str(), "error" | "exception")).count();
+    let errors = session.state.lock().unwrap().console.iter().filter(|line| is_error(&line.level, &line.text)).count();
 
     if errors > 0 {
         lines.push(format!("{errors} error{} logged. Call console(level: \"error\") to read them.", if errors == 1 { "" } else { "s" }));
@@ -304,7 +320,7 @@ fn error_lines(session: &Session, after: u64) -> Vec<String> {
         .unwrap()
         .console
         .iter()
-        .filter(|line| line.seq > after && matches!(line.level.as_str(), "error" | "exception"))
+        .filter(|line| line.seq > after && is_error(&line.level, &line.text))
         .map(|line| page_text(&line.text, 200))
         .collect()
 }
@@ -370,6 +386,8 @@ pub async fn step(session: &Arc<Session>, params: &Value) -> Result<Value> {
     if !held.is_empty() {
         lines.push(format!("Holding: {}.", held.join(", ")));
     }
+
+    session.settle().await;
 
     let errors = error_lines(session, console_before);
 
@@ -465,6 +483,8 @@ pub async fn run_until(session: &Arc<Session>, params: &Value) -> Result<Value> 
             )],
         ),
     };
+
+    session.settle().await;
 
     let errors = error_lines(session, console_before);
 
@@ -1160,20 +1180,22 @@ pub async fn pixels(session: &Arc<Session>, params: &Value) -> Result<Value> {
 }
 
 pub async fn console(session: &Arc<Session>, params: &Value) -> Result<Value> {
+    session.settle().await;
+
     let since = params["since"].as_u64().unwrap_or(0);
     let limit = params["limit"].as_u64().unwrap_or(25).clamp(1, 200) as usize;
     let level = params["level"].as_str();
 
-    let wanted = |line_level: &str| match level {
+    let wanted = |line_level: &str, text: &str| match level {
         None | Some("all") => true,
-        Some("error") => matches!(line_level, "error" | "exception"),
+        Some("error") => is_error(line_level, text),
         Some("warning") => matches!(line_level, "error" | "exception" | "warning"),
         Some(other) => line_level == other,
     };
 
     let (lines, total, next) = {
         let state = session.state.lock().unwrap();
-        let matching: Vec<_> = state.console.iter().filter(|line| line.seq > since && wanted(&line.level)).cloned().collect();
+        let matching: Vec<_> = state.console.iter().filter(|line| line.seq > since && wanted(&line.level, &line.text)).cloned().collect();
         let total = matching.len();
 
         // The most recent lines are the ones that matter when there are too many.

@@ -18,6 +18,8 @@
 import { currentFrame, onFrameSettled } from './clock/gate';
 import { allContexts, contextById, type ContextInfo } from './contexts';
 import { formatName } from './gl/formats';
+import { gpuBegin, gpuFinish, gpuRecorder, gpuWatchMaps, type GpuState } from './gpu/capture';
+import { hub } from './hooks/hub';
 import { CAP_CODES, slotOf, trackerFor, vaoStateOf, type GlTracker, type UniformSlot } from './gl/tracker';
 import { METHOD_NAMES } from './hooks/generated';
 import type { Rec } from './hooks/hub';
@@ -26,7 +28,7 @@ import { base64, gzip, readBuffer, readGlTexture } from './readback';
 import { alive, all, entryOf, find, type Entry, type Kind } from './registry';
 import { emit, expose } from './transport';
 
-interface Capture
+export interface Capture
 {
     id: number;
     info: ContextInfo;
@@ -45,6 +47,9 @@ interface Capture
     uniformsAtStart: Map<number, Record<string, number[]>>;
     done: boolean;
     waiters: Array<() => void>;
+
+    // Set for a WebGPU capture (gpu/capture.ts).
+    gpu?: GpuState;
 }
 
 const captures = new G.Map() as Map<number, Capture>;
@@ -102,7 +107,7 @@ for (const name of shortNames)
 
 const SMALL = 64;
 
-function blob (capture: Capture, bytes: Uint8Array): number
+export function blob (capture: Capture, bytes: Uint8Array): number
 {
     capture.blobs.push(bytes);
 
@@ -131,7 +136,7 @@ function reference (capture: Capture, object: object): unknown
 }
 
 // A drawable source (an image, a canvas, a video frame) as the pixels WebGL would read from it.
-function pixelsOf (capture: Capture, source: any): unknown
+export function pixelsOf (capture: Capture, source: any): unknown
 {
     try
     {
@@ -740,6 +745,41 @@ async function gather (capture: Capture): Promise<void>
     }
 }
 
+function stopRecording (capture: Capture): void
+{
+    if (capture.gpu)
+    {
+        hub.gpu.rec = null;
+        gpuWatchMaps(null);
+    }
+    else
+    {
+        capture.info.record.rec = null;
+    }
+}
+
+// A capture with nothing in it yet.
+function blank (info: ContextInfo): Capture
+{
+    return {
+        id: nextId++,
+        info,
+        frame: currentFrame() + 1,
+        header: {},
+        initial: null,
+        objects: [],
+        commands: [],
+        draws: [],
+        blobs: [],
+        notes: [],
+        used: new G.Set(),
+        renderTargets: new G.Map(),
+        uniformsAtStart: new G.Map(),
+        done: false,
+        waiters: []
+    };
+}
+
 function begin (info: ContextInfo): Capture
 {
     const t = trackerFor(info)!;
@@ -827,8 +867,15 @@ async function finish (capture: Capture): Promise<void>
 {
     try
     {
-        markCreatedInFrame(capture);
-        await gather(capture);
+        if (capture.gpu)
+        {
+            await gpuFinish(capture);
+        }
+        else
+        {
+            markCreatedInFrame(capture);
+            await gather(capture);
+        }
     }
     catch (error: any)
     {
@@ -854,20 +901,15 @@ async function finish (capture: Capture): Promise<void>
 function gpuContext (id: number | undefined): ContextInfo
 {
     const info = id === undefined
-        ? allContexts().filter((candidate) => candidate.api === 'webgl' || candidate.api === 'webgl2').sort((a, b) => b.record.draws - a.record.draws)[0]
+        ? allContexts().filter((candidate) => candidate.api === 'webgl' || candidate.api === 'webgl2' || candidate.api === 'webgpu').sort((a, b) => b.record.draws - a.record.draws)[0]
         : contextById(id);
 
     if (!info)
     {
-        throw new Error('There is no WebGL context to capture.');
+        throw new Error('There is no WebGL or WebGPU context to capture.');
     }
 
-    if (info.api === 'webgpu')
-    {
-        throw new Error('Capturing a WebGPU frame is not built yet. WebGL 1 and WebGL 2 frames can be captured.');
-    }
-
-    if (info.api !== 'webgl' && info.api !== 'webgl2')
+    if (info.api !== 'webgl' && info.api !== 'webgl2' && info.api !== 'webgpu')
     {
         throw new Error(`Context ${info.id} is a ${info.api} context, which has no frames to capture.`);
     }
@@ -894,7 +936,7 @@ export function installCapture (): void
         }
 
         recording = null;
-        capture.info.record.rec = null;
+        stopRecording(capture);
         capture.header.endFrame = currentFrame();
 
         void finish(capture);
@@ -902,7 +944,7 @@ export function installCapture (): void
 
     // Arms a capture of the next frame. The page must be paused, so that the state read now
     // is the state the frame begins with.
-    expose('capture.arm', (args: { context?: number }) =>
+    expose('capture.arm', async (args: { context?: number }) =>
     {
         if (recording !== null)
         {
@@ -910,11 +952,26 @@ export function installCapture (): void
         }
 
         const info = gpuContext(args.context);
-        const capture = begin(info);
+
+        let capture: Capture;
+
+        if (info.api === 'webgpu')
+        {
+            capture = blank(info);
+            await gpuBegin(capture, info);
+
+            // Every WebGPU object shares one record, so the recorder itself keeps to this device.
+            hub.gpu.rec = gpuRecorder(capture);
+            gpuWatchMaps(capture);
+        }
+        else
+        {
+            capture = begin(info);
+            info.record.rec = record;
+        }
 
         captures.set(capture.id, capture);
         recording = capture;
-        info.record.rec = record;
 
         return { capture: capture.id, context: info.id, frame: capture.frame };
     });
@@ -933,7 +990,7 @@ export function installCapture (): void
         {
             // The frame it was armed for never ran.
             recording = null;
-            capture.info.record.rec = null;
+            stopRecording(capture);
             captures.delete(capture.id);
 
             throw new Error('The frame the capture was armed for did not run: the page issued no frame.');
