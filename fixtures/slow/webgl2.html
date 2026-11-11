@@ -4,6 +4,7 @@
 <style>body { margin: 0; background: #111; } canvas { display: block; width: 960px; height: 540px; }</style>
 <canvas id="game" width="1920" height="1080"></canvas>
 <script type="module">
+const OPAQUE = new URLSearchParams(location.search).has('opaque');
 // A row of columns against a low sun, with light shafts between them. Raw WebGL 2.
 //
 // The frame is three passes: the columns and the sun drawn as a mask to a texture, the
@@ -191,8 +192,16 @@ function frame (time)
     gl.uniform1i(shaftsAt.mask, 0);
     gl.uniform2f(shaftsAt.sun, state.sun[0], state.sun[1]);
     gl.uniform4f(shaftsAt.rect, 0, 0, 1, 1);
-    gl.enable(gl.BLEND);
-    gl.blendFunc(gl.ONE, gl.ONE);
+
+    // ?opaque draws them with no blend, so they replace the scene. The picture is wrong and
+    // the cost is the same: it is there to check that an opaque draw is timed as well as a
+    // blended one (a tile-based GPU shades only the last of several opaque draws to a pixel).
+    if (!OPAQUE)
+    {
+        gl.enable(gl.BLEND);
+        gl.blendFunc(gl.ONE, gl.ONE);
+    }
+
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     gl.disable(gl.BLEND);
     gl.bindTexture(gl.TEXTURE_2D, null);

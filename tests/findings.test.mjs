@@ -627,6 +627,35 @@ describe('views of a capture', () =>
         assert.match(read.out, /1 inside a loop: up to 64 samples every time the shader runs/);
     });
 
+    test('profile times an opaque draw as well as a blended one', async () =>
+    {
+        // The same full-screen shader, drawn blended and drawn opaque. A tile-based GPU
+        // shades only the last of several opaque draws to a pixel: if the repeats were let
+        // hide each other, the opaque draw would read as a fraction of the blended one.
+        const timed = async (path) =>
+        {
+            const launched = await scanline('launch', server.url(path), '--headless', '--paused');
+            const session = /Launched (ses_\d+)/.exec(launched.out)?.[1];
+
+            await scanline('step', 3, '--session', session);
+
+            const capture = /^(cap_\d+):/m.exec((await scanline('capture', '--session', session)).out)?.[1];
+            const profile = await scanline('profile', capture, '--session', session, '--json');
+
+            assert.equal(profile.code, 0, profile.out);
+            assert.equal(profile.json.data.rows[0].draw, 36, profile.json.summary);
+
+            await scanline('close', '--session', session);
+
+            return profile.json.data.rows[0].ns;
+        };
+
+        const blended = await timed('fixtures/slow/webgl2.html');
+        const opaque = await timed('fixtures/slow/webgl2.html?opaque');
+
+        assert.ok(opaque > blended * 0.4, `drawn opaque (${opaque} ns) it costs about what it does blended (${blended} ns)`);
+    });
+
     test('the draw_id view says which draw owns each pixel, and the depth view what depth it holds', async () =>
     {
         // The hand-checked scene (fixtures/README.md, "Pixel history").

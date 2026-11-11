@@ -965,9 +965,11 @@ Known limits
     colours 8-bit 2D textures. The wireframe view does not cull, so a triangle that faces
     away still shows its outline.
   - profile on WebGPU: the stock profile's browser rounds GPU timestamps to 65.5 µs, so a
-    draw is timed to about 4 µs; launch(profile: \"deep\") for finer. The WebGL profile
-    repeats a draw inside one pass, where a tile-based GPU (Apple's) shades only the last of
-    several opaque draws to a pixel: an opaque draw that fills many pixels can read low there.";
+    draw is timed to about 4 µs; launch(profile: \"deep\") for finer.
+  - profile repeats each draw, and a tile-based GPU (Apple's) shades only the last of several
+    opaque draws to a pixel. So a draw with no blend is repeated with one that replaces what
+    is there, which costs the same and is shaded every time. A draw to a target that cannot
+    blend (integer or 32-bit float colour) is repeated as it is, and can read low there.";
 
 const CAPTURE: &str = "\
 Capturing a frame

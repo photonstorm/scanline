@@ -2087,6 +2087,64 @@ const api = {
                 while (gl.getError()) { /* drained */ }
             };
 
+            // A tile-based GPU (Apple's) shades only the last of several opaque draws to a
+            // pixel, so repeats of an opaque draw would cost almost nothing. Where the draw
+            // has no blend, it is given one that replaces what is there, so the picture is
+            // the same and every repeat is shaded. It is written in terms of the blend
+            // colour (source × 1 + what is there × 0): a blend that plainly replaces is
+            // taken for no blend at all. Left alone where a target cannot blend.
+            const unhidden = (): (() => void) =>
+            {
+                if (gl.isEnabled(0x0BE2))
+                {
+                    return () => {};
+                }
+
+                const bound = gl.getParameter(0x8CA6);
+
+                for (let i = 0; i < (bound ? gl.getParameter(0x8824) : 1); i++)
+                {
+                    const attachment = bound ? 0x8CE0 + i : 0x0405;
+
+                    if (bound && !gl.getFramebufferAttachmentParameter(0x8CA9, attachment, 0x8CD0))
+                    {
+                        continue;
+                    }
+
+                    const kind = gl.getFramebufferAttachmentParameter(0x8CA9, attachment, 0x8211);
+                    const bits = gl.getFramebufferAttachmentParameter(0x8CA9, attachment, 0x8212);
+
+                    // 8-bit and half-float colour blend; integers and 32-bit floats may not.
+                    if (kind !== 0x8C17 && !(kind === 0x1406 && bits === 16))
+                    {
+                        return () => {};
+                    }
+                }
+
+                const saved = {
+                    colour: gl.getParameter(0x8005),
+                    srcRgb: gl.getParameter(0x80C9),
+                    dstRgb: gl.getParameter(0x80C8),
+                    srcAlpha: gl.getParameter(0x80CB),
+                    dstAlpha: gl.getParameter(0x80CA),
+                    equationRgb: gl.getParameter(0x8009),
+                    equationAlpha: gl.getParameter(0x883D)
+                };
+
+                gl.enable(0x0BE2);
+                gl.blendColor(1, 1, 1, 1);
+                gl.blendFunc(0x8001, 0x8002);
+                gl.blendEquation(0x8006);
+
+                return () =>
+                {
+                    gl.disable(0x0BE2);
+                    gl.blendColor(saved.colour[0], saved.colour[1], saved.colour[2], saved.colour[3]);
+                    gl.blendFuncSeparate(saved.srcRgb, saved.dstRgb, saved.srcAlpha, saved.dstAlpha);
+                    gl.blendEquationSeparate(saved.equationRgb, saved.equationAlpha);
+                };
+            };
+
             // Anything the context was doing before is finished first, so it is not charged to the first draw.
             gl.finish();
             gl.getParameter(0x8FBB);
@@ -2101,6 +2159,7 @@ const api = {
                 }
 
                 const query = gl.createQuery();
+                const restore = unhidden();
 
                 settle();
                 gl.beginQuery(0x88BF, query);
@@ -2111,6 +2170,7 @@ const api = {
                 }
 
                 gl.endQuery(0x88BF);
+                restore();
                 settle();
                 queries.push({ draw, query });
             });

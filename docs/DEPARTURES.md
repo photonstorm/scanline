@@ -344,7 +344,7 @@ WebGL lets a debugger switch a test off or swap a program between two draws. Web
 
 Limits, all in `help limits`: targets of 8-bit or half-float RGBA for draw_id and overdraw; no overdraw through an sRGB view of the canvas; the mip view colours 8-bit 2D textures; uniform values for the first 48 members and four elements of an array; an `override` used as an array length is not worked out. On the stock profile the browser rounds GPU timestamps to 65.5 µs, so `profile` is good to about 4 µs a draw there; the deep profile has them fine.
 
-**Found on the way, and not changed:** the WebGL `profile` repeats a draw inside one pass too, so on a tile-based GPU an opaque draw that fills many pixels can read low there as well. The same blend would fix it, with care for targets that cannot blend. `help limits` says so.
+**Found on the way, and fixed:** the WebGL `profile` repeated a draw inside one pass too, so the same full-screen shader read as 59 µs drawn opaque and 839 µs blended. It is now given the same blend for its repeats (the blend colour set to 1, source × colour + destination × (1 − colour)), and reads 867 µs. A target that cannot blend (integer or 32-bit float colour) is left as it was. `fixtures/slow/webgl2.html?opaque` and `webgpu.html?opaque` are the check, in `tests/findings.test.mjs` and `tests/webgpu.test.mjs`.
 
 ## Added, not in the specification
 
