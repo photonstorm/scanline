@@ -46,4 +46,6 @@ It is a thin wrapper round the `__scanline` global that Scanline defines in the 
 
 The full guide, with a worked example for raw WebGL 2, raw WebGPU, three.js and PixiJS, is the `scanline-debuggable-rendering` skill in [`skills/`](../../skills/scanline-debuggable-rendering/SKILL.md).
 
-The PolyForm Shield License 1.0.0, as the rest of Scanline: see `LICENSE.md` at the top of the repository. A page or a game that imports this package does not compete with Scanline, so the licence allows it, in a game you sell as much as in any other.
+## Licence
+
+MIT: see [LICENSE](LICENSE). This package is the one part of Scanline meant to go inside other people's code, so it asks nothing of the code it goes into. The rest of Scanline is under the PolyForm Shield License 1.0.0.

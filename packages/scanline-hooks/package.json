@@ -1,7 +1,7 @@
 {
   "name": "scanline-hooks",
   "version": "0.0.1",
-  "license": "PolyForm-Shield-1.0.0",
+  "license": "MIT",
   "description": "Tell the Scanline debugger what your draw calls mean. Does nothing outside Scanline.",
   "type": "module",
   "main": "index.js",
@@ -15,7 +15,8 @@
   "files": [
     "index.js",
     "index.d.ts",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "sideEffects": false,
   "keywords": [

@@ -279,6 +279,8 @@ Scanline is source-available under the [PolyForm Shield License 1.0.0](LICENSE.m
 - You may read it, change it, and pass it and your changes on, with the licence and its notice.
 - You may not provide a product that competes with Scanline, whether you charge for it or not. That covers packaging Scanline, or something made from it, into a product of your own.
 
+One part is under the MIT licence instead: `packages/scanline-hooks`, the small package a page imports to describe its own drawing, so that it asks nothing of the game it goes into.
+
 If you want to do what the licence does not allow, ask the author for a licence that does. It is not an open-source licence as the Open Source Initiative defines one, because it restricts that one use.
 
 ## The specification
