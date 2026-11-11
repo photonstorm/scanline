@@ -53,13 +53,19 @@ npm run build && cargo build && npm run test:bugs
 node evals/serve.mjs 8765
 ```
 
-3. For each bug, give an agent the prompt and nothing else. The agent must have Scanline (the MCP tools or the command line) and no access to this repository:
+3. Give an agent each bug, and nothing else. The agent must have Scanline (the MCP tools or the command line) and no access to this repository. The runner does it for any agent that is a command: it gives the command each prompt on standard input (and, wherever the command says `{prompt_file}`, the path of a file holding it), keeps what the command prints as `bNN.txt`, and scores the folder. It serves the fixtures itself, so step 2 is not needed, and runs each agent in an empty folder, one at a time.
+
+```bash
+node evals/run.mjs --agent 'claude -p --mcp-config /path/to/mcp.json --allowedTools "mcp__scanline"'
+```
+
+`--bugs b03,b13` runs some of them, `--out` names the results folder, `--timeout` is the seconds one agent may take (900), and `--how` is what the prompt calls the tools. A round of fourteen costs whatever fourteen runs of that agent cost: the runner does not know or limit it.
+
+By hand instead: print a prompt, give it to an agent, save its final answer as `bNN.txt` in a folder under `results/`, then score the folder.
 
 ```bash
 node evals/prompt.mjs b03
 ```
-
-4. Save each agent's final answer as `bNN.txt` in a folder under `results/`, then score the folder:
 
 ```bash
 node evals/score.mjs --dir evals/results/2026-11-10
@@ -71,7 +77,7 @@ Calls are counted from the commands an answer lists, not from the number it give
 
 `tests/findings.test.mjs` is the other half. For each bug it checks, with no agent, that the capture's summary or one further command states the fact that is the cause, and that the correct page raises nothing. It runs with `npm test`, so a change that stops Scanline saying something is caught before the next round.
 
-There is no runner that starts the agents. One that drives the `claude` command line with the MCP server attached is the obvious next piece; it was not written because that command was not installed on the machine this was built on, so it could not have been tested.
+The runner (`run.mjs`) is tested with a stand-in for the agent (`tests/bugs.test.mjs`). It has not been run with a real one: the rounds in `results/` were run by hand, and the `claude` command line was not installed on the machine this was built on.
 
 ## What is measured
 

@@ -216,6 +216,17 @@ SCANLINE_ALLOW=native-capture scanline launch http://127.0.0.1:8765/fixtures/mat
 - [ ] With Xcode attached, the Metal capture button in the debug bar captures a frame, and the draw calls it lists carry the page's labels.
 - [ ] If Xcode refuses to attach, or shows no Metal capture button: say what it said. Starting the browser this way is all that has been checked.
 
+## An evaluation round with the runner
+
+The runner (`evals/run.mjs`) is tested with a stand-in for the agent. A real round spends the agent's tokens, fourteen times over, so it was left for you. With Claude Code installed and an MCP configuration that starts `scanline mcp`:
+
+```bash
+node evals/run.mjs --agent 'claude -p --mcp-config /path/to/mcp.json --allowedTools "mcp__scanline"' --bugs b03
+```
+
+- [ ] One answer is written to `evals/results/<today>/b03.txt`, and the line printed says whether it was correct and in how many calls.
+- [ ] Without `--bugs`, all fourteen run, one after another, and `scores.json` holds the round.
+
 ## Yours to decide
 
 These are not tests. They are choices that were not mine to make, and each is a small edit.

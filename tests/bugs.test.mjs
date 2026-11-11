@@ -5,10 +5,13 @@
 //   npm run build && node --test tests/bugs.test.mjs
 
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { after, before, describe, test } from 'node:test';
 import { open } from '../spikes/lib/session.mjs';
 import { serve } from '../spikes/lib/serve.mjs';
+import { run } from '../evals/run.mjs';
 import { score } from '../evals/score.mjs';
 
 const manifest = JSON.parse(readFileSync(new URL('../evals/bugs.json', import.meta.url), 'utf8'));
@@ -115,6 +118,45 @@ describe('the planted bugs', () =>
             });
         });
     }
+
+    test('the runner gives each bug to an agent, keeps what it prints and scores it', async () =>
+    {
+        // A stand-in for an agent: it reads the prompt and answers b03 rightly, b01 wrongly,
+        // and never answers b05.
+        const folder = mkdtempSync(join(tmpdir(), 'scanline-runner-'));
+        const agent = join(folder, 'agent.mjs');
+
+        writeFileSync(agent, `
+            let prompt = '';
+            for await (const chunk of process.stdin) prompt += chunk;
+            const id = /bugs\\/(b\\d+)\\.html/.exec(prompt)[1];
+            if (id === 'b03') console.log(${JSON.stringify(`CAUSE: ${manifest.bugs.find((bug) => bug.id === 'b03').diagnosis}\nCALLS: 4`)});
+            else if (id === 'b05') await new Promise((done) => setTimeout(done, 30000));
+            else console.log('CAUSE: unknown.\\nCALLS: 2');
+        `);
+
+        const log = console.log;
+
+        console.log = () => undefined;
+
+        try
+        {
+            const out = join(folder, 'out');
+            const summary = await run({ agent: `node ${JSON.stringify(agent)}`, bugs: 'b01,b03,b05', out, timeout: '2', origin: server.origin });
+
+            assert.deepEqual(summary.rows.map((row) => [row.id, row.correct, row.calls, row.ended]), [['b01', false, 2, null], ['b03', true, 4, null], ['b05', false, null, 'stopped after 2 s']]);
+            assert.equal(summary.correct, 1);
+            assert.equal(summary.medianCalls, 4);
+            assert.match(readFileSync(join(out, 'b03.txt'), 'utf8'), /^CAUSE: /);
+            assert.equal(JSON.parse(readFileSync(join(out, 'scores.json'), 'utf8')).bugs, 3);
+            await assert.rejects(run({}), /Say which agent to run/);
+        }
+        finally
+        {
+            console.log = log;
+            rmSync(folder, { recursive: true, force: true });
+        }
+    });
 
     test('the scorer accepts the written diagnosis of every bug, and rejects an empty one', () =>
     {
