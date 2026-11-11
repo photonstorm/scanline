@@ -75,7 +75,38 @@ export function run (variant)
             colour = vec4(tint.rgb, tint.a * glow);
         }`;
 
+    // Light shafts from the sun: the haze is marched from each pixel towards the sun.
+    const SHAFT_FS = `#version 300 es
+        precision mediump float;
+        uniform sampler2D map;
+        uniform vec4 tint;
+        in vec2 uv;
+        out vec4 colour;
+        const int SAMPLES = 64;
+        const vec2 SUN = vec2(0.82, 0.12);
+        void main ()
+        {
+            vec2 stride = (SUN - uv) / float(SAMPLES);
+            vec2 at = uv;
+            float light = 0.0;
+            for (int i = 0; i < SAMPLES; i++)
+            {
+                light += texture(map, at).r;
+                at += stride;
+            }
+            colour = vec4(tint.rgb, tint.a * light / float(SAMPLES));
+        }`;
+
     const sprite = link(SPRITE_VS, SPRITE_FS);
+    const shafts = variant === 14 ? link(SPRITE_VS, SHAFT_FS) : null;
+    const shaftUniforms = shafts ? {
+        resolution: gl.getUniformLocation(shafts, 'resolution'),
+        rect: gl.getUniformLocation(shafts, 'rect'),
+        depth: gl.getUniformLocation(shafts, 'depth'),
+        tint: gl.getUniformLocation(shafts, 'tint'),
+        textured: null,
+        map: gl.getUniformLocation(shafts, 'map')
+    } : null;
 
     let sparks = link(SPRITE_VS, SPARK_FS);
 
@@ -154,6 +185,32 @@ export function run (variant)
         return texture;
     }
 
+    function makeHazeTexture ()
+    {
+        const size = 256;
+        const pixels = new Uint8Array(size * size);
+
+        for (let y = 0; y < size; y++)
+        {
+            for (let x = 0; x < size; x++)
+            {
+                const wave = Math.sin(x * 0.11) * Math.sin(y * 0.07 + x * 0.02) + Math.sin((x + y) * 0.045);
+
+                pixels[y * size + x] = Math.round(140 + 50 * wave);
+            }
+        }
+
+        const texture = gl.createTexture();
+
+        gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, size, size, 0, gl.RED, gl.UNSIGNED_BYTE, pixels);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+
+        return texture;
+    }
+
     function makeMapTarget ()
     {
         const texture = gl.createTexture();
@@ -169,6 +226,7 @@ export function run (variant)
     const MAP_SIZE = variant === 10 ? 256 : 64;
     const crateTexture = makeCrateTexture();
     const barTexture = makeBarTexture();
+    const hazeTexture = variant === 14 ? makeHazeTexture() : null;
     const mapFramebuffer = gl.createFramebuffer();
 
     let mapTexture = makeMapTarget();
@@ -309,6 +367,21 @@ export function run (variant)
         gl.disable(gl.BLEND);
     }
 
+    function drawShafts ()
+    {
+        gl.useProgram(shafts);
+        gl.uniform2f(shaftUniforms.resolution, WIDTH, HEIGHT);
+        gl.enable(gl.BLEND);
+        gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
+        gl.depthMask(false);
+
+        drawSprite(shaftUniforms, 0, 0, WIDTH, HEIGHT, 0.1, [1, 0.95, 0.8, 0.3], hazeTexture);
+
+        gl.depthMask(true);
+        gl.disable(gl.BLEND);
+        gl.useProgram(sprite);
+    }
+
     function drawSparks (time)
     {
         if (variant === 11)
@@ -385,6 +458,11 @@ export function run (variant)
         {
             drawCrates();
             drawGlass();
+        }
+
+        if (variant === 14)
+        {
+            drawShafts();
         }
 
         drawSparks(time);

@@ -1,0 +1,204 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Colonnade</title>
+<style>body { margin: 0; background: #111; } canvas { display: block; width: 960px; height: 540px; }</style>
+<canvas id="game" width="1920" height="1080"></canvas>
+<script type="module">
+// A row of columns against a low sun, with light shafts between them. Raw WebGL 2.
+//
+// The frame is three passes: the columns and the sun drawn as a mask to a texture, the
+// scene itself to the canvas, and the shafts added over it from the mask.
+
+const WIDTH = 1920;
+const HEIGHT = 1080;
+const canvas = document.getElementById('game');
+const gl = canvas.getContext('webgl2', { antialias: false, depth: false, alpha: false });
+
+const compile = (type, source) =>
+{
+    const shader = gl.createShader(type);
+
+    gl.shaderSource(shader, source);
+    gl.compileShader(shader);
+
+    return shader;
+};
+
+const link = (vertex, fragment) =>
+{
+    const program = gl.createProgram();
+
+    gl.attachShader(program, compile(gl.VERTEX_SHADER, vertex));
+    gl.attachShader(program, compile(gl.FRAGMENT_SHADER, fragment));
+    gl.bindAttribLocation(program, 0, 'corner');
+    gl.linkProgram(program);
+
+    return program;
+};
+
+const RECT_VS = `#version 300 es
+    layout(location = 0) in vec2 corner;
+    uniform vec4 rect;
+    out vec2 uv;
+    void main ()
+    {
+        uv = corner;
+        vec2 at = rect.xy + corner * rect.zw;
+        gl_Position = vec4(at * 2.0 - 1.0, 0.0, 1.0);
+    }`;
+
+const FLAT_FS = `#version 300 es
+    precision mediump float;
+    uniform vec4 top;
+    uniform vec4 bottom;
+    in vec2 uv;
+    out vec4 colour;
+    void main ()
+    {
+        colour = mix(bottom, top, uv.y);
+    }`;
+
+const SUN_FS = `#version 300 es
+    precision mediump float;
+    uniform vec4 top;
+    in vec2 uv;
+    out vec4 colour;
+    void main ()
+    {
+        float glow = smoothstep(0.5, 0.15, length(uv - 0.5));
+        colour = vec4(top.rgb * glow, 1.0);
+    }`;
+
+// The shafts: from each pixel, a march towards the sun through the mask.
+const SHAFTS_FS = `#version 300 es
+    precision mediump float;
+    uniform sampler2D mask;
+    uniform vec2 sun;
+    in vec2 uv;
+    out vec4 colour;
+    const int SAMPLES = 64;
+    const float DENSITY = 0.9;
+    void main ()
+    {
+        vec2 stride = (sun - uv) * DENSITY / float(SAMPLES);
+        vec2 at = uv;
+        vec3 light = vec3(0.0);
+        float weight = 1.0;
+        for (int i = 0; i < SAMPLES; i++)
+        {
+            light += texture(mask, at).rgb * weight;
+            weight *= pow(0.02, 1.0 / float(SAMPLES));
+            at += stride;
+        }
+        colour = vec4(light * (3.0 / float(SAMPLES)), 1.0);
+    }`;
+
+const flat = link(RECT_VS, FLAT_FS);
+const sunDisc = link(RECT_VS, SUN_FS);
+const shafts = link(RECT_VS, SHAFTS_FS);
+
+const uniforms = (program, names) => Object.fromEntries(names.map((name) => [name, gl.getUniformLocation(program, name)]));
+const flatAt = uniforms(flat, ['rect', 'top', 'bottom']);
+const sunAt = uniforms(sunDisc, ['rect', 'top']);
+const shaftsAt = uniforms(shafts, ['rect', 'mask', 'sun']);
+
+const quad = gl.createBuffer();
+
+gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0, 0, 1, 0, 0, 1, 1, 1]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+const maskTexture = gl.createTexture();
+
+gl.bindTexture(gl.TEXTURE_2D, maskTexture);
+gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, WIDTH, HEIGHT, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+const maskTarget = gl.createFramebuffer();
+
+gl.bindFramebuffer(gl.FRAMEBUFFER, maskTarget);
+gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, maskTexture, 0);
+gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+const COLUMNS = 7;
+const state = window.game = { frame: 0, time: 0, columns: COLUMNS, sun: [0.7, 0.62] };
+
+function rect (at, x, y, width, height, top, bottom)
+{
+    gl.uniform4f(at.rect, x, y, width, height);
+    gl.uniform4f(at.top, top[0], top[1], top[2], 1);
+
+    if (at.bottom)
+    {
+        gl.uniform4f(at.bottom, bottom[0], bottom[1], bottom[2], 1);
+    }
+
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+}
+
+// The columns, and the ground they stand on. Black in the mask, stone in the scene.
+function columns (stone, shade, ground)
+{
+    rect(flatAt, 0, 0, 1, 0.22, ground, ground);
+
+    for (let i = 0; i < COLUMNS; i++)
+    {
+        const x = 0.04 + i * 0.14 + 0.01 * Math.sin(state.time * 0.0004 + i);
+
+        rect(flatAt, x, 0.2, 0.06, 0.68, stone, shade);
+        rect(flatAt, x - 0.012, 0.86, 0.084, 0.035, stone, stone);
+    }
+
+    rect(flatAt, 0, 0.895, 1, 0.06, stone, shade);
+}
+
+function frame (time)
+{
+    state.frame++;
+    state.time = time;
+    state.sun = [0.7 + 0.05 * Math.sin(time * 0.0003), 0.62];
+
+    gl.viewport(0, 0, WIDTH, HEIGHT);
+    gl.disable(gl.BLEND);
+
+    // The mask: the sun, and whatever stands in front of it.
+    gl.bindFramebuffer(gl.FRAMEBUFFER, maskTarget);
+    gl.clearColor(0.03, 0.04, 0.07, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.useProgram(sunDisc);
+    rect(sunAt, state.sun[0] - 0.14, state.sun[1] - 0.25, 0.28, 0.5, [1, 0.85, 0.6]);
+    gl.useProgram(flat);
+    columns([0, 0, 0], [0, 0, 0], [0, 0, 0]);
+
+    // The scene.
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.useProgram(flat);
+    rect(flatAt, 0, 0, 1, 1, [0.1, 0.16, 0.35], [0.85, 0.5, 0.3]);
+    gl.useProgram(sunDisc);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.ONE, gl.ONE);
+    rect(sunAt, state.sun[0] - 0.14, state.sun[1] - 0.25, 0.28, 0.5, [1, 0.85, 0.6]);
+    gl.disable(gl.BLEND);
+    gl.useProgram(flat);
+    columns([0.5, 0.45, 0.42], [0.2, 0.17, 0.2], [0.16, 0.13, 0.12]);
+
+    // The shafts, added over it.
+    gl.useProgram(shafts);
+    gl.bindTexture(gl.TEXTURE_2D, maskTexture);
+    gl.uniform1i(shaftsAt.mask, 0);
+    gl.uniform2f(shaftsAt.sun, state.sun[0], state.sun[1]);
+    gl.uniform4f(shaftsAt.rect, 0, 0, 1, 1);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.ONE, gl.ONE);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    gl.disable(gl.BLEND);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+
+    requestAnimationFrame(frame);
+}
+
+requestAnimationFrame(frame);
+</script>

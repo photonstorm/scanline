@@ -4,7 +4,7 @@ Scanline's interface is tuned by giving agents pages with planted rendering bugs
 
 ## The bugs
 
-`fixtures/bugs/` is one small game scene in raw WebGL 2 (`scene.js`) and fourteen pages that run it. `b00.html` is correct. Each of `b01.html` to `b13.html` has exactly one thing wrong.
+`fixtures/bugs/` is one small game scene in raw WebGL 2 (`scene.js`) and fifteen pages that run it. `b00.html` is correct. Each of `b01.html` to `b14.html` has exactly one thing wrong.
 
 `bugs.json` says, for each bug:
 
@@ -31,6 +31,7 @@ Scanline's interface is tuned by giving agents pages with planted rendering bugs
 | b11 | performance | The page stutters. |
 | b12 | targets | The minimap is empty. |
 | b13 | intermittent | The glass panel flickers for one frame now and then. |
+| b14 | performance | A haze of sunlight was added and the frame's GPU time went up many times over. |
 
 b12 was not planted. It was a real mistake in the first version of the scene, found by using Scanline on the "correct" page, and kept.
 

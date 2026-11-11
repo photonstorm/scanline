@@ -117,6 +117,15 @@
       "fix": "Draw the glass after the crates on every frame: the order must not depend on the frame number.",
       "expect": [["order", "before", "after", "first", "earlier", "later", "swap"], ["glass", "blend", "transparent", "translucent"], ["frame", "intermittent", "sometimes", "every", "one in", "occasion", "40", "forty"]],
       "check": { "flicker": { "pixel": [250, 210], "reference": [131, 118, 146, 255], "every": 40 } }
+    },
+    {
+      "id": "b14",
+      "class": "performance",
+      "symptom": "This build adds a soft haze of sunlight over the whole scene. Since it went in, the frame costs many times the GPU time it did, and far more than a scene this simple should.",
+      "diagnosis": "The haze is one full-screen draw whose fragment shader samples a texture 64 times in a loop for every pixel of the canvas. That draw takes nearly all of the frame's GPU time.",
+      "fix": "Take far fewer samples in the loop (the haze is smooth, so a dozen or two look the same), or draw the haze at a lower resolution.",
+      "expect": [["64", "loop", "samples", "sampl"], ["fragment", "shader", "full-screen", "fullscreen", "full screen", "every pixel", "per pixel"], ["haze", "shaft", "prg_2", "event 10", "draw 10", "SAMPLES"]],
+      "check": { "pixel": [100, 150], "reference": [89, 153, 230, 255] }
     }
   ]
 }

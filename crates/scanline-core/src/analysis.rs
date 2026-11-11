@@ -606,6 +606,31 @@ fn read_shader(source: &str) -> Value {
     let is_call = |index: usize| words.get(index + 1).is_some_and(|next| next == "(");
     let wgsl = words.iter().any(|word| word == "fn") && !words.iter().any(|word| word == "void");
 
+    // Whole-number constants by name, so that a loop to SAMPLES can be counted:
+    // `const int SAMPLES = 64;`, `const SAMPLES: i32 = 64;`, `#define SAMPLES 64`.
+    let whole = |word: &String| word.trim_end_matches(['u', 'i']).parse::<u64>().ok();
+    let mut constants: BTreeMap<&str, u64> = BTreeMap::new();
+
+    for (index, word) in words.iter().enumerate() {
+        match word.as_str() {
+            "const" | "override" => {
+                let Some(equals) = words[index..].iter().take(8).position(|next| next == "=") else { continue };
+                let before = &words[index + 1..index + equals];
+                let name = before.iter().position(|next| next == ":").map_or(before.last(), |colon| before.get(colon.wrapping_sub(1)));
+
+                if let (Some(name), Some(value)) = (name, words.get(index + equals + 1).and_then(whole)) {
+                    constants.insert(name.as_str(), value);
+                }
+            }
+            "define" => {
+                if let (Some(name), Some(value)) = (words.get(index + 1), words.get(index + 2).and_then(whole)) {
+                    constants.insert(name.as_str(), value);
+                }
+            }
+            _ => {}
+        }
+    }
+
     // Loops, each with the braces that hold its body and what is sampled inside.
     let mut loops: Vec<Value> = Vec::new();
     let mut open: Vec<(usize, usize)> = Vec::new(); // (brace depth of the body, index into loops)
@@ -619,8 +644,10 @@ fn read_shader(source: &str) -> Value {
             "for" | "while" | "loop" if word == "loop" || is_call(index) => {
                 // The header, as written, and a count if it is a plain counted loop.
                 let header: Vec<&str> = words[index..].iter().take_while(|next| *next != "{").take(24).map(String::as_str).collect();
-                let bound =
-                    header.windows(2).find(|pair| pair[0] == "<" || pair[0] == "<=").and_then(|pair| pair[1].trim_end_matches(['u', 'i']).parse::<u64>().ok());
+                let bound = header
+                    .windows(2)
+                    .find(|pair| pair[0] == "<" || pair[0] == "<=")
+                    .and_then(|pair| pair[1].trim_end_matches(['u', 'i']).parse::<u64>().ok().or_else(|| constants.get(pair[1]).copied()));
 
                 loops.push(json!({ "header": header.join(" "), "passes": bound, "samples": 0 }));
                 pending = Some(loops.len() - 1);
@@ -1113,7 +1140,7 @@ pub async fn profile(host: &Arc<Host>, params: &Value) -> Result<Value> {
     }
 
     lines.push("How it is measured: the frame is replayed, and each draw is issued 16 times in a row inside a timer query before the frame moves on. The figure is that time divided by 16. It ranks draws against each other well; it is not what the draw cost in the page, where it ran once among the others.".into());
-    lines.push("A GPU that works a tile at a time (Apple's, and most phones') puts off shading until it must, so a draw's cost can be charged to a later draw or missed. Treat small differences as noise.".into());
+    lines.push("The GPU is made to finish each draw before the next is timed, by reading a pixel of its target back, so a slow draw is not charged to the ones after it. A target with no colour to read (depth only, multisampled) cannot be waited for that way. Treat small differences as noise.".into());
 
     if disjoint {
         lines.push("Warning: the GPU reported a disjoint while timing (it was interrupted), so some of these figures are unreliable. Run it again.".into());
@@ -1339,6 +1366,25 @@ mod tests {
         assert_eq!(figures["samples"], 1);
         assert_eq!(figures["samples_per_run"], 8);
         assert_eq!(figures["unused"], json!(["var spare"]));
+    }
+
+    #[test]
+    fn a_loop_to_a_named_constant_is_counted() {
+        let glsl = read_shader("const int SAMPLES = 64;\nvoid main () { for (int i = 0; i < SAMPLES; i++) { c += texture(map, at); } }");
+
+        assert_eq!(glsl["samples_per_run"], 64);
+
+        let defined = read_shader("#define TAPS 12\nvoid main () { for (int i = 0; i < TAPS; i++) { c += texture2D(map, at); } }");
+
+        assert_eq!(defined["samples_per_run"], 12);
+
+        let wgsl = read_shader("const SAMPLES: i32 = 24;\nfn main () -> vec4f { for (var i = 0; i < SAMPLES; i++) { c += textureSample(map, smp, at); } }");
+
+        assert_eq!(wgsl["samples_per_run"], 24);
+
+        let unknown = read_shader("uniform int count;\nvoid main () { for (int i = 0; i < count; i++) { c += texture(map, at); } }");
+
+        assert!(unknown["samples_per_run"].is_null());
     }
 
     #[test]

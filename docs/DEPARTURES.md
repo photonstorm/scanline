@@ -160,7 +160,7 @@ Built: `pixel_history` (WebGL; rejected fragments need WebGL 2), `compare`, `lin
 | `discard` is detected by replaying with a constant fragment shader. | Not detected. | Needs the shader replacement of milestone 6. |
 | Static shader analysis uses a parser (`naga`, ANGLE's translator). | A reading of the text: words and braces. It counts sample calls, loops with constant bounds, branches, `discard`, and inputs never mentioned again. | Enough for "64 samples in a loop". It does not follow function calls, so a sample inside a helper called from a loop is counted once. |
 | Overdraw is counted by replaying into a float target with a constant output and additive blending. | It is counted in the stencil buffer: every draw adds one wherever a fragment lands, or only where it also passes the depth test, and the counts are then drawn out a level at a time and read. | No shader has to be replaced. It works for the canvas only, not for other targets, and not for a frame that uses the stencil test itself. It counts to 64. |
-| Per-draw timing is amplified and attributes time to the vertex, fragment and texture work. | Each draw is issued 16 times inside one timer query during a replay, three replays are run, and the middle figure is kept. No attribution. | On the scene tested the figures repeat to within about a fifth and rank the large blended draw first. A tile-based GPU (this one) defers shading, so a draw's cost can be charged elsewhere; the command says so. |
+| Per-draw timing is amplified and attributes time to the vertex, fragment and texture work. | Each draw is issued 16 times inside one timer query during a replay, three replays are run, and the middle figure is kept. Before and after each timed draw a pixel of its target is read back, which makes the GPU finish. No attribution. | Without the read, a timer counted whatever the GPU was still doing: on the first slow fixture the one expensive draw was charged again, in full, to each of the eight draws after it. `finish()` does not wait in this browser, and reading from another target does not either. A target with no colour to read (depth only, multisampled) is not waited for. |
 | The depth view reads the depth attachment. | Not built. | WebGL cannot read a depth buffer back; it would have to be reconstructed by drawing. |
 | `gfx_compare` gives per-target image differences. | The final pictures only. | Intermediate targets are not stored; they come from replay. |
 
@@ -172,7 +172,7 @@ Not built from the milestone's list: the other views (depth, stencil, mip, NaN, 
 
 | Criterion | Standing |
 |---|---|
-| J3 works on WebGL 2 | The pieces are there and tested one by one: `profile` and `shader_analysis` find the cost, `patch_shader` changes it live, `experiment` measures with and without, `patches` states the change. **Not run end to end on a slow fixture**: there is no planted "64 samples in a loop" bug yet. |
+| J3 works on WebGL 2 | Met on `fixtures/slow/webgl2.html` (a 1080p scene whose light shafts take 64 samples a pixel), and run by `tests/journeys.test.mjs` through the CLI: `profile` puts over 80% of the frame in one draw of one program, `experiment` shows the time goes when every draw is clipped to a pixel, `shader_analysis` reads "up to 64 samples", `patch_shader` drops it to 24, the picture differs by less than 6 in 255 on average, the frame's GPU time falls by more than a quarter (from about 3 ms to about 1.4 ms here), and `patches` states the source change. The same bug is planted in the crate yard as `b14` for the evaluation. The half-resolution experiment of the journey is not built; clipping to a pixel answers the same question. |
 | J3 works on WebGPU | **Not built.** No live patches on WebGPU. |
 | Every draw resolves to an engine object on three engines | **Not started.** No page protocol, no adapters. |
 
@@ -208,6 +208,8 @@ On the 2,000-draw WebGL 2 page (10,002 calls a frame), three rounds each, the pr
 - The 10,000-draw page gives nonsense (a spread of 1.2 ms between runs with no probe at all), so it is left out.
 
 Not done: finding where the growth since milestone 2 comes from. It wants a profiler on a quiet machine, not more runs of this spike. `--api`, `--draws` and `--modes` were added to the spike to make that easier.
+
+Two faults found by running the journey: `experiment` never reported GPU time (it read the wrong field of the probe's figures, and its test did not look), and it left the canvas showing the experiment's last frame, so a screenshot taken next was of the clipped frame. Both fixed; the journey test covers them. The static shader reading now follows a loop bound to a named constant (`const int SAMPLES = 64`, `#define`, WGSL `const`).
 
 ## WebGPU capture: what it does not do
 

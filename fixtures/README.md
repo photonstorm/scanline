@@ -31,6 +31,10 @@ Each page sets `window.fixture` (or posts it from a worker) to
 | `worker.html` | WebGL 2 in a worker | as `webgl2.html` | `transferControlToOffscreen`, frame loop in the worker. |
 | `timers.html` | WebGL 1 | 5 `drawArrays` | Frame loop on `setInterval`, no `requestAnimationFrame`. |
 
+## The slow frame (`slow/`)
+
+`slow/webgl2.html` is a row of columns against a low sun at 1920×1080, in three passes: a mask of the sun and what stands in front of it, the scene, and light shafts added over the scene from the mask. The shafts are one full-screen draw whose fragment shader samples the mask 64 times a pixel, and they take nearly all of the frame's GPU time. Twenty-four samples look the same. It is the page journey J3 is run on (`tests/journeys.test.mjs`).
+
 ## Inventory pages (`matrix/inventory-*.html`)
 
 Objects with known sizes and contents, for checking what the live inventory reports. Both pages make the same things:

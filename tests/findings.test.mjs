@@ -422,7 +422,7 @@ describe('views of a capture', () =>
         assert.ok(draws.json.data.rows.every((row) => row.ns >= 0));
         assert.ok(draws.json.data.total_ns > 0);
         assert.match(draws.json.summary, /each timed over 16 repeats, the middle of 3 runs/);
-        assert.match(draws.json.summary, /A GPU that works a tile at a time/);
+        assert.match(draws.json.summary, /made to finish each draw before the next is timed/);
 
         // Summed by the program the draws use: the scene has two.
         const shaders = await scanline('profile', capture, '--by', 'shader', '--session', session, '--json');
@@ -433,6 +433,29 @@ describe('views of a capture', () =>
         const passes = await scanline('profile', capture, '--by', 'pass', '--session', session, '--json');
 
         assert.equal(passes.json.data.rows.length, 2);
+    });
+
+    test('b14: one draw takes nearly all the GPU time, and its shader samples 64 times a pixel', async () =>
+    {
+        const { capture, session } = await captured('b14');
+        const draws = await scanline('profile', capture, '--session', session, '--json');
+
+        assert.equal(draws.code, 0, draws.out);
+
+        // The haze is event 10. It is not charged to the sparks drawn after it.
+        const rows = draws.json.data.rows;
+
+        assert.equal(rows[0].draw, 10, draws.json.summary);
+        assert.ok(rows[0].ns > draws.json.data.total_ns * 0.6, draws.json.summary);
+        assert.ok(rows[1].ns < rows[0].ns / 5, draws.json.summary);
+
+        const shaders = await scanline('profile', capture, '--by', 'shader', '--session', session, '--json');
+
+        assert.equal(shaders.json.data.rows[0].shader, 'prg_2');
+
+        const read = await scanline('shader_analysis', 'prg_2', '--capture', capture, '--session', session);
+
+        assert.match(read.out, /1 inside a loop: up to 64 samples every time the shader runs/);
     });
 
     test('wireframe draws the frame as outlines', async () =>

@@ -309,7 +309,9 @@ async fn measure(session: &Arc<Session>, context: &ContextRef, frames: u64) -> R
 
     let figures = session.probe(&context.instance, "stats", json!({ "frames": frames }), SHORT).await?;
 
-    Ok((figures["gpuMs"]["mean"].as_f64(), figures["cpuMs"]["mean"].as_f64().unwrap_or(0.0)))
+    let gpu = if figures["gpu"]["frames"].as_u64().unwrap_or(0) > 0 { figures["gpu"]["ms"]["mean"].as_f64() } else { None };
+
+    Ok((gpu, figures["cpuMs"]["mean"].as_f64().unwrap_or(0.0)))
 }
 
 /// Tries a change for a number of frames, measures the frame with and without it, and
@@ -353,6 +355,10 @@ pub async fn experiment(session: &Arc<Session>, params: &Value) -> Result<Value>
     if let Some((instance, id)) = made_here {
         let _ = session.probe(&instance, "patch.remove", json!({ "patch": id }), SHORT).await;
     }
+
+    // One more frame, so that the canvas shows the page's own drawing again and not the
+    // last frame of the experiment.
+    let _ = step(session, &json!({ "frames": 1 })).await;
 
     let during = during?;
     let description = said(session, &context, made["description"].as_str().unwrap_or(""));

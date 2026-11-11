@@ -1690,6 +1690,52 @@ const api = {
 
             const queries: Array<{ draw: number; query: any }> = [];
 
+            // Whatever the GPU still has to do is finished before a timer starts and before the
+            // next draw is issued. A timer covers everything the GPU did while it ran, so a slow
+            // draw still being shaded would be charged again to each draw queued behind it.
+            // finish() does not wait in this browser. Reading a pixel back from the target that
+            // was drawn to does; reading from anywhere else does not.
+            const one: Record<number, ArrayBufferView> = {
+                0x1401: new Uint8Array(4),
+                0x1406: new Float32Array(4),
+                0x140B: new Uint16Array(4),
+                0x1404: new Int32Array(4),
+                0x1405: new Uint32Array(4),
+                0x8368: new Uint32Array(1)
+            };
+
+            const settle = (): void =>
+            {
+                const read = gl.getParameter(0x8CAA);
+                const pack = gl.getParameter(0x88ED);
+
+                if (pack)
+                {
+                    gl.bindBuffer(0x88EB, null);
+                }
+
+                gl.bindFramebuffer(0x8CA8, gl.getParameter(0x8CA6));
+
+                // A target with no colour to read (depth only, or multisampled) raises an error
+                // here and is not waited for. The errors are taken off the context.
+                const type = gl.getParameter(0x8B9A);
+                const into = one[type];
+
+                if (into)
+                {
+                    gl.readPixels(0, 0, 1, 1, gl.getParameter(0x8B9B), type, into);
+                }
+
+                gl.bindFramebuffer(0x8CA8, read);
+
+                if (pack)
+                {
+                    gl.bindBuffer(0x88EB, pack);
+                }
+
+                while (gl.getError()) { /* drained */ }
+            };
+
             // Anything the context was doing before is finished first, so it is not charged to the first draw.
             gl.finish();
             gl.getParameter(0x8FBB);
@@ -1705,6 +1751,7 @@ const api = {
 
                 const query = gl.createQuery();
 
+                settle();
                 gl.beginQuery(0x88BF, query);
 
                 for (let i = 0; i < times; i++)
@@ -1713,6 +1760,7 @@ const api = {
                 }
 
                 gl.endQuery(0x88BF);
+                settle();
                 queries.push({ draw, query });
             });
 
