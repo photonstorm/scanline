@@ -1458,7 +1458,7 @@ fn heat(count: u8) -> [u8; 4] {
 /// triangles as outlines (wireframe).
 pub async fn view(host: &Arc<Host>, params: &Value) -> Result<Value> {
     let (handle, meta) = the_capture(host, params)?;
-    let which = params["view"].as_str().ok_or_else(|| anyhow!("view needs view: overdraw, wireframe, draw_id, depth or nan."))?;
+    let which = params["view"].as_str().ok_or_else(|| anyhow!("view needs view: overdraw, wireframe, draw_id, depth, stencil, mip or nan."))?;
     let session = host.replayer(params)?;
 
     load_into(host, &session, &handle).await?;
@@ -1472,7 +1472,11 @@ pub async fn view(host: &Arc<Host>, params: &Value) -> Result<Value> {
             Some("no-stencil") => bail!("The browser would not give the replay a stencil buffer, which overdraw is counted in."),
             Some("no-polygon-mode") => bail!("This browser lacks WEBGL_polygon_mode, which the wireframe view draws with."),
             Some("float-target") => bail!("The draw_id view writes event numbers as 8-bit colours, and that target holds floats."),
-            Some("webgl1") => bail!("The depth view needs WebGL 2 (it copies the depth buffer with a blit), and {handle} is a WebGL 1 capture."),
+            Some("webgl1") => bail!("The {which} view needs WebGL 2 (it copies the buffer with a blit), and {handle} is a WebGL 1 capture."),
+            Some("no-stencil-buffer") => {
+                bail!("That target has no stencil buffer: the page's canvas was made without one (stencil: true), or the framebuffer has none attached.")
+            }
+            Some("no-stencil-copy") => bail!("The stencil buffer of that target could not be copied out: its format is not one the replay could match."),
             Some("no-depth") => bail!("That target has no depth buffer the replay could copy: none is attached, or its format is not one a texture can take."),
             Some(other) => bail!("The {which} view cannot be made of this capture ({other})."),
             None => Ok(()),
@@ -1870,7 +1874,245 @@ pub async fn view(host: &Arc<Host>, params: &Value) -> Result<Value> {
 
             Ok(value)
         }
-        other => bail!("There is no \"{other}\" view. Views are overdraw, wireframe, draw_id, depth and nan."),
+        "stencil" => {
+            let (target, target_name) = target_of(host, &handle, params)?;
+            let reply = session.replay("stencil", &json!({ "key": handle, "draw": params["at_draw"], "target": target }), LONG).await?;
+
+            refuse(&reply)?;
+
+            let (width, height) = (reply["width"].as_u64().unwrap_or(0) as u32, reply["height"].as_u64().unwrap_or(0) as u32);
+            let bytes = crate::capture::unpack(reply["data"].as_str().unwrap_or(""))?;
+            let values: Vec<u8> = bytes.chunks_exact(4).map(|pixel| pixel[0]).collect();
+
+            if values.is_empty() || values.len() != (width * height) as usize {
+                bail!("The replay returned no stencil values.");
+            }
+
+            // Each value that occurs: how many pixels hold it, and the box they fall in.
+            let mut found: std::collections::BTreeMap<u8, (u64, u32, u32, u32, u32)> = std::collections::BTreeMap::new();
+
+            for (index, value) in values.iter().enumerate() {
+                let (x, y) = (index as u32 % width, index as u32 / width);
+                let entry = found.entry(*value).or_insert((0, x, x, y, y));
+
+                entry.0 += 1;
+                entry.1 = entry.1.min(x);
+                entry.2 = entry.2.max(x);
+                entry.3 = entry.3.min(y);
+                entry.4 = entry.4.max(y);
+            }
+
+            let picture =
+                Image::new(width, height, values.iter().flat_map(|value| if *value == 0 { [20, 20, 28, 255] } else { id_colour(*value as i64) }).collect())?;
+            let name = match params["at_draw"].as_i64() {
+                Some(draw) => format!("stencil-draw{draw}.png"),
+                None => "stencil.png".to_string(),
+            };
+            let path = host.store.capture_dir(&handle).join(name);
+
+            std::fs::write(&path, picture.to_png()?).with_context(|| format!("writing {}", path.display()))?;
+
+            let when = match params["at_draw"].as_i64() {
+                Some(draw) => format!(" after event {draw}"),
+                None => " at the end of the frame".to_string(),
+            };
+            let mut lines =
+                vec![format!("{}: the stencil buffer of {target_name}{when}. gpu-measured. {}", about(host, params, &handle, &meta), path.display())];
+            let total = values.len() as f64;
+
+            if found.len() == 1 {
+                let value = found.keys().next().copied().unwrap_or(0);
+
+                lines.push(format!(
+                    "Every pixel holds {value}: {}",
+                    if value == 0 {
+                        "nothing has written the stencil buffer since it was cleared. If a mask should be there, look for the draw that writes it: stencil_test on, and an operation other than KEEP (draw shows both)."
+                    } else {
+                        "the whole buffer was cleared or written to that value."
+                    }
+                ));
+            } else {
+                lines.push(format!("{} values occur:", found.len()));
+
+                let mut by_count: Vec<(&u8, &(u64, u32, u32, u32, u32))> = found.iter().collect();
+
+                by_count.sort_by_key(|(_, entry)| std::cmp::Reverse(entry.0));
+
+                for (value, (count, left, right, up, down)) in by_count.iter().take(12) {
+                    lines.push(format!(
+                        "  {value:>3} (0x{value:02X})  {count} px, {:.1}%, within x {left} y {up} {}×{}",
+                        *count as f64 * 100.0 / total,
+                        right - left + 1,
+                        down - up + 1
+                    ));
+                }
+
+                if by_count.len() > 12 {
+                    lines.push(format!("  … and {} more", by_count.len() - 12));
+                }
+            }
+
+            let mut data = json!({
+                "capture": handle,
+                "view": "stencil",
+                "at_draw": params["at_draw"],
+                "values": found.iter().map(|(value, (count, left, right, up, down))| json!({ "value": value, "pixels": count, "box": { "x": left, "y": up, "w": right - left + 1, "h": down - up + 1 } })).collect::<Vec<_>>(),
+                "pixels": values.len(),
+                "provenance": "gpu-measured"
+            });
+
+            if let (Some(x), Some(y)) = (params["x"].as_u64(), params["y"].as_u64()) {
+                if x >= width as u64 || y >= height as u64 {
+                    bail!("({x}, {y}) is outside the target, which is {width}×{height}.");
+                }
+
+                let value = values[(y * width as u64 + x) as usize];
+
+                lines.push(format!("Stencil at ({x}, {y}): {value} (0x{value:02X})."));
+                data["stencil_at"] = json!({ "x": x, "y": y, "value": value });
+            } else {
+                lines.push("Pass x and y for the value at one pixel, and at_draw to see the buffer as it stood after an earlier event.".into());
+            }
+
+            lines.push("In the picture 0 is dark and every other value has a colour of its own.".into());
+
+            let mut value = result(lines.join("\n"), data);
+
+            value["images"] = json!([{ "view": path, "original": path, "width": width, "height": height, "scale": 1.0, "space": "canvas_px" }]);
+
+            Ok(value)
+        }
+        "mip" => {
+            let (target, target_name) = target_of(host, &handle, params)?;
+
+            // One texture, when one is named: its levels alone are coloured.
+            let only = match params["texture"].as_str() {
+                Some(name) => {
+                    let rows = host.store.query(&handle, "SELECT id FROM objects WHERE handle = ?1 AND kind = 'texture'", &[Sql::Text(name.to_string())], 1)?;
+
+                    match rows.rows.first() {
+                        Some(row) => row[0].clone(),
+                        None => bail!("\"{name}\" is not a texture in {handle}. draw(capture, draw) lists the textures an event samples."),
+                    }
+                }
+                None => Value::Null,
+            };
+            let reply = session.replay("mip", &json!({ "key": handle, "draw": params["at_draw"], "target": target, "texture": only }), LONG).await?;
+
+            refuse(&reply)?;
+
+            if reply["float"] == true {
+                bail!("The mip view shows levels as 8-bit colours, and {target_name} holds floats.");
+            }
+
+            let tinted = reply["tinted"].as_array().cloned().unwrap_or_default();
+
+            if tinted.is_empty() {
+                return Ok(result(
+                    match params["texture"].as_str() {
+                        Some(name) => format!(
+                            "{name} could not be given coloured levels: the view replaces 2D textures of 8-bit colour, and it is not one (a cube map, an array, a float or depth format, or a render target with no contents)."
+                        ),
+                        None => format!(
+                            "{}: no texture the frame uses has more than one mip level, so every sample reads level 0. If a texture looks blurred or shimmers in the distance, it has no mipmaps: resource(handle) says how it is filtered. Pass texture to colour one texture's single level anyway.",
+                            about(host, params, &handle, &meta)
+                        ),
+                    },
+                    json!({ "capture": handle, "view": "mip", "textures": [] }),
+                ));
+            }
+
+            let picture = crate::capture::replay_image(&reply)?;
+            let colours: Vec<[u8; 3]> = reply["colours"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|colour| [colour[0].as_u64().unwrap_or(0) as u8, colour[1].as_u64().unwrap_or(0) as u8, colour[2].as_u64().unwrap_or(0) as u8])
+                .collect();
+            const NAMES: [&str; 8] = ["red", "orange", "yellow", "green", "cyan", "blue", "magenta", "white"];
+            let mut counts = vec![0u64; colours.len()];
+
+            // Only a pixel that is exactly a level's colour is counted: one that was lit,
+            // tinted or blended between two levels is not any single level's.
+            for pixel in picture.data.chunks_exact(4) {
+                if let Some(level) = colours.iter().position(|colour| pixel[..3] == colour[..]) {
+                    counts[level] += 1;
+                }
+            }
+
+            let name = format!(
+                "mip{}{}.png",
+                params["texture"].as_str().map(|texture| format!("-{texture}")).unwrap_or_default(),
+                params["at_draw"].as_i64().map(|draw| format!("-draw{draw}")).unwrap_or_default()
+            );
+            let path = host.store.capture_dir(&handle).join(name);
+
+            std::fs::write(&path, picture.opaque().to_png()?).with_context(|| format!("writing {}", path.display()))?;
+
+            let handle_of = |id: &Value| crate::capture::handle_text("texture", id, meta["instance_tag"].as_u64().unwrap_or(0));
+            let names: Vec<String> = tinted
+                .iter()
+                .map(|texture| {
+                    format!(
+                        "{} ({}×{}, {} level{})",
+                        handle_of(&texture["id"]),
+                        texture["width"],
+                        texture["height"],
+                        texture["levels"],
+                        if texture["levels"] == 1 { "" } else { "s" }
+                    )
+                })
+                .collect();
+            let total = (picture.width * picture.height) as f64;
+            let exact: u64 = counts.iter().sum();
+            let mut lines = vec![
+                format!(
+                    "{}: {target_name}{} with the mip levels of {} drawn as flat colours. gpu-measured. {}",
+                    about(host, params, &handle, &meta),
+                    match params["at_draw"].as_i64() {
+                        Some(draw) => format!(" after event {draw}"),
+                        None => " at the end of the frame".to_string(),
+                    },
+                    names.join(", "),
+                    path.display()
+                ),
+                "Pixels that are exactly one level's colour:".to_string(),
+            ];
+            let mut levels = Vec::new();
+
+            for (level, count) in counts.iter().enumerate().filter(|(_, count)| **count > 0) {
+                lines.push(format!(
+                    "  level {level}{} ({})  {count} px, {:.1}% of the target",
+                    if level + 1 == colours.len() { " or beyond" } else { "" },
+                    NAMES.get(level).copied().unwrap_or("white"),
+                    *count as f64 * 100.0 / total
+                ));
+                levels.push(json!({ "level": level, "pixels": count }));
+            }
+
+            if exact == 0 {
+                lines.push("  none. Either nothing on this target samples those textures, or every sample is lit, tinted or blended, so no pixel is a level's own colour: read the picture by eye.".into());
+            }
+
+            lines.push(format!(
+                "The other {} px are not from these textures, or mix two levels (trilinear filtering) or a level with something else. Level 0 is the full-size image: a surface drawn small that still shows level 0 has no mipmaps in use, and one drawn large that shows a high level is being sampled blurred.",
+                (total as u64).saturating_sub(exact)
+            ));
+
+            if params["texture"].is_null() && tinted.len() > 1 {
+                lines.push("Several textures share the colours. Pass texture: \"tex_N\" to colour one alone.".into());
+            }
+
+            let mut value = result(
+                lines.join("\n"),
+                json!({ "capture": handle, "view": "mip", "at_draw": params["at_draw"], "textures": tinted.iter().map(|texture| handle_of(&texture["id"])).collect::<Vec<_>>(), "levels": levels, "provenance": "gpu-measured" }),
+            );
+
+            value["images"] = json!([{ "view": path, "original": path, "width": picture.width, "height": picture.height, "scale": 1.0, "space": "canvas_px" }]);
+
+            Ok(value)
+        }
+        other => bail!("There is no \"{other}\" view. Views are overdraw, wireframe, draw_id, depth, stencil, mip and nan."),
     }
 }
 

@@ -80,6 +80,11 @@ const TEXTURE_2D_ARRAY = 0x8C1A;
 
 // How RGBA data read back from a texture is uploaded into a texture of each internal
 // format: [format, channels]. The type comes from the kind of data (bytes or floats).
+// The mip view's colours, level 0 first. Levels past the last share its colour.
+const MIP_COLOURS: Array<[number, number, number]> = [
+    [255, 0, 0], [255, 128, 0], [255, 255, 0], [0, 255, 0], [0, 255, 255], [0, 0, 255], [255, 0, 255], [255, 255, 255]
+];
+
 // Depth and stencil formats: the format and type that allocate each with no data. WebGL 1's
 // unsized formats take the type the page gave.
 const DEPTH_UPLOAD: Record<number, (type?: number) => [number, number]> = {
@@ -117,6 +122,10 @@ class Run
 
     // Scratch framebuffers that stand in for multisampled ones when they are read.
     resolves = new Map<any, { from: any; width: number; height: number }>();
+
+    // The mip view: which textures are given levels of one flat colour each, and the ones that were.
+    mipTint: ((texture: Json) => boolean) | null = null;
+    tinted: Json[] = [];
 
     // `extra` adds to the page's own context attributes: a stencil buffer for counting overdraw.
     constructor (capture: Loaded, extra: Record<string, unknown> = {})
@@ -540,6 +549,39 @@ class Run
         if (texture.generatedMips && data.length)
         {
             gl.generateMipmap(target);
+        }
+
+        // The mip view: every level one flat colour, so what is drawn shows the level sampled.
+        if (this.mipTint?.(texture) && target === TEXTURE_2D && kind === 'unorm8')
+        {
+            const count = texture.immutable ? levels : ((levels > 1 || texture.generatedMips) ? Math.floor(Math.log2(Math.max(texture.width, texture.height))) + 1 : 1);
+
+            for (let level = 0; level < count; level++)
+            {
+                const width = Math.max(1, texture.width >> level);
+                const height = Math.max(1, texture.height >> level);
+                const colour = MIP_COLOURS[Math.min(level, MIP_COLOURS.length - 1)];
+                const pixels = new Uint8Array(width * height * channels);
+
+                for (let i = 0; i < width * height; i++)
+                {
+                    for (let channel = 0; channel < channels; channel++)
+                    {
+                        pixels[i * channels + channel] = channel < 3 ? colour[channel] : 255;
+                    }
+                }
+
+                if (texture.immutable)
+                {
+                    gl.texSubImage2D(TEXTURE_2D, level, 0, 0, width, height, format, 0x1401, pixels);
+                }
+                else
+                {
+                    gl.texImage2D(TEXTURE_2D, level, texture.internalFormat, width, height, 0, format, 0x1401, pixels);
+                }
+            }
+
+            this.tinted.push({ id: texture.id, width: texture.width, height: texture.height, levels: count });
         }
 
         gl.bindTexture(target, null);
@@ -2730,6 +2772,183 @@ const api = {
             }
 
             return { ...(await packed({ width, height, data })), format, error: gl.getError(), notes: run.notes };
+        }
+        finally
+        {
+            run.dispose();
+        }
+    },
+
+    // The stencil buffer behind a target, after an event or at the end of the frame. Stencil
+    // cannot be read or sampled in WebGL, so it is copied by a blit into a framebuffer of
+    // the replay's own, and a quad is drawn eight times through the stencil test, once for
+    // each bit, adding that bit's worth to a colour.
+    async stencil (args: { key: string; draw?: number | null; target?: Json }): Promise<Json>
+    {
+        const item = capture(args.key);
+
+        if (isGpu(item))
+        {
+            return { unsupported: 'webgpu' };
+        }
+
+        const run = new Run(item);
+        const gl = run.gl;
+
+        try
+        {
+            if (!run.gl2)
+            {
+                return { unsupported: 'webgl1' };
+            }
+
+            run.play(endOf(item.data, args.draw));
+
+            const row = args.draw === null || args.draw === undefined ? null : item.data.draws[args.draw];
+            const target = args.target ?? (row ? targetOfRow(row) : null);
+            const [width, height] = sizeOfTarget(item.data, target);
+            const through = row && sameTarget(row, target) ? row : [...item.data.draws].reverse().find((event) => sameTarget(event, target));
+            const source = through?.framebuffer ? run.object('framebuffer', through.framebuffer) : null;
+
+            if (target && !source)
+            {
+                return { unsupported: 'no-stencil-buffer' };
+            }
+
+            while (gl.getError()) { /* what the frame raised is not this view's */ }
+
+            gl.bindFramebuffer(0x8D40, source);
+
+            if (!gl.getParameter(0x0D57))
+            {
+                return { unsupported: 'no-stencil-buffer' };
+            }
+
+            const colour = gl.createTexture();
+            const copy = gl.createFramebuffer();
+            const buffer = gl.createRenderbuffer();
+            let format = 0;
+
+            gl.disable(0x0C11);
+            gl.activeTexture(0x84C0);
+            gl.bindTexture(TEXTURE_2D, colour);
+            gl.texImage2D(TEXTURE_2D, 0, 0x8058, width, height, 0, 0x1908, 0x1401, null);
+
+            // The stencil format has to match the source's. Each likely one is tried.
+            for (const [candidate, attachment] of [[0x88F0, 0x821A], [0x8CAD, 0x821A], [0x8D48, 0x8D20]])
+            {
+                gl.bindRenderbuffer(0x8D41, buffer);
+                gl.renderbufferStorage(0x8D41, candidate, width, height);
+                gl.bindFramebuffer(0x8CA9, copy);
+                gl.framebufferTexture2D(0x8CA9, 0x8CE0, TEXTURE_2D, colour, 0);
+                gl.framebufferRenderbuffer(0x8CA9, 0x821A, 0x8D41, null);
+                gl.framebufferRenderbuffer(0x8CA9, 0x8D20, 0x8D41, null);
+                gl.framebufferRenderbuffer(0x8CA9, attachment, 0x8D41, buffer);
+                gl.bindFramebuffer(0x8CA8, source);
+                gl.blitFramebuffer(0, 0, width, height, 0, 0, width, height, 0x0400, 0x2600);
+
+                if (gl.getError() === 0 && gl.checkFramebufferStatus(0x8CA9) === 0x8CD5)
+                {
+                    format = candidate;
+                    break;
+                }
+            }
+
+            if (!format)
+            {
+                return { unsupported: 'no-stencil-copy' };
+            }
+
+            const program = gl.createProgram();
+
+            for (const [type, source] of [[0x8B31, '#version 300 es\nvoid main () { gl_Position = vec4(float(gl_VertexID % 2) * 4.0 - 1.0, float(gl_VertexID / 2) * 4.0 - 1.0, 0.0, 1.0); }'],
+                [0x8B30, '#version 300 es\nprecision highp float;\nuniform float worth;\nout vec4 colour;\nvoid main () { colour = vec4(worth, 0.0, 0.0, 0.0); }']] as Array<[number, string]>)
+            {
+                const shader = gl.createShader(type);
+
+                gl.shaderSource(shader, source);
+                gl.compileShader(shader);
+                gl.attachShader(program, shader);
+            }
+
+            gl.linkProgram(program);
+            gl.useProgram(program);
+            gl.bindFramebuffer(0x8D40, copy);
+            gl.bindVertexArray(null);
+            gl.viewport(0, 0, width, height);
+
+            for (const cap of [0x0B71, 0x0B44, 0x0C11, 0x8C89, 0x809E, 0x8037])
+            {
+                gl.disable(cap);
+            }
+
+            gl.colorMask(true, true, true, true);
+            gl.clearColor(0, 0, 0, 1);
+            gl.clear(0x4000);
+
+            // The test reads the stencil and nothing writes it. Each pass adds one bit's worth.
+            gl.enable(0x0B90);
+            gl.stencilMask(0);
+            gl.stencilOp(0x1E00, 0x1E00, 0x1E00);
+            gl.enable(0x0BE2);
+            gl.blendEquation(0x8006);
+            gl.blendFunc(1, 1);
+
+            for (let bit = 0; bit < 8; bit++)
+            {
+                gl.stencilFunc(0x0202, 0xFF, 1 << bit);
+                gl.uniform1f(gl.getUniformLocation(program, 'worth'), (1 << bit) / 255);
+                gl.drawArrays(0x0004, 0, 3);
+            }
+
+            const raw = new Uint8Array(width * height * 4);
+
+            gl.bindFramebuffer(0x8CA8, copy);
+            gl.bindBuffer(0x88EB, null);
+            gl.pixelStorei(0x0D05, 1);
+            gl.readPixels(0, 0, width, height, 0x1908, 0x1401, raw);
+
+            // Rows from the top, as every other picture has them.
+            const data = new Uint8Array(raw.length);
+            const stride = width * 4;
+
+            for (let y = 0; y < height; y++)
+            {
+                data.set(raw.subarray((height - 1 - y) * stride, (height - y) * stride), y * stride);
+            }
+
+            return { ...(await packed({ width, height, data })), format, error: gl.getError(), notes: run.notes };
+        }
+        finally
+        {
+            run.dispose();
+        }
+    },
+
+    // Which mip level is sampled: the frame replayed with each mipmapped texture's levels
+    // made one flat colour each (one texture only, when one is named).
+    async mip (args: { key: string; draw?: number | null; target?: Json; texture?: number | null }): Promise<Json>
+    {
+        const item = capture(args.key);
+
+        if (isGpu(item))
+        {
+            return { unsupported: 'webgpu' };
+        }
+
+        const run = new Run(item);
+
+        run.mipTint = (texture: Json) => (args.texture ? texture.id === args.texture : ((texture.levels || 1) > 1 || !!texture.generatedMips));
+
+        try
+        {
+            run.play(endOf(item.data, args.draw));
+
+            const row = args.draw === null || args.draw === undefined ? null : item.data.draws[args.draw];
+            const target = args.target ?? (row ? targetOfRow(row) : null);
+            const image = run.image(target);
+
+            return { ...(await packed(image)), target, tinted: run.tinted, colours: MIP_COLOURS, float: image.float, error: run.gl.getError(), notes: run.notes };
         }
         finally
         {

@@ -97,3 +97,7 @@ The WebGPU page labels its objects; WebGL has no labels.
 ## Babylon.js with shadows (`engines/babylon-shadows.html`)
 
 Scanline has no adapter for Babylon.js, so its draws are not named by mesh, but the engine must still be launched, captured and replayed to the same picture. `engines/babylon.html` is three unlit boxes on WebGL 2. `engines/babylon-shadows.html` is a harder scene (a lit ground, three boxes, one see-through, a ball, and a shadow map), on the WebGL 2 engine or, with `?engine=webgpu`, the WebGPU engine. It found two faults when it was added (a depth texture as a render target, and a command encoder made before the frame), both written up in `docs/DEPARTURES.md`.
+
+## Views with known answers (`history/views.html`)
+
+A WebGL 2 page for the stencil and mip views. Two overlapping squares write the stencil buffer (one replaces it with 5, the other adds 1), so the values and how many pixels hold each can be worked out by hand: they are in the page's opening comment. One mipmapped texture is drawn at three sizes with a nearest mip filter, so each square reads exactly one level (0, 2 and 3), and a second texture has no mipmaps at all.

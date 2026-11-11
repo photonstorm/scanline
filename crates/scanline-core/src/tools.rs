@@ -429,14 +429,15 @@ pub const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "view",
-        description: "A capture seen another way, by replay. overdraw: how often each pixel was drawn. wireframe: triangles as outlines. draw_id: which draw owns each pixel, and which own none. depth: the depth buffer as a picture, with the exact depth at x, y. nan: where a float target holds NaN or infinity. WebGL captures.",
+        description: "A capture seen another way, by replay. overdraw: how often each pixel was drawn. wireframe: triangles as outlines. draw_id: which draw owns each pixel. depth, stencil: that buffer as a picture, with the exact value at x, y. mip: which mip level each pixel sampled. nan: where a float target holds NaN or infinity. WebGL captures.",
         schema: schema!(
             r#"["capture", "view"]"#,
             r#""capture": { "type": "string" }"#,
-            r#""view": { "type": "string", "enum": ["overdraw", "wireframe", "draw_id", "depth", "nan"] }"#,
-            r#""at_draw": { "type": "integer", "description": "wireframe, depth, nan: as it stood after this event. Default: the end of the frame." }"#,
-            r#""target": { "type": "string", "description": "draw_id, depth, nan: a texture the frame drew to (tex_4) or a framebuffer (fbo_1). Default: the canvas." }"#,
-            r#""x": { "type": "integer", "description": "depth: with y, the exact depth at this pixel." }"#,
+            r#""view": { "type": "string", "enum": ["overdraw", "wireframe", "draw_id", "depth", "stencil", "mip", "nan"] }"#,
+            r#""at_draw": { "type": "integer", "description": "wireframe, depth, stencil, mip, nan: as it stood after this event. Default: the end of the frame." }"#,
+            r#""target": { "type": "string", "description": "draw_id, depth, stencil, mip, nan: a texture the frame drew to (tex_4) or a framebuffer (fbo_1). Default: the canvas." }"#,
+            r#""texture": { "type": "string", "description": "mip: colour the levels of this texture alone (tex_3). Default: every texture that has mipmaps." }"#,
+            r#""x": { "type": "integer", "description": "depth, stencil: with y, the exact value at this pixel." }"#,
             r#""y": { "type": "integer" }"#,
             session!(),
         ),
@@ -887,8 +888,8 @@ Not built:
     some other application has the keyboard, and the browser's own pointer lock (a shim
     stands in: launch(pointer_lock: \"shim\")).
   - Analysis, beyond what is built (pixel history, compare, lint, shader_analysis, the
-    overdraw, wireframe, draw_id, depth and nan views, profile, geometry): stencil and mip
-    views, and all of these but compare, lint and shader_analysis for WebGPU.
+    overdraw, wireframe, draw_id, depth, stencil, mip and nan views, profile, geometry):
+    all of these but compare, lint and shader_analysis for WebGPU.
   - Live patching beyond what is built: debug views on the live page, a solid-colour mode
     for draws, substituting a texture from a file, patches that survive a reload; and for
     WebGPU, uniforms by name, filters by event number or texture, and draws in render bundles.

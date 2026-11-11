@@ -665,7 +665,95 @@ describe('views of a capture', () =>
         assert.deepEqual(found.json.data.box, { x: 0, y: 0, w: 80, h: 120 });
         assert.deepEqual(readFileSync(found.json.images[0].view).subarray(0, 4), PNG);
 
-        assert.match((await scanline('view', capture, 'nope', '--session', session)).out, /Views are overdraw, wireframe, draw_id, depth and nan/);
+        assert.match((await scanline('view', capture, 'nope', '--session', session)).out, /Views are overdraw, wireframe, draw_id, depth, stencil, mip and nan/);
+    });
+
+    test('the stencil view reads the buffer back, value by value', async () =>
+    {
+        const launched = await scanline('launch', server.url('fixtures/history/views.html'), '--headless', '--paused');
+        const session = /Launched (ses_\d+)/.exec(launched.out)?.[1];
+
+        await scanline('step', 3, '--session', session);
+
+        const capture = /^(cap_\d+):/m.exec((await scanline('capture', '--session', session)).out)?.[1];
+
+        // Square A writes 5, square B adds 1: 6 where they overlap. Worked out by hand in the fixture.
+        const end = await scanline('view', capture, 'stencil', '--x', 100, '--y', 100, '--session', session, '--json');
+
+        assert.equal(end.code, 0, end.out);
+        assert.deepEqual(end.json.data.values, [
+            { value: 0, pixels: 58400, box: { x: 0, y: 0, w: 320, h: 240 } },
+            { value: 1, pixels: 8400, box: { x: 80, y: 80, w: 100, h: 100 } },
+            { value: 5, pixels: 8400, box: { x: 20, y: 20, w: 100, h: 100 } },
+            { value: 6, pixels: 1600, box: { x: 80, y: 80, w: 40, h: 40 } }
+        ]);
+        assert.deepEqual(end.json.data.stencil_at, { x: 100, y: 100, value: 6 });
+        assert.match(end.json.summary, / {4}6 \(0x06\) {2}1600 px, 2\.1%, within x 80 y 80 40×40/);
+        assert.deepEqual(readFileSync(end.json.images[0].view).subarray(0, 4), PNG);
+
+        // After the first square alone, before the second has added to it.
+        const early = await scanline('view', capture, 'stencil', '--at_draw', 1, '--x', 100, '--y', 100, '--session', session, '--json');
+
+        assert.deepEqual(early.json.data.values.map((entry) => [entry.value, entry.pixels]), [[0, 66800], [5, 10000]]);
+        assert.equal(early.json.data.stencil_at.value, 5);
+
+        // After the clear, nothing.
+        const cleared = await scanline('view', capture, 'stencil', '--at_draw', 0, '--session', session);
+
+        assert.match(cleared.out, /Every pixel holds 0: nothing has written the stencil buffer since it was cleared/);
+
+        // A page whose canvas has no stencil buffer is told so.
+        await scanline('close', '--session', session);
+
+        const other = await captured('b00');
+        const none = await scanline('view', other.capture, 'stencil', '--session', other.session);
+
+        assert.equal(none.code, 1);
+        assert.match(none.out, /That target has no stencil buffer/);
+    });
+
+    test('the mip view shows which level each pixel sampled', async () =>
+    {
+        const launched = await scanline('launch', server.url('fixtures/history/views.html'), '--headless', '--paused');
+        const session = /Launched (ses_\d+)/.exec(launched.out)?.[1];
+
+        await scanline('step', 3, '--session', session);
+
+        const capture = /^(cap_\d+):/m.exec((await scanline('capture', '--session', session)).out)?.[1];
+
+        // One texture with a full chain, drawn at 64, 16 and 8 pixels across: levels 0, 2 and 3.
+        const all = await scanline('view', capture, 'mip', '--session', session, '--json');
+
+        assert.equal(all.code, 0, all.out);
+        assert.deepEqual(all.json.data.textures, ['tex_1']);
+        assert.deepEqual(all.json.data.levels, [{ level: 0, pixels: 4096 }, { level: 2, pixels: 256 }, { level: 3, pixels: 64 }]);
+        assert.match(all.json.summary, /with the mip levels of tex_1 \(64×64, 7 levels\) drawn as flat colours/);
+        assert.match(all.json.summary, /level 2 \(yellow\) {2}256 px/);
+        assert.deepEqual(readFileSync(all.json.images[0].view).subarray(0, 4), PNG);
+
+        // The texture without mipmaps is left alone unless it is named, and then has its one level.
+        const one = await scanline('view', capture, 'mip', '--texture', 'tex_2', '--session', session, '--json');
+
+        assert.deepEqual(one.json.data.textures, ['tex_2']);
+        assert.deepEqual(one.json.data.levels, [{ level: 0, pixels: 1024 }]);
+
+        // Before the smallest square is drawn, its level is not there.
+        const early = await scanline('view', capture, 'mip', '--at_draw', 4, '--session', session, '--json');
+
+        assert.deepEqual(early.json.data.levels, [{ level: 0, pixels: 4096 }, { level: 2, pixels: 256 }]);
+
+        const wrong = await scanline('view', capture, 'mip', '--texture', 'tex_99', '--session', session);
+
+        assert.equal(wrong.code, 1);
+        assert.match(wrong.out, /"tex_99" is not a texture in cap_\d+/);
+
+        // A frame with no mipmapped texture says so, and what that means.
+        await scanline('close', '--session', session);
+
+        const flat = await captured('b02');
+        const none = await scanline('view', flat.capture, 'mip', '--session', flat.session);
+
+        assert.match(none.out, /no texture the frame uses has more than one mip level, so every sample reads level 0/);
     });
 
     test('wireframe draws the frame as outlines', async () =>
@@ -688,7 +776,7 @@ describe('views of a capture', () =>
         const unknown = await scanline('view', capture, 'x-ray', '--session', session);
 
         assert.equal(unknown.code, 1);
-        assert.match(unknown.out, /There is no "x-ray" view\. Views are overdraw, wireframe, draw_id, depth and nan\./);
+        assert.match(unknown.out, /There is no "x-ray" view\. Views are overdraw, wireframe, draw_id, depth, stencil, mip and nan\./);
     });
 });
 
