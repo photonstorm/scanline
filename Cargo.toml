@@ -15,6 +15,7 @@ version = "0.0.1"
 edition = "2024"
 rust-version = "1.90"
 publish = false
+license = "PolyForm-Shield-1.0.0"
 
 [workspace.dependencies]
 anyhow = "1"

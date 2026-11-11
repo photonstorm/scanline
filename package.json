@@ -2,6 +2,7 @@
   "name": "scanline",
   "version": "0.0.1",
   "private": true,
+  "license": "PolyForm-Shield-1.0.0",
   "description": "A browser for debugging WebGL and WebGPU rendering, driven by an agent and shared with a person.",
   "type": "module",
   "engines": {

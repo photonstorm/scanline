@@ -60,7 +60,7 @@ Every milestone of the build plan up to 1.0 has been worked through on macOS (Ap
 - Linux. A WebKit or Firefox mode. WebXR. A single window that holds both the game and the strip.
 - Signed and notarised installers, and updates: these need the maintainer's Apple Developer identity, a code-signing certificate for Windows, and somewhere to publish releases. The packaging script has the steps and they have not been run.
 
-It has been run on two machines, each with the installed Google Chrome 157: a Mac (Apple silicon, where the browser draws through Metal) and a PC (Windows 11, x64, an NVIDIA GPU, where it draws through Direct3D). Most runs were headless; sessions with a visible window have been checked by hand for the Debug key and the flight recorder, and the rest of what needs eyes is listed in [docs/BY-HAND.md](docs/BY-HAND.md). No licence has been chosen for the code yet.
+It has been run on two machines, each with the installed Google Chrome 157: a Mac (Apple silicon, where the browser draws through Metal) and a PC (Windows 11, x64, an NVIDIA GPU, where it draws through Direct3D). Most runs were headless; sessions with a visible window have been checked by hand for the Debug key and the flight recorder, and the rest of what needs eyes is listed in [docs/BY-HAND.md](docs/BY-HAND.md).
 
 ## Requirements
 
@@ -270,6 +270,16 @@ npm test
 That builds the probe and the replay page, checks their types, runs the WGSL reader's tests and the probe's browser tests (about a minute), the planted-bug checks, the Rust unit tests, the end-to-end tests of the binary, the tests of what Scanline says about each planted bug, the analysis of a WebGPU capture, the slow-frame journey, the page protocol and engine adapters, captures as files and the tiers, and the skills, browser installer and plugin files (about 10 to 60 s each). The browser tests launch headless Chromium with throwaway profiles. The parts can be run alone: `npm run test:wgsl`, `npm run test:probe`, `npm run test:bugs`, `cargo test`, `npm run test:e2e`, `npm run test:findings`, `npm run test:webgpu`, `npm run test:journeys`, `npm run test:protocol`, `npm run test:security`, `npm run test:package`.
 
 After changing `probe/tools/method-table.mjs`, run `npm run gen:hooks`. `node spikes/s5-replay.mjs` checks that captured frames replay to identical images, `node spikes/s9-overhead.mjs` measures what the hooks cost per call, and `node spikes/m2-verify.mjs` checks the WebGL state mirror against the context after 1,000 frames on every WebGL page.
+
+## Licence
+
+Scanline is source-available under the [PolyForm Shield License 1.0.0](LICENSE.md). In short, and the licence's own words are what count:
+
+- You may use it for anything, at work included: debugging a game you sell is fine.
+- You may read it, change it, and pass it and your changes on, with the licence and its notice.
+- You may not provide a product that competes with Scanline, whether you charge for it or not. That covers packaging Scanline, or something made from it, into a product of your own.
+
+If you want to do what the licence does not allow, ask the author for a licence that does. It is not an open-source licence as the Open Source Initiative defines one, because it restricts that one use.
 
 ## The specification
 

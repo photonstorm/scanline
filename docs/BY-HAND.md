@@ -252,9 +252,11 @@ Work through "The control strip", "The viewer" and "Send to agent" above as writ
 
 ## Yours to decide
 
-These are not tests. They are choices that were not mine to make, and each is a small edit. One is still open.
+These are not tests. They are choices that were not mine to make, and each is a small edit. Two are still open.
 
-- **A licence.** Open, and the only choice still open. The repository has none, which in law means nobody else may copy, change or pass on the code, whatever they can see on GitHub. The owner wants the source open to read, change and use, and does not want anyone to package it and charge for it without a licence from him. That rules out MIT and the other open-source licences, all of which allow selling; it points at a source-available licence, and which one is his to choose. Once chosen it is a `LICENSE` file and a `license` field in `packages/scanline-hooks/package.json`, `.claude-plugin/plugin.json` and `Cargo.toml`, and the README should say "source-available", not "open source".
+- **A licence.** Decided on 11 November 2026: the PolyForm Shield License 1.0.0 (`LICENSE.md`, the official text unchanged under a notice of copyright). Anyone may use Scanline for anything, change it and pass it on, but may not provide a product that competes with it, paid or free; someone who wants to must come to the owner. It is named in `Cargo.toml`, the two `package.json` files and the plugin manifest, and a release carries it. Scanline is "source-available", not "open source".
+- **Who holds the copyright.** Open. `LICENSE.md` says "Copyright (c) 2026 Richard Davey", from the name on the commits. If a company should hold it, that one line is the edit.
+- **Contributions.** Open. To sell someone a licence that allows what Shield forbids, the owner needs the right to license other people's contributions that way. Until there is a contributor agreement saying so, a pull request from outside is best not merged. The small package pages import, `packages/scanline-hooks`, is under the same licence: a game that bundles it does not compete with Scanline, so it is allowed, but a permissive licence for that one package would spare anyone asking.
 - **The product's name.** Decided on 11 November 2026: Scanline, for the way a raster screen draws a picture. It is no longer a working name.
 - **Who the plugin is by.** Decided on 11 November 2026: the owner. `.claude-plugin/plugin.json` and `marketplace.json` name him as author and owner. (An organisation's name there instead is a one-word edit in each.)
 - **Where releases live.** Decided: GitHub Releases on this repository, for now. Nothing publishes there yet, and updates are still not built: `npm run package` makes the archive, and putting it up is by hand.

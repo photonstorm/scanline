@@ -21,7 +21,7 @@ These are the owner's standing instructions. They were given in conversation on 
 - **Commit and push to `main` without asking**, as each piece of work is finished and tested. Only a deployment needs the owner.
 - **Carry on without stopping to ask.** Work through the list below. Decide the small things yourself, including overhead budgets.
 - **What you cannot check yourself goes in `docs/BY-HAND.md`**, as a step for a person with what should happen. What differs from the specification goes in `docs/DEPARTURES.md`, with why.
-- **Documentation is in plain British English.** No licence has been chosen: do not add one.
+- **Documentation is in plain British English.** The licence is the PolyForm Shield License 1.0.0 (`LICENSE.md`), chosen by the owner on 11 November 2026: do not change it, and do not call Scanline "open source", which that licence is not.
 - **Ask before fetching code from outside.** On the Mac, `npm install --save-dev playcanvas` and the Chrome for Testing download were both left for the owner. On a new machine the first `npm install` and `cargo build` download every dependency, which needs the owner's go-ahead there. (On the PC the owner gave it, for what the lock files name.)
 - **Keep the owner's name, email and project names out of requests to outside services.**
 - **A test run must not take over the machine.** Run the suite at low priority, one run at a time.
@@ -163,5 +163,5 @@ Each is described where it bites, in `scanline help limits` and in `DEPARTURES.m
 In `BY-HAND.md`, and not something an agent can do:
 
 - Look at what nobody has seen on a screen: the control strip, the viewer, "Send to agent", pointer lock by a real click, a real F9 press from another application (made on the Mac, not yet on the PC), Xcode attaching to the native-capture profile, and PIX or RenderDoc doing the same on the PC.
-- Decide: a licence. (The name is Scanline, the plugin is by the owner, releases go on GitHub Releases, and the version is 1.0 at release: `BY-HAND.md`, "Yours to decide".)
+- Decide: who holds the copyright, and whether contributors must sign anything (`BY-HAND.md`, "Yours to decide", which also records what is decided: the name, the licence, the plugin's author, where releases go, the version).
 - Run or allow: the pinned Chrome for Testing download on the Mac (done on the PC), the Claude Code plugin's first install, and, once it has been seen to work, signing.

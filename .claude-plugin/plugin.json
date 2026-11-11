@@ -3,6 +3,7 @@
     "version": "0.0.1",
     "description": "Debug WebGL and WebGPU rendering in a browser the agent controls: step frames, read exact pixels, capture a frame and take it apart, patch the running page, and work with the person at the keyboard.",
     "author": { "name": "Richard Davey" },
+    "license": "PolyForm-Shield-1.0.0",
     "repository": "https://github.com/photonstorm/scanline",
     "keywords": ["webgl", "webgpu", "rendering", "debugger", "graphics", "games"],
     "mcpServers": {

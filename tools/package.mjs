@@ -4,7 +4,7 @@
 //   node tools/package.mjs --check    only check that the versions agree; build nothing
 //
 // The archive holds the one binary (the probe, the replay page and the skills are inside
-// it), the skills as folders, the Claude Code plugin files, the README and an install
+// it), the skills as folders, the Claude Code plugin files, the README, the licence and an install
 // script: install.sh, or install.ps1 on Windows.
 //
 // Signing on Windows needs the maintainer's code-signing certificate, and is not written:
@@ -105,6 +105,9 @@ execFileSync(binary, ['skill', '--to', join(stage, 'skills')], { stdio: 'ignore'
 cpSync(join(root, '.claude-plugin'), join(stage, '.claude-plugin'), { recursive: true });
 cpSync(join(root, 'README.md'), join(stage, 'README.md'));
 cpSync(join(root, 'docs', 'SECURITY.md'), join(stage, 'SECURITY.md'));
+
+// The licence asks that whoever gets a copy gets its terms and its notice with it.
+cpSync(join(root, 'LICENSE.md'), join(stage, 'LICENSE.md'));
 
 if (windows)
 {
