@@ -44,6 +44,11 @@ export interface Hub
     multiDraw: (record: Rec, mode: number, drawCount: number) => void;
 }
 
+// The topology of the WebGPU pipeline a render pass last set, as the WebGL mode it
+// corresponds to (4 for a triangle list, 5 for a strip), so that triangles can be counted
+// for a draw that does not say. Set by the pipeline tracker.
+export const gpuTopology = { mode: -1 };
+
 export function newRecord (): Rec
 {
     const record: any = { rec: null, gate: null, after: null, before: null, keptAtCalls: -1, x: null };
@@ -103,6 +108,11 @@ export const hub: Hub = {
     draw (record: Rec, mode: number, count: number, instances: number): void
     {
         const copies = instances > 0 ? instances : (instances === 0 ? 0 : 1);
+
+        if (mode === -1)
+        {
+            mode = gpuTopology.mode;
+        }
 
         record.draws++;
         record.instances += copies;

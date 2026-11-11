@@ -1608,14 +1608,19 @@ pub async fn stats(session: &Arc<Session>, params: &Value) -> Result<Value> {
         passes.sort_by(|a, b| b["mean"].as_f64().unwrap_or(0.0).total_cmp(&a["mean"].as_f64().unwrap_or(0.0)));
 
         for pass in passes.iter().take(8) {
-            lines.push(format!("    {} ms  «{}»", number(&pass["mean"], 3), page_text(pass["label"].as_str().unwrap_or(""), 60)));
+            // A WebGPU pass is named by the page; a WebGL one by Scanline, for where it draws.
+            lines.push(if gpu["timestamps"] == true {
+                format!("    {} ms  «{}»", number(&pass["mean"], 3), page_text(pass["label"].as_str().unwrap_or(""), 60))
+            } else {
+                format!("    {} ms  {}", number(&pass["mean"], 3), page_text(pass["label"].as_str().unwrap_or(""), 60))
+            });
         }
 
         if passes.len() > 8 {
             lines.push(format!("    … and {} more passes.", passes.len() - 8));
         }
 
-        if !passes.is_empty() && session.profile.name() != "deep" {
+        if !passes.is_empty() && session.profile.name() != "deep" && gpu["timestamps"] == true {
             lines.push("    The browser coarsens WebGPU timestamps outside the deep profile (steps of about 0.07 ms here); launch with profile: \"deep\" for fine ones.".into());
         }
     } else if session.unmodified {
@@ -1644,7 +1649,10 @@ pub async fn stats(session: &Arc<Session>, params: &Value) -> Result<Value> {
         }
     }
 
-    lines.push("  Triangle counts cover WebGL only; WebGPU topology is known once the registry is built. Stepped frames show the display's interval, not the page's own pace.".into());
+    lines.push(
+        "  Triangle counts leave out indirect draws and what WebGPU render bundles draw. Stepped frames show the display's interval, not the page's own pace."
+            .into(),
+    );
 
     Ok(result(lines.join("\n"), figures))
 }

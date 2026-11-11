@@ -54,7 +54,9 @@ Decided 10 November 2026, replacing the percentages in the PRD (section 9.1). Th
 | Every texture can be previewed | **Not met.** Colour textures in 8-bit, float and integer formats are read back on both APIs. Compressed, depth, stencil and multisampled textures are not: they need a sampling pass or a decoder, neither built. WebGL 1 buffers cannot be read at all (the API has no call for it). |
 | Shadow state verifies after 1,000 frames | Met: no drift on eight WebGL pages (raw WebGL 1 and 2, a worker, three.js, PixiJS, Phaser, Babylon.js). `node spikes/m2-verify.mjs`. |
 
-Also from the milestone's list, not built: WGSL reflection (the plan's `scanline-shader` crate and `naga`), the real memory of the GPU process, and GPU time per pass on WebGL (queries cannot nest, so it needs one query per framebuffer span). WebGL shader reflection comes from the driver (active attributes and uniforms), which needs no parser.
+Also from the milestone's list, and built later: WGSL reflection (not the plan's `scanline-shader` crate and `naga`: a reader of declarations in TypeScript, `shared/wgsl.ts`, because it has to run in the page), the real memory of the GPU process (milestone 5), and GPU time per pass on WebGL. Queries cannot nest, so a WebGL frame is timed in spans: the frame's query ends and another begins whenever the context starts drawing to another framebuffer, if it drew anything to the last one. `stats` lists them as `pass 0 → fbo_1`, `pass 1 → canvas`; a frame drawn in one go lists none. At most 24 spans a frame. WebGL shader reflection comes from the driver (active attributes and uniforms), which needs no parser.
+
+WebGPU triangle counts are built too: the probe notes the topology of the pipeline each render pass last set, and counts from that. Indirect draws, and what a render bundle draws, are left out.
 
 ## Milestone 3 against its exit criteria
 

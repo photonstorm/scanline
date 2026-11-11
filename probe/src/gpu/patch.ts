@@ -27,7 +27,7 @@
 // browser has answered, and if it says no, the draw is issued as the page made it.
 
 import * as wgsl from '../../../shared/wgsl';
-import { hub, type Rec } from '../hooks/hub';
+import { gpuTopology, hub, type Rec } from '../hooks/hub';
 import { natives } from '../hooks/install';
 import { G } from '../natives';
 import { all, deviceFor, entryOf, find, type Entry } from '../registry';
@@ -1061,6 +1061,23 @@ function uniformNamed (entry: Entry, name: string): { group: number; binding: nu
         : 'No uniform buffer could be read from this pipeline\'s shaders.');
 }
 
+// A pipeline's topology as the WebGL mode it corresponds to, worked out once.
+const topologies = new G.WeakMap() as WeakMap<object, number>;
+const MODES: Record<string, number> = { 'point-list': 0, 'line-list': 1, 'line-strip': 3, 'triangle-list': 4, 'triangle-strip': 5 };
+
+function topologyOf (pipeline: object): number
+{
+    let mode = topologies.get(pipeline);
+
+    if (mode === undefined)
+    {
+        mode = MODES[G.String(entryOf(pipeline)?.p.descriptor?.primitive?.topology ?? 'triangle-list')] ?? -1;
+        topologies.set(pipeline, mode);
+    }
+
+    return mode;
+}
+
 // ---- What a pass has set, followed while a patch is in force ----
 
 type Post = (record: Rec, self: any, result: any, ...args: any[]) => void;
@@ -1069,6 +1086,9 @@ export const gpuPatchHandlers: Record<string, Post> = {
 
     'GPURenderPassEncoder.setPipeline' (_c, pass, _result, pipeline)
     {
+        // Always: what the draws that follow are made of, for the frame's triangle count.
+        gpuTopology.mode = topologyOf(pipeline);
+
         if (patches.length > 0)
         {
             stateOf(pass).pipeline = pipeline;

@@ -523,6 +523,9 @@ function setStencil (t: GlTracker, face: number, apply: (side: StencilSide) => v
 // Set while a live patch needs to know of every uniform the page sets (patch.ts).
 export const uniformWatch: { set: null | ((slot: UniformSlot) => void) } = { set: null };
 
+// Set while frames are timed (timing.ts): called when a context starts drawing somewhere else.
+export const targetWatch: { changed: null | ((tracker: GlTracker) => void) } = { changed: null };
+
 // Set while a live view holds the clear colour (patch.ts): called when the page has set its own.
 export const clearWatch: { set: null | ((tracker: GlTracker) => void) } = { set: null };
 
@@ -730,7 +733,14 @@ const handlers: Record<string, H> = {
 
         if (target === FRAMEBUFFER || target === DRAW_FRAMEBUFFER)
         {
+            const moved = t.drawFramebuffer !== framebuffer;
+
             t.drawFramebuffer = framebuffer;
+
+            if (moved && targetWatch.changed !== null)
+            {
+                targetWatch.changed(t);
+            }
         }
 
         if (target === FRAMEBUFFER || target === READ_FRAMEBUFFER)

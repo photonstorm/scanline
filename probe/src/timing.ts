@@ -12,10 +12,11 @@ import { allContexts, type ContextInfo } from './contexts';
 import { hub } from './hooks/hub';
 import { recordIntercepted } from './gpu/rec';
 import { gpuPassBegan, gpuPassGiven } from './gpu/patch';
+import { targetWatch, trackerFor, type GlTracker } from './gl/tracker';
 import { noteTargets } from './gpu/tracker';
 import { natives, type Handlers } from './hooks/install';
 import { declare } from './mods';
-import { noteDevice } from './registry';
+import { entryOf, noteDevice } from './registry';
 import { G, type Fn } from './natives';
 import type { Tag } from './tag';
 import { gpuEncoderTag } from './tags.generated';
@@ -26,6 +27,8 @@ export interface GpuSample
     frame: number;
     ms: number;
     passes: Array<{ label: string; ms: number }> | null;
+    // Measured with WebGPU timestamps, not a WebGL timer query.
+    timestamps?: boolean;
 }
 
 const SAMPLES = 600;
@@ -70,15 +73,72 @@ const RESULT = 0x8866;
 const RESULT_AVAILABLE = 0x8867;
 const PENDING_LIMIT = 6;
 
+// A frame is timed in spans: a new query begins whenever the context starts drawing to
+// another framebuffer, so each span is one pass. At most this many a frame; whatever
+// comes after is counted with the last.
+const MAX_SPANS = 24;
+
 interface GlTimer
 {
     info: ContextInfo;
     extension: any;
     current: object | null;
-    pending: Array<{ query: object; frame: number }>;
+    pending: Array<{ query: object; frame: number; label: string; last: boolean }>;
     stopped: boolean;
     // The context's draw count when the last frame began: a context that is not drawing is not timed.
     draws: number;
+    // The span under way: what it draws to, which span of the frame it is, and how much
+    // the context had drawn when it began.
+    label: string;
+    span: number;
+    work: number;
+    // Frames whose spans are not all back yet, and the one being put together.
+    frames: number;
+    sum: { frame: number; ms: number; passes: Array<{ label: string; ms: number }>; bad: boolean };
+}
+
+function targetOf (info: ContextInfo, span: number): string
+{
+    const bound = trackerFor(info)?.drawFramebuffer;
+    const id = bound ? entryOf(bound)?.id : undefined;
+
+    return `pass ${span} → ${bound ? (id === undefined ? 'a framebuffer' : `fbo_${id}`) : 'canvas'}`;
+}
+
+// The context has bound another framebuffer to draw to. If it drew anything to the last
+// one, that span ends here and another begins; if not, the span is simply the new target's.
+function glTargetChanged (t: GlTracker): void
+{
+    const timer = glTimers.get(t.info.ctx);
+
+    if (!timer || timer.stopped || !timer.current)
+    {
+        return;
+    }
+
+    const work = t.info.record.draws + t.info.record.clears;
+
+    if (work === timer.work)
+    {
+        timer.label = targetOf(t.info, timer.span);
+
+        return;
+    }
+
+    if (timer.span + 1 >= MAX_SPANS)
+    {
+        return;
+    }
+
+    const calls = queryCalls(timer);
+
+    calls.end();
+    timer.pending.push({ query: timer.current, frame: currentFrame(), label: timer.label, last: false });
+    timer.current = calls.create();
+    calls.begin(timer.current!);
+    timer.span++;
+    timer.work = work;
+    timer.label = targetOf(t.info, timer.span);
 }
 
 const glTimers = new WeakMap<object, GlTimer>();
@@ -123,7 +183,7 @@ function glTimer (info: ContextInfo): GlTimer | null
         const name = info.api === 'webgl2' ? 'EXT_disjoint_timer_query_webgl2' : 'EXT_disjoint_timer_query';
         const extension = info.natives.getExtension?.call(info.ctx, name) ?? null;
 
-        timer = { info, extension, current: null, pending: [], stopped: extension === null, draws: 0 };
+        timer = { info, extension, current: null, pending: [], stopped: extension === null, draws: 0, label: '', span: 0, work: 0, frames: 0, sum: { frame: -1, ms: 0, passes: [], bad: false } };
         glTimers.set(info.ctx, timer);
 
         if (extension === null)
@@ -166,7 +226,7 @@ function glFrameBegin (): void
         }
 
         // If results are not coming back, stop asking rather than pile queries up.
-        if (!timer || timer.current || timer.pending.length >= PENDING_LIMIT)
+        if (!timer || timer.current || timer.frames >= PENDING_LIMIT)
         {
             continue;
         }
@@ -175,6 +235,10 @@ function glFrameBegin (): void
 
         timer.current = calls.create();
         calls.begin(timer.current!);
+        timer.span = 0;
+        timer.work = info.record.draws + info.record.clears;
+        timer.label = targetOf(info, 0);
+        targetWatch.changed = glTargetChanged;
         glActive = true;
     }
 }
@@ -195,22 +259,49 @@ function glFrameEnd (): void
         if (timer.current)
         {
             calls.end();
-            timer.pending.push({ query: timer.current, frame: currentFrame() });
+            timer.pending.push({ query: timer.current, frame: currentFrame(), label: timer.label, last: true });
             timer.current = null;
+            timer.frames++;
         }
 
-        // Results come back in order. Take what has arrived.
+        // Results come back in order. Take what has arrived, and put each frame's spans together.
         while (timer.pending.length && calls.get(timer.pending[0].query, RESULT_AVAILABLE))
         {
-            const { query, frame } = timer.pending.shift()!;
-            const disjoint = info.natives.getParameter.call(info.ctx, GPU_DISJOINT);
+            const { query, frame, label, last } = timer.pending.shift()!;
+            const sum = timer.sum;
 
-            if (!disjoint)
+            if (sum.frame !== frame)
             {
-                record({ frame, ms: calls.get(query, RESULT) / 1e6, passes: null });
+                sum.frame = frame;
+                sum.ms = 0;
+                sum.passes = [];
+                sum.bad = false;
+            }
+
+            if (info.natives.getParameter.call(info.ctx, GPU_DISJOINT))
+            {
+                sum.bad = true;
+            }
+            else
+            {
+                const ms = calls.get(query, RESULT) / 1e6;
+
+                sum.ms += ms;
+                sum.passes.push({ label, ms });
             }
 
             calls.remove(query);
+
+            if (last)
+            {
+                timer.frames--;
+
+                if (!sum.bad)
+                {
+                    // A frame drawn in one go has no passes worth listing.
+                    record({ frame, ms: sum.ms, passes: sum.passes.length > 1 ? sum.passes.slice() : null });
+                }
+            }
         }
     }
 }
@@ -235,7 +326,7 @@ function pageBeginsQuery (gl: object, target: unknown): void
 
             if (info)
             {
-                glTimers.set(gl, { info, extension: null, current: null, pending: [], stopped: true, draws: 0 });
+                glTimers.set(gl, { info, extension: null, current: null, pending: [], stopped: true, draws: 0, label: '', span: 0, work: 0, frames: 0, sum: { frame: -1, ms: 0, passes: [], bad: false } });
             }
         }
 
@@ -251,6 +342,13 @@ function pageBeginsQuery (gl: object, target: unknown): void
         timer.current = null;
     }
 
+    for (const waiting of timer.pending)
+    {
+        calls.remove(waiting.query);
+    }
+
+    timer.pending.length = 0;
+    timer.frames = 0;
     timer.stopped = true;
     notes.set(`gl${timer.info.id}`, `Context ${timer.info.id}: the page uses timer queries itself, and only one can run at a time, so Scanline stopped measuring GPU time there.`);
 }
@@ -434,7 +532,7 @@ function gpuFrameEnd (): void
 
                 if (passes.length)
                 {
-                    record({ frame, ms: total, passes });
+                    record({ frame, ms: total, passes, timestamps: true });
                 }
             }, () =>
             {

@@ -121,6 +121,8 @@ function gpuReport (first: number): Record<string, unknown>
         frames: measured.length,
         ms: summarise(measured.map((sample) => sample.ms)),
         passes: [...passes].map(([label, times]) => ({ label, frames: times.length, ...summarise(times) })),
+        // WebGPU's times are timestamps, which the browser may coarsen; WebGL's are timer queries.
+        timestamps: measured.some((sample) => sample.timestamps === true),
         notes: timingNotes()
     };
 }

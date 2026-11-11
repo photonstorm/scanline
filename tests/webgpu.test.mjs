@@ -410,6 +410,33 @@ describe('GPU time by draw of a WebGPU capture', () =>
     });
 });
 
+describe('frame statistics', () =>
+{
+    test('triangles are counted on WebGPU, from each pipeline\'s topology', async () =>
+    {
+        await scanline('launch', server.url('fixtures/history/analysis-webgpu.html'), '--headless', '--paused');
+        await scanline('step', 10);
+
+        // Three single triangles to the float texture, and five quads of two to the canvas.
+        assert.match((await scanline('stats')).out, /Per frame: 8 draws, 8 instances, 13 triangles/);
+    });
+
+    test('a WebGL frame is timed pass by pass', async () =>
+    {
+        await scanline('launch', server.url('fixtures/slow/webgl2.html'), '--headless', '--paused');
+        await scanline('step', 30);
+
+        const stats = await scanline('stats', '--json');
+        const passes = Object.fromEntries(stats.json.data.gpu.passes.map((pass) => [pass.label, pass.mean]));
+
+        // The mask is drawn to a framebuffer, then the scene and the costly shafts to the canvas.
+        assert.deepEqual(Object.keys(passes).sort(), ['pass 0 → fbo_1', 'pass 1 → canvas']);
+        assert.ok(passes['pass 1 → canvas'] > passes['pass 0 → fbo_1'] * 3, JSON.stringify(passes));
+        assert.match(stats.json.summary, /ms {2}pass 1 → canvas\n/);
+        assert.doesNotMatch(stats.json.summary, /coarsens WebGPU timestamps/);
+    });
+});
+
 describe('live patches on a WebGPU page', () =>
 {
     const pixel = async (x, y) => (await scanline('pixels', x, y, '--json')).json.data.rgba8;

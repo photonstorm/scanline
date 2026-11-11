@@ -177,7 +177,7 @@ pub const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "stats",
-        description: "Frame pacing and per-frame counts over recent frames: frame interval, CPU time in frame callbacks and GPU time (mean, 95th percentile, worst), GPU time per pass on WebGPU, draws, instances, triangles, API calls, shader compiles.",
+        description: "Frame pacing and per-frame counts over recent frames: frame interval, CPU time in frame callbacks and GPU time (mean, 95th percentile, worst), GPU time per pass, draws, instances, triangles, API calls, shader compiles.",
         schema: schema!("[]", session!(), context!(), r#""window_frames": { "type": "integer", "description": "Default 120, at most 600." }"#),
         read_only: true,
     },
@@ -873,7 +873,8 @@ Built: launch, time control, input, canvas and texture readback (screenshot, pix
 screenshot, console and errors by frame, frame statistics, events, the live inventory of GPU
 objects with their creation sites, shader sources and logs, uniform values, WebGL state,
 buffer contents, memory estimates and snapshot diffs, region statistics, image diff, GPU time
-per frame (WebGL) and per pass (WebGPU).
+per frame and per pass (WebGPU by the page's passes; WebGL by each run of draws to one
+framebuffer).
 
 Frame capture and replay for WebGL 1, WebGL 2 and WebGPU: the draw list with what each
 event changed, the state at each draw, the target at any draw, which draw produced a pixel,
@@ -896,7 +897,6 @@ Tiers that limit what a client may do: help(topic: \"security\"). Skills, the re
 each kind of job: help(topic: \"skills\").
 
 Not built:
-  - GPU time per pass on WebGL.
   - Hand-off to a person, beyond what is built (request_human, the control strip, the Debug
     key, the flight recorder, runs, one owner of the input): a Debug hotkey that works when
     some other application has the keyboard, and the browser's own pointer lock (a shim
@@ -922,7 +922,8 @@ Known limits
     for a fresh launch) and unmodified mode is off.
   - Pointer lock and fullscreen have not been verified.
   - Windows is not supported yet. macOS only.
-  - Draw and triangle counts are per frame as issued; WebGPU triangle counts are not known yet.
+  - Draw and triangle counts are per frame as issued. Triangle counts leave out indirect
+    draws and what WebGPU render bundles draw.
   - Texture readback: compressed, depth and stencil formats are not read yet, nor multisampled
     textures. A capture that uses one replays it empty, and its replay check says so.
   - pixel_source lists the events that changed a pixel; pixel_history adds the draws that
