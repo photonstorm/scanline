@@ -67,10 +67,13 @@ async function measure (api, draws, mode)
 const rows = [];
 
 const only = process.argv.find((arg) => arg.startsWith('--api='))?.slice(6);
+const sizes = (process.argv.find((arg) => arg.startsWith('--draws='))?.slice(8) ?? '2000,10000').split(',').map(Number);
+// --modes=none,off,observe leaves the flight recorder out, for probes built before it existed.
+const modes = (process.argv.find((arg) => arg.startsWith('--modes='))?.slice(8) ?? 'none,off,observe,record').split(',');
 
 for (const api of ['webgl2', 'webgpu'].filter((name) => !only || name === only))
 {
-    for (const draws of [2000, 10000])
+    for (const draws of sizes)
     {
         // Interleave the modes across rounds so drift in the machine's load hits all three alike.
         const times = { none: [], off: [], observe: [], record: [] };
@@ -79,7 +82,7 @@ for (const api of ['webgl2', 'webgpu'].filter((name) => !only || name === only))
 
         for (let round = 0; round < rounds; round++)
         {
-            for (const mode of ['none', 'off', 'observe', 'record'])
+            for (const mode of modes)
             {
                 const result = await measure(api, draws, mode);
 
@@ -96,7 +99,7 @@ for (const api of ['webgl2', 'webgpu'].filter((name) => !only || name === only))
         const base = median(times.none);
         const off = median(times.off);
         const observe = median(times.observe);
-        const record = median(times.record);
+        const record = times.record.length ? median(times.record) : NaN;
 
         rows.push({
             api,

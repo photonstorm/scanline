@@ -188,7 +188,26 @@ Built, for WebGL: `patch_state`, `patch_draws`, `patch_uniform`, `patch_shader`,
 | Patches survive a reload when asked. | They do not. | They live in the page's probe. |
 | A filter selects draws. | By program, by a texture bound, and by event number, numbered as a capture numbers events (clears and blits counted), so a number from `draw_list` can be used as it is. | |
 
-The gate and the uniform watch were added to the generated wrappers and the WebGL tracker; the overhead spike has not been run again since.
+### Overhead, measured again on 11 November 2026
+
+The gate and the uniform watch were added to the generated wrappers and the WebGL tracker, so `node spikes/s9-overhead.mjs` was run again. The result is not what the budgets ask for, and not fully understood.
+
+On the 2,000-draw WebGL 2 page (10,002 calls a frame), three rounds each, the probe built from three commits and measured in one sitting:
+
+| Probe as of | `off`, per call | `observe`, per call |
+|---|---|---|
+| Milestone 2 (`cee2b2f`) | 26 ns | 51 ns |
+| Milestone 3 (`ee30344`) | 10 ns | 63 ns |
+| Now | 12 ns | 82 ns |
+
+- The budgets are 5 ns at `off` and 25 ns at `observe`. Both are exceeded.
+- The same build measured 71, 82 and 94 ns in three runs an hour apart, and `off` moved between 10 and 26, so differences of 10 to 15 ns here are noise. The machine was not idle (load average 3.7).
+- Milestone 2's code was recorded at about 17 ns when it was written and measures 51 ns now. Either the machine or the browser differs from then, or that figure was optimistic. The absolute numbers should not be trusted until this is measured on a quiet machine.
+- What does hold: within one sitting, `observe` costs about half as much again as it did at milestone 2.
+- It is not the draw gate or the uniform watch. With either removed the figure stays inside the noise (82 and 100 against 94).
+- The 10,000-draw page gives nonsense (a spread of 1.2 ms between runs with no probe at all), so it is left out.
+
+Not done: finding where the growth since milestone 2 comes from. It wants a profiler on a quiet machine, not more runs of this spike. `--api`, `--draws` and `--modes` were added to the spike to make that easier.
 
 ## WebGPU capture: what it does not do
 
