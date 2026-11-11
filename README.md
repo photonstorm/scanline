@@ -8,7 +8,7 @@ Scanline runs any page in a Chromium it launches and supervises, with instrument
 
 ## Status
 
-Every milestone of the build plan up to 1.0 has been worked through on macOS (Apple silicon). What each one's exit criteria asked for, and where this build falls short of them, is in [docs/DEPARTURES.md](docs/DEPARTURES.md). What only a person at the machine can confirm, and what needs the maintainer's own accounts (signing, a licence, a release host), is in [docs/BY-HAND.md](docs/BY-HAND.md).
+Every milestone of the build plan up to 1.0 has been worked through on macOS (Apple silicon). What each one's exit criteria asked for, and where this build falls short of them, is in [docs/DEPARTURES.md](docs/DEPARTURES.md). What only a person at the machine can confirm, and what needs the maintainer's own accounts (signing, a licence, a release host), is in [docs/BY-HAND.md](docs/BY-HAND.md). What to do next, starting with the Windows build, is in [docs/HANDOVER.md](docs/HANDOVER.md).
 
 **Works**
 

@@ -4,7 +4,7 @@ Scanline is built and tested with no window on screen. These are the things only
 
 ## Where things stand
 
-Every milestone of the build plan up to 1.0 has been worked through on macOS. What is left falls into three kinds, and only the first two need you:
+Every milestone of the build plan up to 1.0 has been worked through on macOS. What comes next, for a person or an agent picking this up on another machine, is in [HANDOVER.md](HANDOVER.md). What is left falls into three kinds, and only the first two need you:
 
 1. **Things to look at.** The sections below. Start with the viewer and the control strip, which nobody has yet seen on a screen with their own eyes.
 2. **Things to decide or supply.** "Yours to decide" near the end: a licence, the name, where releases live, and the Apple Developer identity that signing needs. The pinned browser download and the Claude Code plugin are written and waiting on a first run by you.

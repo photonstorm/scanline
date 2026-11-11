@@ -1,0 +1,8 @@
+# Text files are LF on every machine: tests compare text line by line, and the binary
+# holds the skills, the probe and the replay page as text.
+* text=auto eol=lf
+
+*.png binary
+*.gz binary
+*.zst binary
+*.scanline binary
