@@ -521,6 +521,33 @@ describe('lint and shader analysis', () =>
 
         assert.deepEqual(kept.json.data.shaders.map((shader) => shader.figures), live.json.data.shaders.map((shader) => shader.figures));
 
+        // This page deletes its shaders once they are linked, and a deleted shader cannot be
+        // asked what it was compiled to: the capture has no translation of them.
+        assert.deepEqual(kept.json.data.shaders.map((shader) => shader.translated), [undefined, undefined]);
+
+        // A page that keeps its shaders: the capture holds what the browser compiled each to.
+        const second = /Launched (ses_\d+)/.exec((await scanline('launch', server.url('fixtures/history/views.html'), '--headless', '--paused')).out)?.[1];
+
+        await scanline('step', 3, '--session', second);
+
+        const other = /^(cap_\d+):/m.exec((await scanline('capture', '--session', second)).out)?.[1];
+        const whole = await scanline('shader_analysis', 'prg_1', '--capture', other, '--json');
+        const translated = whole.json.data.shaders.map((shader) => shader.translated);
+
+        assert.equal(translated.length, 2);
+
+        for (const path of translated)
+        {
+            // Metal's shading language on a Mac, GLSL or HLSL elsewhere: a program either way.
+            assert.match(readFileSync(path, 'utf8'), /metal_stdlib|void main\s*\(|float4/);
+        }
+
+        assert.match(whole.json.summary, /What the browser compiled it to \(ANGLE's translation into the graphics driver's own language, \d+ lines\), as it stood when the frame was captured/);
+
+        const column = await scanline('query', other, "select handle, length(translated) > 40 from objects where kind = 'shader'", '--json');
+
+        assert.deepEqual(column.json.data.rows.map((row) => row[1]), [1, 1], column.out);
+
         const wrong = await scanline('shader_analysis', 'tex_1', '--session', session);
 
         assert.equal(wrong.code, 1);

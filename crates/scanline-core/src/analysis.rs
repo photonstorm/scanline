@@ -1184,7 +1184,32 @@ pub async fn shader_analysis(host: &Arc<Host>, params: &Value) -> Result<Value> 
         let figures = read_shader(source);
 
         lines.extend(describe_reading(name, what, &figures));
-        data.push(json!({ "handle": name, "stage": what, "figures": figures }));
+
+        let mut entry = json!({ "handle": name, "stage": what, "figures": figures });
+
+        // What the browser compiled the shader to, where the capture kept it (WebGL: ANGLE's
+        // translation). A capture taken before that was kept has no such column.
+        if let Some(capture) = params["capture"].as_str() {
+            let kept = host
+                .store
+                .query(capture, "SELECT translated FROM objects WHERE handle = ?1 AND translated IS NOT NULL", &[Sql::Text(name.clone())], 1)
+                .ok()
+                .and_then(|rows| rows.rows.first().and_then(|row| row[0].as_str().map(str::to_string)));
+
+            if let Some(translated) = kept {
+                let path = host.store.capture_dir(capture).join(format!("{name}.translated.txt"));
+
+                std::fs::write(&path, &translated).with_context(|| format!("writing {}", path.display()))?;
+                lines.push(format!(
+                    "  What the browser compiled it to (ANGLE's translation into the graphics driver's own language, {} lines), as it stood when the frame was captured: {}",
+                    translated.lines().count(),
+                    path.display()
+                ));
+                entry["translated"] = json!(path);
+            }
+        }
+
+        data.push(entry);
     }
 
     lines.push("These figures are read from the source text: static, not measured. They say what a shader could cost, not what it did.".into());

@@ -1071,6 +1071,7 @@ fn tables(body: &Value, tag: u64, errors: &HashMap<i64, String>, effects: &HashM
             if let Some(map) = detail.as_object_mut() {
                 map.remove("data");
                 map.remove("source");
+                map.remove("translated");
             }
 
             vec![
@@ -1083,6 +1084,7 @@ fn tables(body: &Value, tag: u64, errors: &HashMap<i64, String>, effects: &HashM
                 int(&object["created"]),
                 text(object["source"].as_str().map(str::to_string)),
                 Sql::Text(detail.to_string()),
+                text(object["translated"].as_str().map(str::to_string)),
             ]
         })
         .collect();
@@ -1171,6 +1173,7 @@ fn tables(body: &Value, tag: u64, errors: &HashMap<i64, String>, effects: &HashM
                 "created INTEGER",
                 "source TEXT",
                 "detail TEXT",
+                "translated TEXT",
             ],
             rows: object_rows,
         },

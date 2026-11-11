@@ -681,6 +681,23 @@ async function describe (capture: Capture, entry: Entry): Promise<Record<string,
         case 'shader':
             out.type = p.type;
             out.source = p.source;
+
+            // What the browser compiled the source to (ANGLE's translation), where it will say.
+            if (object && alive(entry) && p.compiles > 0)
+            {
+                try
+                {
+                    const debug = n.getExtension.call(gl, 'WEBGL_debug_shaders');
+                    const translated = debug ? G.String(debug.getTranslatedShaderSource(object) ?? '') : '';
+
+                    if (translated)
+                    {
+                        out.translated = translated;
+                    }
+                }
+                catch { /* a capture is whole without it */ }
+            }
+
             break;
 
         case 'program':

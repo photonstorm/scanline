@@ -1025,7 +1025,8 @@ draws        one row per event (draw, clear or blit), in order
   words), entity_detail (that object as the page or its engine declared it, JSON),
   state (the full state, JSON: large, so name the columns you want rather than select *)
 passes       pass, target, first_draw, last_draw, draws, clears
-objects      handle, kind, id, label, what, bytes, created, source (shaders), detail (JSON)
+objects      handle, kind, id, label, what, bytes, created, source (shaders), detail (JSON),
+             translated (WebGL shaders: what the browser compiled the source to)
 commands     command, method ('gl.bindTexture', 'GPURenderPassEncoder.draw': the owner is part
              of the name), receiver (WebGPU: what the call was made on; '#4' is an encoder
              or pass made during the frame), args (JSON,
