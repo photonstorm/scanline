@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 
 use scanline_store::Sql;
 
-use crate::capture::{LONG, about, describe_event, draw_state, flatten, load_into, plural, rows_as_objects, runs, target_of, the_capture};
+use crate::capture::{LONG, about, describe_event, draw_state, flatten, load_into, plural, replayed, rows_as_objects, runs, target_of, the_capture};
 use crate::commands::page_text;
 use crate::inventory::{gl_name, list};
 use crate::{Host, result};
@@ -116,7 +116,7 @@ fn brief(row: &serde_json::Map<String, Value>) -> String {
 
 /// Two captures against each other: which events one has that the other lacks, which have
 /// moved, which are drawn with different state or values, and how the final pictures differ.
-pub fn compare(host: &Arc<Host>, params: &Value) -> Result<Value> {
+pub async fn compare(host: &Arc<Host>, params: &Value) -> Result<Value> {
     let (Some(a), Some(b)) = (params["a"].as_str(), params["b"].as_str()) else {
         bail!("compare needs a and b: two capture handles, such as a frame that looks wrong and one that looks right.");
     };
@@ -340,11 +340,140 @@ pub fn compare(host: &Arc<Host>, params: &Value) -> Result<Value> {
         _ => lines.push("One of the captures has no final picture on disk, so the pictures were not compared.".into()),
     }
 
+    // What each offscreen target held when the frame ended. These are not kept with a
+    // capture: each is drawn again by replay, so this part needs a session to replay in.
+    if params["targets"].as_bool() != Some(false) {
+        let (targets_a, targets_b) = (offscreen(host, a)?, offscreen(host, b)?);
+        let mut pairs: Vec<(&Offscreen, &Offscreen)> = Vec::new();
+
+        // The same object where both frames have it (two captures of one page); otherwise
+        // the targets of each in the order the frame first drew to them, where they are the same size.
+        for target in &targets_a {
+            if let Some(same) = targets_b.iter().find(|other| other.handle == target.handle) {
+                pairs.push((target, same));
+            }
+        }
+
+        let rest_a: Vec<&Offscreen> = targets_a.iter().filter(|target| !pairs.iter().any(|pair| pair.0.handle == target.handle)).collect();
+        let rest_b: Vec<&Offscreen> = targets_b.iter().filter(|target| !pairs.iter().any(|pair| pair.1.handle == target.handle)).collect();
+
+        for (left, right) in rest_a.iter().zip(rest_b.iter()) {
+            if left.size == right.size {
+                pairs.push((left, right));
+            }
+        }
+
+        if !pairs.is_empty() {
+            let mut rows = Vec::new();
+
+            match host.replayer(params) {
+                Err(_) => lines.push(format!(
+                    "{} they both drew to {} not compared: that needs a session to replay them in. Call launch (any page will do), then compare again.",
+                    plural(pairs.len() as i64, "offscreen target"),
+                    if pairs.len() == 1 { "was" } else { "were" }
+                )),
+                Ok(_) => {
+                    lines.push("Offscreen targets as each frame left them, by replay:".into());
+
+                    for (left, right) in pairs.iter().take(MAX_TARGETS) {
+                        let name = if left.handle == right.handle { left.name.clone() } else { format!("a's {} against b's {}", left.name, right.name) };
+                        let read = |handle: &str, target: &str| {
+                            let mut args = json!({ "capture": handle, "target": target });
+
+                            if params["session"].is_string() {
+                                args["session"] = params["session"].clone();
+                            }
+
+                            args
+                        };
+
+                        let images = async {
+                            let (_, _, image_a, _, _) = replayed(host, &read(a, &left.handle)).await?;
+                            let (_, _, image_b, _, _) = replayed(host, &read(b, &right.handle)).await?;
+
+                            image_a.difference(&image_b, 0)
+                        }
+                        .await;
+
+                        match images {
+                            Ok(difference) if difference.changed == 0 => {
+                                lines.push(format!("  {name}: identical."));
+                                rows.push(json!({ "a": left.handle, "b": right.handle, "changed": 0 }));
+                            }
+                            Ok(difference) => {
+                                let (x, y, w, h) = difference.bounds.unwrap_or((0, 0, 0, 0));
+                                let path = host.store.capture_dir(b).join(format!("against-{a}-{}.png", right.handle));
+
+                                std::fs::write(&path, difference.heat.to_png()?).with_context(|| format!("writing {}", path.display()))?;
+
+                                lines.push(format!(
+                                    "  {name}: differ in {} of {} pixels, by up to {} in a channel, within x {x} y {y} {w}×{h}. Heat map: {}",
+                                    difference.changed,
+                                    difference.pixels,
+                                    difference.max,
+                                    path.display()
+                                ));
+                                rows.push(json!({ "a": left.handle, "b": right.handle, "changed": difference.changed, "max": difference.max, "bounds": { "x": x, "y": y, "w": w, "h": h }, "heat": path }));
+                            }
+                            Err(error) => lines.push(format!("  {name}: could not be compared: {error}")),
+                        }
+                    }
+
+                    if pairs.len() > MAX_TARGETS {
+                        lines.push(format!(
+                            "  … and {} more, not compared. screenshot(capture, target) of each and diff(a, b) compares any two.",
+                            pairs.len() - MAX_TARGETS
+                        ));
+                    }
+
+                    if rows.iter().any(|row| row["changed"].as_u64().unwrap_or(0) > 0) {
+                        lines.push("  They are in the order the frame first drew to them: the first that differs is where to look.".into());
+                    }
+                }
+            }
+
+            data["targets"] = json!(rows);
+        }
+    }
+
     let mut value = result(lines.join("\n"), data);
 
     value["images"] = images;
 
     Ok(value)
+}
+
+/// How many offscreen targets compare replays for each capture.
+const MAX_TARGETS: usize = 6;
+
+/// A texture or framebuffer a captured frame drew to, other than the canvas.
+struct Offscreen {
+    handle: String,
+    name: String,
+    size: (i64, i64),
+}
+
+/// The offscreen targets of a capture, in the order the frame first drew to them.
+fn offscreen(host: &Host, handle: &str) -> Result<Vec<Offscreen>> {
+    let rows = host.store.query(
+        handle,
+        "SELECT d.target, MIN(d.draw), MAX(d.target_width), MAX(d.target_height), o.label FROM draws d LEFT JOIN objects o ON o.handle = d.target \
+         WHERE d.target IS NOT NULL AND d.target != 'canvas' GROUP BY d.target ORDER BY MIN(d.draw)",
+        &[],
+        64,
+    )?;
+
+    Ok(rows
+        .rows
+        .iter()
+        .filter_map(|row| {
+            let target = row[0].as_str()?;
+            let size = (row[2].as_i64().unwrap_or(0), row[3].as_i64().unwrap_or(0));
+            let label = row[4].as_str().filter(|label| !label.is_empty()).map(|label| format!(" «{}»", page_text(label, 40))).unwrap_or_default();
+
+            Some(Offscreen { handle: target.to_string(), name: format!("{target}{label} {}×{}", size.0, size.1), size })
+        })
+        .collect())
 }
 
 /// The history of a pixel: every event that covered it, in order, whether or not it

@@ -870,10 +870,15 @@ describe('working with the person', () =>
         assert.match(compared.json.summary, /Their final pictures differ in \d+ of 172800 pixels/);
         assert.deepEqual(readFileSync(compared.json.images[0].view).subarray(0, 4), PNG);
 
+        // The minimap is drawn offscreen in both, and is the same in both: replayed to see.
+        assert.match(compared.json.summary, /Offscreen targets as each frame left them, by replay:\n {2}tex_3 64×64: identical\./);
+        assert.deepEqual(compared.json.data.targets, [{ a: 'tex_3', b: 'tex_3', changed: 0 }]);
+
         const same = await scanline('compare', good.json.data.capture, good.json.data.capture);
 
         assert.match(same.out, /Both issue the same 25 events in the same order/);
         assert.match(same.out, /Their final pictures are identical\./);
+        assert.doesNotMatch((await scanline('compare', good.json.data.capture, good.json.data.capture, '--targets', 'false')).out, /Offscreen targets/);
 
         // Its tables hold that frame's calls only, numbered as they are in the recording.
         const calls = await scanline('query', bad.json.data.capture, 'select count(*), min(command) from commands', '--json');

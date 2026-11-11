@@ -289,7 +289,7 @@ impl Host {
             "draw_diff" => capture::draw_diff(self, &params),
             "pixel_source" => capture::pixel_source(self, &params).await,
             "query" => capture::query(self, &params),
-            "compare" => analysis::compare(self, &params),
+            "compare" => analysis::compare(self, &params).await,
             "pixel_history" => analysis::pixel_history(self, &params).await,
             "geometry" => analysis::geometry(self, &params).await,
             "shader_analysis" => analysis::shader_analysis(self, &params).await,

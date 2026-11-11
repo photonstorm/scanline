@@ -499,11 +499,13 @@ pub const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "compare",
-        description: "Two captures against each other: events one has and the other lacks, events that have moved in the order, differences in state and in uniform values between events that line up, what each used that the other did not, and how their final pictures differ, with a heat map. For a frame that looks wrong against one that looks right.",
+        description: "Two captures against each other: events one has and the other lacks, events that have moved in the order, differences in state and in uniform values between events that line up, what each used that the other did not, and how their final pictures and offscreen targets differ, with heat maps. For a frame that looks wrong against one that looks right.",
         schema: schema!(
             r#"["a", "b"]"#,
+            session!(),
             r#""a": { "type": "string", "description": "A capture handle." }"#,
-            r#""b": { "type": "string", "description": "Another." }"#
+            r#""b": { "type": "string", "description": "Another." }"#,
+            r#""targets": { "type": "boolean", "description": "false: leave out the offscreen targets, which are replayed to be compared (up to 6, in an open session). Default true." }"#
         ),
         read_only: true,
     },
@@ -1137,7 +1139,7 @@ Going deeper into a capture
                                          no area, NaN, or culled)
   compare(a, b)                          two captures: events only one has, events that moved in
                                          the order, state and uniforms that differ, and how the
-                                         final pictures differ
+                                         final pictures and each offscreen target differ
   view(capture, view: \"overdraw\")      how many times each pixel was drawn: two heat maps
                                          (all fragments, and those that passed the depth test)
                                          with the mean, the most and where it is worst

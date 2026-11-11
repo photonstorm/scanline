@@ -284,6 +284,21 @@ describe('what a capture says about each planted bug', () =>
 
         assert.match(draw.out, /It is a feedback loop: tex_3 is the target being drawn to and is also bound on texture unit 0/);
     });
+
+    test('b12 against b00: compare says which offscreen target differs', async () =>
+    {
+        const good = await captured('b00');
+        const bad = await captured('b12');
+        const compared = await scanline('compare', good.capture, bad.capture, '--session', bad.session, '--json');
+
+        assert.equal(compared.code, 0, compared.out);
+
+        // The minimap's texture, replayed from each capture: the crates' marks are missing in b12.
+        assert.match(compared.json.summary, /Offscreen targets as each frame left them, by replay:\n {2}tex_3 64×64: differ in 118 of 4096 pixels, by up to \d+ in a channel, within x 11 y 20 42×10\. Heat map: .*against-cap_\d+-tex_3\.png/);
+        assert.match(compared.json.summary, /the first that differs is where to look/);
+        assert.equal(compared.json.data.targets[0].changed, 118);
+        assert.ok(existsSync(compared.json.data.targets[0].heat));
+    });
 });
 
 describe('the history of a pixel', () =>

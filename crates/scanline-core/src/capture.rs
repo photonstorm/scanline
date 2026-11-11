@@ -3118,7 +3118,7 @@ pub async fn pixel_source(host: &Arc<Host>, params: &Value) -> Result<Value> {
 }
 
 /// A target of a capture after an event, read back from the replay.
-async fn replayed(host: &Arc<Host>, params: &Value) -> Result<(Arc<Session>, String, Image, String, Value)> {
+pub(crate) async fn replayed(host: &Arc<Host>, params: &Value) -> Result<(Arc<Session>, String, Image, String, Value)> {
     let (handle, meta) = the_capture(host, params)?;
     let session = host.replayer(params)?;
 
