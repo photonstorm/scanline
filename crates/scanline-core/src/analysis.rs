@@ -992,6 +992,156 @@ pub async fn lint(host: &Arc<Host>, params: &Value) -> Result<Value> {
     Ok(result(lines.join("\n"), json!({ "session": session.id, "findings": found })))
 }
 
+// ---- Views ----
+
+/// A colour for a count of draws on one pixel: black for none, then blue, green, yellow,
+/// red, and white for a great many.
+fn heat(count: u8) -> [u8; 4] {
+    match count {
+        0 => [0, 0, 0, 255],
+        1 => [24, 44, 110, 255],
+        2 => [30, 120, 90, 255],
+        3 => [120, 170, 40, 255],
+        4 => [220, 190, 40, 255],
+        5..=7 => [235, 120, 30, 255],
+        8..=15 => [225, 50, 40, 255],
+        _ => [255, 255, 255, 255],
+    }
+}
+
+/// A capture seen another way: how many times each pixel was drawn (overdraw), or its
+/// triangles as outlines (wireframe).
+pub async fn view(host: &Arc<Host>, params: &Value) -> Result<Value> {
+    let (handle, meta) = the_capture(host, params)?;
+    let which = params["view"].as_str().ok_or_else(|| anyhow!("view needs view: \"overdraw\" or \"wireframe\"."))?;
+    let session = host.replayer(params)?;
+
+    load_into(host, &session, &handle).await?;
+
+    let refuse = |reply: &Value| -> Result<()> {
+        match reply["unsupported"].as_str() {
+            Some("webgpu") => bail!("The {which} view is built for WebGL captures, and {handle} is a WebGPU capture."),
+            Some("stencil") => {
+                bail!("Overdraw is counted in the stencil buffer, and this frame uses the stencil test itself, so the two would get in each other's way.")
+            }
+            Some("no-stencil") => bail!("The browser would not give the replay a stencil buffer, which overdraw is counted in."),
+            Some("no-polygon-mode") => bail!("This browser lacks WEBGL_polygon_mode, which the wireframe view draws with."),
+            Some(other) => bail!("The {which} view cannot be made of this capture ({other})."),
+            None => Ok(()),
+        }
+    };
+
+    match which {
+        "overdraw" => {
+            let mut lines = vec![format!("{}: overdraw of the canvas. gpu-measured.", about(host, params, &handle, &meta))];
+            let mut data = json!({ "capture": handle, "view": "overdraw", "provenance": "gpu-measured" });
+            let mut images = Vec::new();
+
+            // Twice: everything that was rasterised, and what survived the depth test.
+            for (name, visible, what) in
+                [("all", false, "Every fragment drawn, whether or not it passed the depth test"), ("visible", true, "Fragments that passed the depth test")]
+            {
+                let reply = session.replay("overdraw", &json!({ "key": handle, "visible": visible }), LONG).await?;
+
+                refuse(&reply)?;
+
+                let (width, height) = (reply["width"].as_u64().unwrap_or(0) as u32, reply["height"].as_u64().unwrap_or(0) as u32);
+                let counts = crate::capture::unpack(reply["counts"].as_str().unwrap_or(""))?;
+
+                if counts.is_empty() || counts.len() != (width * height) as usize {
+                    bail!("The replay returned no overdraw counts.");
+                }
+
+                let top = reply["top"].as_u64().unwrap_or(64) as u8;
+                let total: u64 = counts.iter().map(|count| *count as u64).sum();
+                let most = *counts.iter().max().unwrap_or(&0);
+                let pixels = counts.len() as f64;
+                let share = |least: u8| counts.iter().filter(|count| **count >= least).count() as f64 * 100.0 / pixels;
+
+                // Where it is worst: the box around the pixels at or near the most.
+                let near = most.saturating_sub(most / 4).max(1);
+                let (mut left, mut right, mut up, mut down) = (width, 0u32, height, 0u32);
+
+                for (index, count) in counts.iter().enumerate() {
+                    if *count >= near {
+                        let (x, y) = (index as u32 % width, index as u32 / width);
+
+                        left = left.min(x);
+                        right = right.max(x);
+                        up = up.min(y);
+                        down = down.max(y);
+                    }
+                }
+
+                lines.push(format!(
+                    "{what}: {:.2} a pixel on average, {}{most} at most. {:.0}% of pixels drawn twice or more, {:.0}% four times or more.",
+                    total as f64 / pixels,
+                    if most >= top { "at least " } else { "" },
+                    share(2),
+                    share(4)
+                ));
+
+                if most > 1 {
+                    lines.push(format!("  Worst ({near} or more) within x {left} y {up} {}×{}.", right - left + 1, down - up + 1));
+                }
+
+                let picture = Image::new(width, height, counts.iter().flat_map(|count| heat(*count)).collect())?;
+                let path = host.store.capture_dir(&handle).join(format!("overdraw-{name}.png"));
+
+                std::fs::write(&path, picture.to_png()?).with_context(|| format!("writing {}", path.display()))?;
+                lines.push(format!("  Picture: {}", path.display()));
+                images.push(json!({ "view": path, "original": path, "width": width, "height": height, "scale": 1.0, "space": "canvas_px" }));
+
+                data[name] = json!({ "mean": total as f64 / pixels, "max": most, "twice_or_more": share(2), "four_or_more": share(4), "worst": { "x": left, "y": up, "w": right - left + 1, "h": down - up + 1 } });
+            }
+
+            lines.push("In the pictures: black is never drawn, then blue for once, green twice, yellow-green three times, yellow four, orange five to seven, red eight to fifteen, white more. A large gap between the two figures means a lot was drawn and then hidden: draw front to back, or cull what cannot be seen.".into());
+
+            let mut value = result(lines.join("\n"), data);
+
+            value["images"] = json!(images);
+
+            Ok(value)
+        }
+        "wireframe" => {
+            let reply = session.replay("wireframe", &json!({ "key": handle, "draw": params["at_draw"] }), LONG).await?;
+
+            refuse(&reply)?;
+
+            let picture = Image::new(
+                reply["width"].as_u64().unwrap_or(0) as u32,
+                reply["height"].as_u64().unwrap_or(0) as u32,
+                crate::capture::unpack(reply["data"].as_str().unwrap_or(""))?,
+            )?;
+            let name = match params["at_draw"].as_i64() {
+                Some(draw) => format!("wireframe-draw{draw}.png"),
+                None => "wireframe.png".to_string(),
+            };
+            let path = host.store.capture_dir(&handle).join(name);
+
+            std::fs::write(&path, picture.opaque().to_png()?).with_context(|| format!("writing {}", path.display()))?;
+
+            let mut value = result(
+                format!(
+                    "{}: the frame{} with its triangles drawn as outlines, in their own colours. gpu-measured. {}",
+                    about(host, params, &handle, &meta),
+                    match params["at_draw"].as_i64() {
+                        Some(draw) => format!(" up to event {draw}"),
+                        None => String::new(),
+                    },
+                    path.display()
+                ),
+                json!({ "capture": handle, "view": "wireframe", "at_draw": params["at_draw"], "provenance": "gpu-measured" }),
+            );
+
+            value["images"] = json!([{ "view": path, "original": path, "width": picture.width, "height": picture.height, "scale": 1.0, "space": "canvas_px" }]);
+
+            Ok(value)
+        }
+        other => bail!("There is no \"{other}\" view. Views are overdraw and wireframe."),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

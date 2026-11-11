@@ -8,7 +8,7 @@
 
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, afterEach, before, describe, test } from 'node:test';
@@ -17,6 +17,8 @@ import { repoRoot, serve } from '../spikes/lib/serve.mjs';
 const binary = join(repoRoot, 'target', 'debug', 'scanline');
 const home = mkdtempSync(join(tmpdir(), 'scanline-findings-'));
 const env = { ...process.env, SCANLINE_HOME: home };
+
+const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
 
 let server;
 
@@ -380,6 +382,56 @@ describe('lint and shader analysis', () =>
         const wrong = await scanline('shader_analysis', 'tex_1', '--session', session);
 
         assert.equal(wrong.code, 1);
+    });
+});
+
+describe('views of a capture', () =>
+{
+    test('overdraw counts how often each pixel was drawn, with and without the depth test', async () =>
+    {
+        const { capture, session } = await captured('b00');
+        const reply = await scanline('view', capture, 'overdraw', '--session', session, '--json');
+
+        assert.equal(reply.code, 0, reply.out);
+
+        // The crates behind the glass are drawn twice; a spark over the glass makes three.
+        const { all, visible } = reply.json.data;
+
+        assert.equal(all.max, 3);
+        assert.ok(all.mean > 0.6 && all.mean < 0.8, `mean ${all.mean}`);
+        assert.ok(all.twice_or_more > 8 && all.twice_or_more < 14, `${all.twice_or_more}% drawn twice`);
+        assert.deepEqual(visible, all, 'nothing in the correct scene is drawn and then hidden');
+        assert.equal(reply.json.images.length, 2);
+        assert.deepEqual(readFileSync(reply.json.images[0].view).subarray(0, 4), PNG);
+
+        // With the depth buffer cleared to 0, nearly everything is rasterised and then thrown away.
+        const hidden = await captured('b05');
+        const wasted = (await scanline('view', hidden.capture, 'overdraw', '--session', hidden.session, '--json')).json.data;
+
+        assert.ok(wasted.all.mean > wasted.visible.mean * 4, `drawn ${wasted.all.mean} a pixel, kept ${wasted.visible.mean}`);
+    });
+
+    test('wireframe draws the frame as outlines', async () =>
+    {
+        const { capture, session } = await captured('b00');
+        const whole = await scanline('view', capture, 'wireframe', '--session', session, '--json');
+
+        assert.equal(whole.code, 0, whole.out);
+        assert.deepEqual(readFileSync(whole.json.images[0].view).subarray(0, 4), PNG);
+
+        // Outlines cover far less of the canvas than the filled frame does: most of it is still the clear colour.
+        const filled = await scanline('pixels', 100, 220, '--capture', capture, '--session', session, '--json');
+
+        assert.deepEqual(filled.json.data.rgba8, [187, 131, 75, 255], 'the middle of a crate, filled');
+
+        const partial = await scanline('view', capture, 'wireframe', '--at-draw', 5, '--session', session, '--json');
+
+        assert.match(partial.json.summary, /up to event 5/);
+
+        const unknown = await scanline('view', capture, 'x-ray', '--session', session);
+
+        assert.equal(unknown.code, 1);
+        assert.match(unknown.out, /There is no "x-ray" view\. Views are overdraw and wireframe\./);
     });
 });
 

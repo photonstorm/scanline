@@ -358,6 +358,18 @@ pub const TOOLS: &[Tool] = &[
         read_only: true,
     },
     Tool {
+        name: "view",
+        description: "A capture seen another way, by replay. overdraw: how many times each pixel of the canvas was drawn, as two heat maps (everything rasterised, and what passed the depth test) with the mean, the most, and where it is worst. wireframe: the frame with its triangles as outlines, optionally only up to an event. WebGL captures.",
+        schema: schema!(
+            r#"["capture", "view"]"#,
+            r#""capture": { "type": "string" }"#,
+            r#""view": { "type": "string", "enum": ["overdraw", "wireframe"] }"#,
+            r#""at_draw": { "type": "integer", "description": "wireframe: stop after this event." }"#,
+            session!(),
+        ),
+        read_only: true,
+    },
+    Tool {
         name: "shader_analysis",
         description: "What a shader could cost, read from its source: texture samples and how many of them are inside loops, loop counts, branches, discard, derivatives, costly maths calls, and inputs declared but never used. For a shader, or every shader of a program or pipeline. Live, or from a capture's copy. Static figures, not measurements.",
         schema: schema!(
@@ -581,8 +593,9 @@ Not built yet (planned, in this order):
     key, the flight recorder, runs, one owner of the input): a Debug hotkey that works when
     some other application has the keyboard, annotation by clicking on the frozen frame, a
     gamepad, and pointer lock.
-  - Analysis, beyond what is built (pixel history, compare, lint, shader_analysis): views
-    such as overdraw and wireframe, vertex data, GPU time per draw, pixel history for WebGPU.
+  - Analysis, beyond what is built (pixel history, compare, lint, shader_analysis, the
+    overdraw and wireframe views): depth, stencil, mip and NaN views, vertex data, GPU time
+    per draw, and all of these but compare, lint and shader_analysis for WebGPU.
   - Live patching: shader replacement, uniform and state overrides.
 
 Known limits
@@ -724,6 +737,10 @@ Going deeper into a capture
   compare(a, b)                          two captures: events only one has, events that moved in
                                          the order, state and uniforms that differ, and how the
                                          final pictures differ
+  view(capture, view: \"overdraw\")      how many times each pixel was drawn: two heat maps
+                                         (all fragments, and those that passed the depth test)
+                                         with the mean, the most and where it is worst
+  view(capture, view: \"wireframe\")     the frame as outlines; at_draw stops it early
   lint(capture)                          what is worth a look in the frame, most serious first
   lint()                                 the same for the live page: leaks, churn, logged errors
   shader_analysis(handle)                what a shader could cost, read from its source: samples,

@@ -26,6 +26,7 @@ fn positional(command: &str) -> &'static [&'static str] {
         "resources" => &["kind"],
         "draw_list" | "pass_tree" => &["capture"],
         "draw" => &["capture", "draw"],
+        "view" => &["capture", "view"],
         "draw_diff" => &["capture", "a", "b"],
         "pixel_source" | "pixel_history" => &["capture", "x", "y"],
         "query" => &["capture", "sql"],
@@ -166,6 +167,7 @@ pub fn command_usage(name: &str) -> Option<String> {
         "compare" => "scanline compare cap_2 cap_3",
         "shader_analysis" => "scanline shader_analysis prg_1",
         "lint" => "scanline lint --capture cap_1",
+        "view" => "scanline view cap_1 overdraw",
         "strip" => "scanline strip --open",
         "take_control" => "scanline take_control",
         "save_run" => "scanline save_run",
@@ -226,13 +228,14 @@ fn parse(args: Vec<String>) -> Result<Parsed> {
             };
 
             // An expression or a URL is text even when it happens to parse as JSON.
-            params[*place] = if matches!(*place, "url" | "expression" | "topic" | "kind" | "handle" | "capture" | "sql" | "instruction" | "recording" | "run")
-                || (matches!(command.as_str(), "diff" | "compare") && matches!(*place, "a" | "b"))
-            {
-                Value::String(arg.clone())
-            } else {
-                value(arg)
-            };
+            params[*place] =
+                if matches!(*place, "url" | "expression" | "topic" | "kind" | "handle" | "capture" | "sql" | "instruction" | "recording" | "run" | "view")
+                    || (matches!(command.as_str(), "diff" | "compare") && matches!(*place, "a" | "b"))
+                {
+                    Value::String(arg.clone())
+                } else {
+                    value(arg)
+                };
             placed += 1;
 
             continue;

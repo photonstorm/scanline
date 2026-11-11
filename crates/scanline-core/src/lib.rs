@@ -159,6 +159,7 @@ impl Host {
             "pixel_history" => analysis::pixel_history(self, &params).await,
             "shader_analysis" => analysis::shader_analysis(self, &params).await,
             "lint" => analysis::lint(self, &params).await,
+            "view" => analysis::view(self, &params).await,
             "resources" => inventory::resources(&live()?, &params).await,
             "resource" => inventory::resource(&live()?, &params).await,
             "memory" => inventory::memory(&live()?, &params).await,

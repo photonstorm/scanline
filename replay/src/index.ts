@@ -103,7 +103,8 @@ class Run
     readFramebuffer: any = null;
     packBuffer: any = null;
 
-    constructor (capture: Loaded)
+    // `extra` adds to the page's own context attributes: a stencil buffer for counting overdraw.
+    constructor (capture: Loaded, extra: Record<string, unknown> = {})
     {
         const header = capture.data.header;
 
@@ -114,7 +115,7 @@ class Run
         this.canvas.height = header.height;
 
         // The page's own attributes, but the drawing buffer is kept so it can be read at any point.
-        this.gl = this.canvas.getContext(header.api, { ...(header.attributes ?? {}), preserveDrawingBuffer: true });
+        this.gl = this.canvas.getContext(header.api, { ...(header.attributes ?? {}), ...extra, preserveDrawingBuffer: true });
 
         if (!this.gl)
         {
@@ -1513,6 +1514,184 @@ const api = {
             : null;
 
         return { unchanged, tried, together, ms: performance.now() - started };
+    },
+
+    // Overdraw of the canvas: how many times each pixel was drawn to. The stencil buffer
+    // does the counting: every draw is made to add one to it wherever a fragment lands
+    // (`all`), or only where the fragment also passes the depth test (`visible`). The
+    // counts are then drawn out, one level at a time, as a picture that can be read back.
+    async overdraw (args: { key: string; visible?: boolean }): Promise<Json>
+    {
+        const item = capture(args.key);
+
+        if (isGpu(item))
+        {
+            return { unsupported: 'webgpu' };
+        }
+
+        if (item.data.draws.some((row) => row.kind === 'draw' && !row.target && row.stencil))
+        {
+            return { unsupported: 'stencil' };
+        }
+
+        const run = new Run(item, { stencil: true });
+        const gl = run.gl;
+        const started = performance.now();
+
+        try
+        {
+            if (!gl.getContextAttributes().stencil)
+            {
+                return { unsupported: 'no-stencil' };
+            }
+
+            const byCommand = new Map<number, number>();
+
+            item.data.draws.forEach((row, index) => byCommand.set(row.command, index));
+
+            const counted = (index: number): boolean =>
+            {
+                const draw = byCommand.get(index);
+
+                return draw !== undefined && item.data.draws[draw].kind === 'draw' && !item.data.draws[draw].target;
+            };
+
+            run.play(item.data.commands.length, (index) =>
+            {
+                if (counted(index))
+                {
+                    gl.disable(0x0B90);
+                }
+            },
+            (index) =>
+            {
+                if (counted(index))
+                {
+                    // Count whatever lands, or only what the depth test lets through.
+                    gl.enable(0x0B90);
+                    gl.stencilFunc(0x0207, 0, 0xFF);
+                    gl.stencilOp(0x1E00, args.visible ? 0x1E00 : 0x1E02, 0x1E02);
+                    gl.stencilMask(0xFF);
+                }
+            });
+
+            // Draw the counts out: a full-canvas quad for each level, where the stencil equals it.
+            const { width, height } = item.data.header;
+            const program = gl.createProgram();
+
+            for (const [type, source] of [
+                [0x8B31, 'attribute vec2 corner; void main () { gl_Position = vec4(corner, 0.0, 1.0); }'],
+                [0x8B30, 'precision mediump float; uniform float level; void main () { gl_FragColor = vec4(level, 0.0, 0.0, 1.0); }']
+            ] as Array<[number, string]>)
+            {
+                const shader = gl.createShader(type);
+
+                gl.shaderSource(shader, source);
+                gl.compileShader(shader);
+                gl.attachShader(program, shader);
+            }
+
+            gl.bindAttribLocation(program, 0, 'corner');
+            gl.linkProgram(program);
+
+            if (run.gl2)
+            {
+                gl.bindVertexArray(null);
+                gl.bindFramebuffer(0x8CA9, null);
+            }
+            else
+            {
+                gl.bindFramebuffer(0x8D40, null);
+            }
+
+            const quad = gl.createBuffer();
+
+            gl.bindBuffer(0x8892, quad);
+            gl.bufferData(0x8892, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), 0x88E4);
+            gl.enableVertexAttribArray(0);
+            gl.vertexAttribPointer(0, 2, 0x1406, false, 0, 0);
+
+            if (run.gl2)
+            {
+                gl.vertexAttribDivisor(0, 0);
+            }
+
+            for (const cap of [0x0B71, 0x0B44, 0x0BE2, 0x0C11, 0x8037, 0x809E, 0x80A0])
+            {
+                gl.disable(cap);
+            }
+
+            gl.useProgram(program);
+            gl.viewport(0, 0, width, height);
+            gl.colorMask(true, true, true, true);
+            gl.clearColor(0, 0, 0, 1);
+            gl.clear(0x4000);
+            gl.enable(0x0B90);
+            gl.stencilMask(0);
+            gl.stencilOp(0x1E00, 0x1E00, 0x1E00);
+
+            const level = gl.getUniformLocation(program, 'level');
+            const top = 64;
+
+            for (let count = 1; count <= top; count++)
+            {
+                // The last level stands for itself and everything above it. The test compares
+                // the level with what is stored, in that order: "level <= stored".
+                gl.stencilFunc(count === top ? 0x0203 : 0x0202, count, 0xFF);
+                gl.uniform1f(level, count / 255);
+                gl.drawArrays(0x0005, 0, 4);
+            }
+
+            const pixels = run.image(null).data;
+            const counts = new Uint8Array(width * height);
+
+            for (let i = 0; i < counts.length; i++)
+            {
+                counts[i] = pixels[i * 4];
+            }
+
+            return { width, height, counts: toBase64(await gzip(counts)), top, notes: run.notes, ms: performance.now() - started };
+        }
+        finally
+        {
+            run.dispose();
+        }
+    },
+
+    // The frame with its triangles drawn as outlines, up to an event or to its end.
+    async wireframe (args: { key: string; draw?: number | null; target?: Json }): Promise<Json>
+    {
+        const item = capture(args.key);
+
+        if (isGpu(item))
+        {
+            return { unsupported: 'webgpu' };
+        }
+
+        const run = new Run(item);
+
+        try
+        {
+            const mode = run.gl.getExtension('WEBGL_polygon_mode');
+
+            if (!mode)
+            {
+                return { unsupported: 'no-polygon-mode' };
+            }
+
+            mode.polygonModeWEBGL(0x0408, 0x1B01);
+            run.play(endOf(item.data, args.draw));
+
+            const row = args.draw === null || args.draw === undefined ? null : item.data.draws[args.draw];
+            const target = args.target ?? (row && row.target ? { texture: row.target, level: row.targetLevel } : null);
+            const image = run.image(target);
+
+            return { ...(await packed(image)), notes: run.notes };
+        }
+        finally
+        {
+            run.dispose();
+        }
     },
 
     // The history of one pixel: every event on its target, with the pixel's value before and
