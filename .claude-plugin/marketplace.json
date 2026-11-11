@@ -1,0 +1,12 @@
+{
+    "name": "scanline",
+    "description": "Scanline, a debugger for WebGL and WebGPU rendering that an agent drives.",
+    "owner": { "name": "Scanline" },
+    "plugins": [
+        {
+            "name": "scanline",
+            "source": "./",
+            "description": "The Scanline MCP server (the gfx_* tools) and the skills that teach an agent to use it. Needs the scanline binary on the PATH."
+        }
+    ]
+}

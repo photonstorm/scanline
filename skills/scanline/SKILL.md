@@ -114,6 +114,25 @@ Launch with `deterministic: true` when the bug takes play to reach. Random numbe
 - `gfx_resources()` with no kind counts what is alive and what has been created in all. `gfx_memory()` adds sizes. Both flag a likely leak (many live objects from one line of code, made over many frames) and churn (objects made and destroyed again and again, which for shaders and programs means compiling every frame).
 - A capture's summary says what that one frame created and deleted.
 
-## What it cannot do yet
+## Sending a capture to someone
 
-No full pixel history (which fragments of a draw a test rejected, pixel by pixel), no per-draw timing or live shader editing. `gfx_help(topic: "limits")` has the current list. If the bug needs those, say so rather than guessing from screenshots.
+`gfx_export(capture)` writes a capture to one `.scanline` file: the frame's commands, every texture and buffer it uses, its tables and its final picture. `gfx_import(path)` reads one into this host under a new handle, and everything that reads or replays a capture then works on it. Attach the file to a bug report; whoever opens it needs no access to the game.
+
+## The other skills
+
+Each is the full recipe for one kind of job. Read the one that fits with `gfx_help(skill: "…")` or `scanline skill <name>`; they always match the installed version.
+
+- `scanline-wrong-pixels`: from a wrong pixel to the draw, the state or shader line, a live patch that proves it, the fix.
+- `scanline-slow-frame`: measure, classify the cost by experiment, rank by shader, try the cheaper version live.
+- `scanline-memory`: snapshots, diffs by creating line, the shapes leaks take.
+- `scanline-with-a-person`: asking the person to play, the Debug press, the frames before it.
+- `scanline-play`: input, playing by rule, saving and replaying a run.
+- `scanline-debuggable-rendering`: writing rendering code that Scanline can name.
+
+## What you may not do
+
+The person running Scanline decides what a client may do, and it cannot be changed from here. By default patching and `gfx_eval` work only on pages served from this machine, and `gfx_navigate` keeps to the origin the session was launched on. A refusal says which tier it is and how the person can allow it: tell them, and do not look for a way round. `gfx_help(topic: "security")` shows what is in force.
+
+## What it cannot do
+
+On WebGPU captures: pixel history, geometry, the draw_id, depth and nan views and per-draw profiling are not built (they are for WebGL), nor is "which test rejected this draw". Stencil and mip views are not built for either. Babylon.js and PlayCanvas draws are not named by engine object. Windows is not supported. `gfx_help(topic: "limits")` has the current list. If the bug needs one of these, say so rather than guessing from screenshots.

@@ -44,6 +44,16 @@ async fn run(args: Vec<String>) -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
 
+        Some("skill" | "skills") => {
+            cli::say(&format!("{}\n", cli::skill(&args[1..])?));
+            Ok(ExitCode::SUCCESS)
+        }
+
+        Some("browser") => {
+            cli::say(&format!("{}\n", cli::browser(&args[1..])?));
+            Ok(ExitCode::SUCCESS)
+        }
+
         Some("stop") => {
             cli::say(&format!("{}\n", control::stop().await?));
             Ok(ExitCode::SUCCESS)

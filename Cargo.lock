@@ -321,6 +321,7 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "libc",
+ "scanline-browser",
  "scanline-core",
  "scanline-mcp",
  "serde_json",

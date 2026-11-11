@@ -4,6 +4,8 @@
 //! `--remote-debugging-pipe` (02-ARCHITECTURE.md, section 2). The host contains no Chromium
 //! code: whatever the page does to the browser, the host keeps running.
 
+pub mod pinned;
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;

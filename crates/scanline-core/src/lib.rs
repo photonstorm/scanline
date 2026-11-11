@@ -19,6 +19,7 @@ mod page;
 mod patch;
 mod runs;
 mod session;
+pub mod skills;
 pub mod tiers;
 mod tools;
 mod trace;
@@ -306,6 +307,14 @@ impl Host {
             "eval" => commands::eval(&live()?, &params).await,
             "events" => commands::events(&self.session(&params)?, &params).await,
             "wait" => commands::wait(&self.session(&params)?, &params).await,
+            "help" if params["skill"].is_string() => {
+                let name = params["skill"].as_str().unwrap_or("");
+
+                match skills::find(name) {
+                    Some(skill) => Ok(result(skill.body(), json!({ "skill": skill.name }))),
+                    None => Err(anyhow!("There is no skill \"{name}\".\n\n{}", skills::list())),
+                }
+            }
             // What is in force on this host is part of the answer about security.
             "help" if params["topic"] == "security" => Ok(result(
                 format!("{}\n\nIn force on this host:\n{}", help(Some("security")), self.tiers.describe()),

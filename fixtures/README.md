@@ -93,3 +93,7 @@ Objects with known sizes and contents, for checking what the live inventory repo
 `window.leak(n)` creates `n` 256×256 RGBA8 textures (262,144 bytes each) that are never destroyed, all from one function, `leakTexture`.
 
 The WebGPU page labels its objects; WebGL has no labels.
+
+## An engine with no adapter (`engines/`)
+
+`engines/babylon.html` is a small Babylon.js scene (a lit ground, three boxes, one see-through, a ball, and a shadow), on its WebGL 2 engine or, with `?engine=webgpu`, its WebGPU engine. Scanline has no adapter for Babylon.js, so its draws are not named by mesh; the page is there to check that such an engine is still launched, captured and replayed to the same picture. It found two faults when it was added (a depth texture as a render target, and a command encoder made before the frame), both written up in `docs/DEPARTURES.md`.

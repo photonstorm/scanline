@@ -15,6 +15,7 @@ import { gpuPassBegan } from './gpu/patch';
 import { noteTargets } from './gpu/tracker';
 import { natives, type Handlers } from './hooks/install';
 import { declare } from './mods';
+import { noteDevice } from './registry';
 import { G, type Fn } from './natives';
 import type { Tag } from './tag';
 import { gpuEncoderTag } from './tags.generated';
@@ -472,6 +473,8 @@ export const timingHandlers: Handlers = {
     {
         if (encoder)
         {
+            // Which device an encoder is of: a capture needs it for one made before its frame.
+            noteDevice(encoder, device);
             encoderTag.set(encoder, deviceTimer(device));
         }
     },

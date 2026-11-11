@@ -64,7 +64,7 @@ Built for WebGL 1, WebGL 2 and WebGPU: the capture, the store (BLAKE3-named, zst
 
 | Criterion | Standing |
 |---|---|
-| Replay matches on every matrix page | Met for the pages there are: eight on WebGL, and on WebGPU the two raw pages, three.js and PixiJS. Babylon.js on WebGPU, a device in a worker, and the engines the matrix still lacks are untried. |
+| Replay matches on every matrix page | Met for the pages there are: eight on WebGL, and on WebGPU the two raw pages, three.js and PixiJS. Babylon.js was added at milestone 7 and replays identically on WebGL 2 and WebGPU (`fixtures/engines/babylon.html`). A WebGPU device in a worker, and the engines the matrix still lacks, are untried. |
 | Or reports why not | Met: every capture is replayed once when taken and compared with the frame's own image, the verdict is stored with it, and replay answers carry a warning when it failed. |
 | An agent diagnoses the planted bugs with no hints | Met for the bugs there are: twelve, in one small WebGL scene (`fixtures/bugs/`), all diagnosed by agents using only the command line, in a median of 8.5 commands. `evals/results/README.md` has both rounds and their limits. There is no runner that starts the agents; the rounds were started by hand. |
 
@@ -258,6 +258,53 @@ On the 2,000-draw WebGL 2 page (10,002 calls a frame), three rounds each, the pr
 Not done: finding where the growth since milestone 2 comes from. It wants a profiler on a quiet machine, not more runs of this spike. `--api`, `--draws` and `--modes` were added to the spike to make that easier.
 
 Two faults found by running the journey: `experiment` never reported GPU time (it read the wrong field of the probe's figures, and its test did not look), and it left the canvas showing the experiment's last frame, so a screenshot taken next was of the clipped frame. Both fixed; the journey test covers them. The static shader reading now follows a loop bound to a named constant (`const int SAMPLES = 64`, `#define`, WGSL `const`).
+
+## Milestone 7 against its list
+
+The build plan gives milestone 7 a list and no exit sentence: "Capture viewer and live graphs; activity log. Headless mode; import and export. Installers, signing, notarisation, updates; first-run browser download. Full skill set; Claude Code plugin; folders for other agents; documentation. Capability tiers; security review; loopback HTTP hardening. Evaluation targets met (PRD section 10)."
+
+| Item | Standing |
+|---|---|
+| Capture viewer and live graphs | Built: `viewer` opens a window with three tabs. Live: graphs of frame time, GPU time, draws and estimated memory. Capture: the draw list, and for the chosen event its state, its shaders and the target as it stood after it, with zoom and the value of the pixel under the pointer. Checked by `tests/e2e.test.mjs` through the page's own state, and by looking at pictures of it (`viewer(output: true)`). Nobody has used it with a mouse: see `docs/BY-HAND.md`. |
+| Activity log | Built: every command the host runs, who ran it (the agent, or the person through the viewer), its arguments, how long it took and the first line of its answer. `activity` gives it to an agent; the viewer's first tab shows it to the person as it grows. |
+| Headless mode | Met since milestone 1: `launch(headless: true)` uses Chrome's new headless mode with the real GPU. Every automated test runs this way. |
+| Import and export | Built: `export` and `import` (CAP-4). One `.scanline` file holds the capture's database, its command stream, its final picture and every blob it names. `tests/security.test.mjs` exports a WebGL 2 and a WebGPU capture from one host, imports each into another that has nothing else on disk, and checks the tables are equal row for row and that a replay there gives the same picture. |
+| Installers | Partly. `npm run package` builds the release binary and packs it with the skills, the plugin files and an install script that copies the binary onto the `PATH` (`dist/scanline-<version>-macos-arm64.tar.gz`, 4.4 MB). There is no `.pkg`, `.dmg` or Windows installer. |
+| Signing, notarisation | Not done. They need the maintainer's Apple Developer identity. The packaging script signs with the hardened runtime when `SCANLINE_SIGN_IDENTITY` is set and submits for notarisation when `SCANLINE_NOTARY_PROFILE` is too; neither path has been run. |
+| Updates | Not built. There is nowhere releases are published yet, so there is nothing to check against. |
+| First-run browser download | Built as a command, not a first-run step: `scanline browser install` fetches the pinned Chrome for Testing (157.0.8103.50) into Scanline's directory, and a launch then prefers it. It is deliberately only a shell command, so that an agent cannot start a download. The dry run and the unpacking (from a stand-in archive) are tested; **the download itself has never been run**, because downloading needed the person's say-so. |
+| Full skill set | Built: seven skills (`skills/`), the six the specification lists and `scanline-debuggable-rendering`. Each is held in the binary: `scanline skill <name>`, `help(skill)`. A unit test checks every `gfx_` command a skill names exists. They have not been in front of an agent in an evaluation round as skills; round 3 gave agents `scanline help` only, as rounds 1 and 2 did. |
+| Claude Code plugin | Built: `.claude-plugin/plugin.json` (the MCP server, declared in the manifest) and `.claude-plugin/marketplace.json` (this repository as a marketplace of one). Written from the published plugin documentation. **Not loaded in Claude Code**: the `claude` command was not available where this was built. See `docs/BY-HAND.md`. |
+| Folders for other agents | Built: `scanline skill --to <dir>` writes each skill as `<dir>/<name>/SKILL.md`. |
+| Documentation | The README, `docs/SECURITY.md`, `docs/BY-HAND.md`, this file, the help topics in the binary and the skills. There is no documentation site. |
+| Capability tiers | Built (AGT-8): control, patch and evaluate, files and navigation, fixed when the host starts by `SCANLINE_DENY` and `SCANLINE_ALLOW`. Patching and `eval` are off for pages not served from this machine, and `navigate` keeps to the launch origin, unless allowed. `tests/security.test.mjs` runs a host of each kind. |
+| Security review | Done, and written up in `docs/SECURITY.md`. It changed four things: a page could queue events that read as the host's or the person's through the probe's channel (now only the probe's own kinds are accepted, and a mark never carries words); the control socket was made private a moment after it was created (now it is created private, and the host refuses to start if it cannot be); an export could have been pointed at any file (now only `*.scanline`, and it replaces only another capture file); and an expression given to `run_until` or `capture(when)` was `eval` outside the patch tier (now inside it). |
+| Loopback HTTP hardening | Nothing to harden: there is no HTTP transport. The host listens on one Unix socket. MCP is stdio only. |
+| Evaluation targets (PRD section 10) | See the table below. |
+
+| PRD section 10 | Target | Standing |
+|---|---|---|
+| Planted bugs diagnosed, no hints | 80% or more | See `evals/results/README.md` for each round. Rounds 1 and 2: 12 of 12 and 6 of 6. Round 3, on this build with all fourteen bugs, is recorded there. |
+| Median tool calls to a correct diagnosis | 12 or fewer | 8.5 in round 1; round 3 in the results file. |
+| Tokens of tool results per diagnosis | Under 40,000 | Roughly 2,000 to 4,500. |
+| Hand-off round trip with no manual steps | Works on both platforms | Works on macOS: checked by hand with a real F9 press on 11 November 2026, and by `tests/e2e.test.mjs` with `debug`. Windows is not built. |
+| Content matrix: launch, capture, replay matches | All pass | Pass: raw WebGL 1, WebGL 2 and WebGPU, a worker with an OffscreenCanvas (WebGL 2), three.js (both renderers), PixiJS (both), Phaser 4 (WebGL), Babylon.js (both). Not tried: PlayCanvas, a Unity WebGL build, an Emscripten build (none is in the repository, and fetching them needed the person's say-so), and a WebGPU device in a worker. Phaser 4 has no WebGPU renderer to try. |
+| Replay fidelity | Identical, or the difference is reported | Met: every capture is replayed when taken and compared pixel for pixel, and the summary says which. |
+| Host survives a forced GPU-process crash | Always | Met, and tested: the GPU process and the whole browser are each killed mid-session, and the host reports it and carries on. |
+
+Two things the Babylon.js pages found, both fixed:
+
+- **A depth texture used as a render target made its framebuffer incomplete in the replay.** A depth texture's contents are not read back, and the replay did not give it storage either, so every draw to Babylon's shadow map was rejected. The replay now allocates it empty, in its own format; the frame's shadow pass fills it.
+- **A WebGPU command encoder made before the captured frame was ignored, and the frame with it.** Babylon makes the next frame's encoder as soon as it has submitted this one's. The capture now makes such an encoder at the point it is first used, and says so in a note. Anything encoded on it before the frame began is not in the capture; the replay check shows whether that mattered.
+
+| The specification says | The code does | Why |
+|---|---|---|
+| The viewer is part of the native window (egui), beside the game view. | It is a page in a window of the supervised browser, served by the host under a made-up origin (`https://viewer.scanline.invalid/`) and reaching the control API through a binding that exists only in that page. | The same reason as the control strip (milestone 4): there is no native window in this build. It keeps the rule that the viewer is a client of the control API and nothing more. |
+| Tiers "can be disabled at launch". | They are fixed when the host starts, from two environment variables, not per session. | A setting a client could pass to `launch` would be a setting the client could choose. |
+| An origin allow-list is offered as a convenience. | Not built. "Served from this machine" is the only origin test. | The tiers answer the need; a list is one more thing to keep. |
+| Import and export are in the files-and-navigation tier. | With the tier on (the default) they work anywhere on disk; with it off they keep to the artefact directory. Whatever the tier, an export is always a `.scanline` file and never replaces a file of another kind. | The second rule is what stops a page's text reaching a file that something will later execute. |
+| The plugin "puts the CLI on the path". | The plugin expects `scanline` to be on the `PATH` already (the install script puts it there). | A plugin's files are data; it cannot install a binary. |
+| `scanline serve --http` adds MCP over loopback HTTP with a token. | Not built. | No client in use here needed it, and it would be the only listening port. |
 
 ## WebGPU capture: what it does not do
 

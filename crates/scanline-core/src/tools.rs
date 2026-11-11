@@ -689,10 +689,11 @@ pub const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "help",
-        description: "How to use Scanline: the workflow, input events, and what is not built yet. Matches this version exactly.",
+        description: "How to use Scanline: the workflow, input events, and what is not built yet, by topic; or a whole skill, the recipe for one kind of job (a wrong pixel, a slow frame, growing memory, working with the person, playing a game). Matches this version exactly.",
         schema: schema!(
             "[]",
-            r#""topic": { "type": "string", "enum": ["workflow", "input", "capture", "analysis", "patch", "page", "handoff", "sql", "security", "limits"] }"#
+            r#""topic": { "type": "string", "enum": ["workflow", "input", "capture", "analysis", "patch", "page", "handoff", "sql", "security", "limits", "skills"] }"#,
+            r#""skill": { "type": "string", "enum": ["scanline", "scanline-wrong-pixels", "scanline-slow-frame", "scanline-memory", "scanline-with-a-person", "scanline-play", "scanline-debuggable-rendering"], "description": "Print this skill instead of a topic." }"#,
         ),
         read_only: true,
     },
@@ -857,7 +858,12 @@ The page protocol (the __scanline global: labels, groups, game objects, marks, s
 controls, debug views, checkpoints), and adapters that name draws by the engine's own
 objects on three.js, PixiJS 8 and Phaser 4: see help(topic: \"page\").
 
-Not built yet (planned, in this order):
+For the person: the control strip, the viewer (viewer: the activity log, live graphs and a
+capture viewer) and the activity log (activity). A capture as one file (export, import).
+Tiers that limit what a client may do: help(topic: \"security\"). Skills, the recipe for
+each kind of job: help(topic: \"skills\").
+
+Not built:
   - For WebGPU captures: which test rejected a draw; uniform values by name (needs WGSL
     reflection; the buffers and textures in each bind group are listed).
   - GPU time per pass on WebGL.
@@ -871,6 +877,9 @@ Not built yet (planned, in this order):
   - Live patching beyond what is built: debug views on the live page, a solid-colour mode
     for draws, substituting a texture from a file, patches that survive a reload; and for
     WebGPU, uniforms by name, filters by event number or texture, and draws in render bundles.
+  - Adapters for Babylon.js and PlayCanvas. Windows and Linux. A loopback HTTP transport
+    for MCP (stdio only). Signed installers and updates: a release is an archive holding
+    the one binary.
 
 Known limits
   - Page protocol: frame.begin and frame.end are counted, not used as frame boundaries; the
@@ -915,7 +924,7 @@ Known limits
   - The flight recorder costs about 200 ns per graphics call on WebGL and 150 to 450 on
     WebGPU while it runs (measured; the aim is 100). It does not keep the contents of a
     texture or buffer the page deletes while it is recording.
-  - Capturing WebGPU has been run on raw WebGPU, three.js and PixiJS, on one device, in a window.
+  - Capturing WebGPU has been run on raw WebGPU, three.js, PixiJS and Babylon.js, on one device, in a window.
     A device in a worker, and other engines, are untried.
   - WGSL reflection (bindings, struct layouts) is not built; WGSL source and messages are.";
 
@@ -1208,6 +1217,9 @@ pub fn help(topic: Option<&str>) -> String {
         Some("sql") => SQL.to_string(),
         Some("limits") => LIMITS.to_string(),
         Some("security") => SECURITY.to_string(),
+        Some("skills") => {
+            format!("{}\n\nRead one with help(skill: \"scanline-wrong-pixels\"), or `scanline skill wrong-pixels` in a shell.", crate::skills::list())
+        }
         _ => WORKFLOW.to_string(),
     }
 }

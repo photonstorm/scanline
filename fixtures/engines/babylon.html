@@ -1,41 +1,80 @@
 <!doctype html>
 <meta charset="utf-8">
-<title>Engine: Babylon.js (WebGL 2)</title>
-<style>body { margin: 0; background: #111; } canvas { display: block; }</style>
-<canvas id="scene" width="320" height="240"></canvas>
+<title>Engine: Babylon.js (WebGL 2 or WebGPU)</title>
+<style>body { margin: 0; background: #111; } canvas { display: block; width: 480px; height: 320px; }</style>
+<canvas id="game" width="480" height="320"></canvas>
 <script src="/node_modules/babylonjs/babylon.js"></script>
-<script>
-const engine = new BABYLON.Engine(document.getElementById('scene'), false);
+<script type="module">
+// A small Babylon.js scene, to check that an engine Scanline has no adapter for is still
+// launched, captured and replayed: a lit ground, three boxes (one see-through), a sphere
+// and a shadow. ?engine=webgpu picks the WebGPU engine.
+const canvas = document.getElementById('game');
+const webgpu = new URL(location.href).searchParams.get('engine') === 'webgpu';
+const options = { antialias: false, adaptToDeviceRatio: false };
+
+let engine;
+
+if (webgpu)
+{
+    engine = new BABYLON.WebGPUEngine(canvas, options);
+    await engine.initAsync();
+}
+else
+{
+    engine = new BABYLON.Engine(canvas, false, { ...options, preserveDrawingBuffer: false, stencil: true });
+}
+
 const scene = new BABYLON.Scene(engine);
 
-scene.clearColor = new BABYLON.Color4(32 / 255, 64 / 255, 96 / 255, 1);
+scene.clearColor = new BABYLON.Color4(0.1, 0.14, 0.24, 1);
 
-const camera = new BABYLON.FreeCamera('camera', new BABYLON.Vector3(0, 0, -8), scene);
+const camera = new BABYLON.FreeCamera('camera', new BABYLON.Vector3(0, 4, -9), scene);
 
-camera.setTarget(BABYLON.Vector3.Zero());
+camera.setTarget(new BABYLON.Vector3(0, 0.8, 0));
 
-const boxes = ['RedBox', 'GreenBox', 'BlueBox'].map((name, i) =>
+const sun = new BABYLON.DirectionalLight('sun', new BABYLON.Vector3(-0.5, -1, 0.6), scene);
+
+sun.position = new BABYLON.Vector3(4, 8, -5);
+new BABYLON.HemisphericLight('sky', new BABYLON.Vector3(0, 1, 0), scene).intensity = 0.35;
+
+const shadows = new BABYLON.ShadowGenerator(512, sun);
+const ground = BABYLON.MeshBuilder.CreateGround('ground', { width: 12, height: 12 }, scene);
+
+ground.material = new BABYLON.StandardMaterial('grass', scene);
+ground.material.diffuseColor = new BABYLON.Color3(0.25, 0.5, 0.25);
+ground.receiveShadows = true;
+
+const colours = [[0.8, 0.5, 0.3], [0.7, 0.7, 0.75], [0.3, 0.5, 0.9]];
+const boxes = colours.map((colour, index) =>
 {
-    const box = BABYLON.MeshBuilder.CreateBox(name, { size: 1 }, scene);
-    const material = new BABYLON.StandardMaterial(name + 'Material', scene);
+    const box = BABYLON.MeshBuilder.CreateBox(`box ${index}`, { size: 1.2 }, scene);
 
-    material.emissiveColor = new BABYLON.Color3(i === 0 ? 1 : 0, i === 1 ? 1 : 0, i === 2 ? 1 : 0);
-    material.disableLighting = true;
-    box.material = material;
-    box.position.x = (i - 1) * 2;
+    box.position = new BABYLON.Vector3(-2.4 + index * 2.4, 0.6, 0);
+    box.material = new BABYLON.StandardMaterial(`paint ${index}`, scene);
+    box.material.diffuseColor = new BABYLON.Color3(...colour);
+    shadows.addShadowCaster(box);
 
     return box;
 });
 
-const state = window.fixture = { name: 'babylon-webgl2', frames: 0, elapsed: 0, lastDelta: 0 };
+boxes[2].material.alpha = 0.5;
+
+const ball = BABYLON.MeshBuilder.CreateSphere('ball', { diameter: 1, segments: 12 }, scene);
+
+ball.position = new BABYLON.Vector3(0, 2, 0);
+ball.material = new BABYLON.StandardMaterial('glow', scene);
+ball.material.emissiveColor = new BABYLON.Color3(1, 0.8, 0.3);
+shadows.addShadowCaster(ball);
+
+const state = window.game = { frame: 0 };
 
 engine.runRenderLoop(() =>
 {
-    state.lastDelta = engine.getDeltaTime();
-    state.elapsed += state.lastDelta;
-    state.frames++;
+    state.frame++;
 
-    boxes[1].position.y = Math.sin(state.elapsed / 500);
+    // Driven by the frame count, not the clock, so a stepped frame is always the same.
+    boxes.forEach((box, index) => { box.rotation.y = state.frame * 0.02 * (index + 1); });
+    ball.position.y = 2 + 0.4 * Math.sin(state.frame * 0.05);
     scene.render();
 });
 </script>

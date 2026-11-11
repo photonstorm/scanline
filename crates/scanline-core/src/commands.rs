@@ -86,7 +86,12 @@ pub async fn launch(host: &Arc<Host>, params: &Value) -> Result<Value> {
         start_paused: start == "paused",
         unmodified: params["unmodified"].as_bool().unwrap_or(false),
         deterministic,
-        browser: params["browser"].as_str().map(Into::into),
+        // The browser named, else SCANLINE_BROWSER (read where the browser is found), else the
+        // pinned one if it has been installed, else whatever is on the machine.
+        browser: params["browser"]
+            .as_str()
+            .map(Into::into)
+            .or_else(|| std::env::var_os("SCANLINE_BROWSER").is_none().then(|| scanline_browser::pinned::pinned_binary(&host.home)).flatten()),
         debug_key: params["debug_key"].as_str().map(str::to_string),
         pointer_lock_shim: match params["pointer_lock"].as_str() {
             None | Some("native") => false,

@@ -1629,7 +1629,13 @@ pub(crate) fn describe_capture(host: &Host, handle: &str, meta: &Value) -> Resul
 
         for row in &failed.rows {
             let event = row[3].as_i64().map(|draw| format!("event {draw}, ")).unwrap_or_default();
-            let why = row[3].as_i64().and_then(|draw| rejection(host, handle, draw, meta["instance_tag"].as_u64().unwrap_or(0))).unwrap_or_default();
+            // A feedback loop is INVALID_OPERATION. Any other error has another cause (an
+            // incomplete framebuffer, say), whatever happens to be bound.
+            let why = row[3]
+                .as_i64()
+                .filter(|_| row[2].as_str().is_some_and(|error| error.contains("INVALID_OPERATION")))
+                .and_then(|draw| rejection(host, handle, draw, meta["instance_tag"].as_u64().unwrap_or(0)))
+                .unwrap_or_default();
 
             lines.push(format!("  {event}call {} {}: {}{why}", row[0], row[1].as_str().unwrap_or(""), page_text(row[2].as_str().unwrap_or(""), 300)));
         }
@@ -2336,7 +2342,7 @@ pub async fn draw(host: &Arc<Host>, params: &Value) -> Result<Value> {
     } else if let Some(error) = state["glError"].as_str() {
         lines.push(format!(
             "  THIS CALL RAISED GL_{error} when replayed: the browser rejected it, so it drew nothing.{}",
-            match feedback(&state, tag) {
+            match feedback(&state, tag).filter(|_| error.contains("INVALID_OPERATION")) {
                 Some((unit, texture)) => format!(
                     " It is a feedback loop: {texture} is the target being drawn to and is also bound on texture unit {unit}. Bind something else on that unit (or nothing) before drawing to {texture}."
                 ),

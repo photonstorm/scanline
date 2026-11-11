@@ -8,7 +8,7 @@ Scanline runs any page in a Chromium it launches and supervises, with instrument
 
 ## Status
 
-Early. The first three milestones of the build plan ("eyes and hands", "inventory" and "capture") work on macOS, with most of the fourth ("together": the hand-off to a person, the flight recorder, runs), much of the fifth ("depth": pixel history, compare, views, profile) and the sixth ("change it live": live patches for WebGL and WebGPU, the page protocol, and adapters for three.js, PixiJS and Phaser).
+Every milestone of the build plan up to 1.0 has been worked through on macOS (Apple silicon). What each one's exit criteria asked for, and where this build falls short of them, is in [docs/DEPARTURES.md](docs/DEPARTURES.md). What only a person at the machine can confirm, and what needs the maintainer's own accounts (signing, a licence, a release host), is in [docs/BY-HAND.md](docs/BY-HAND.md).
 
 **Works**
 
@@ -38,23 +38,31 @@ Early. The first three milestones of the build plan ("eyes and hands", "inventor
 - Marking the frozen frame: after a Debug press the person can click the picture to point at something, drag a box, or type a note in the strip, and each reaches the agent as an event in canvas pixels.
 - Capture when something happens: `capture(when)` runs the page until it raises an error, a frame runs long, the page marks an event or an expression becomes true, and captures that frame with the frames before it.
 - A virtual gamepad, relative mouse moves under a pointer-lock shim, and policies: a function the agent writes that runs in the page once a frame and answers with the input to give.
-- The control strip: a small window under the game's, in the same browser, that shows the person who is driving, what the agent asked of them, the frame number and whether frames are being recorded, with Debug, Pause and Step buttons. This is the only interface there is so far.
+- The control strip: a small window under the game's, in the same browser, that shows the person who is driving, what the agent asked of them, the frame number and whether frames are being recorded, with Debug, Pause and Step buttons.
+- The viewer: a window for the person, in the same browser, with a log of every command the agent runs and what it answered, live graphs of frame time, GPU time, draws and memory, and a capture viewer (the draw list, each event's state and shaders, the target as it stood after any event, zoom and pixel values). It is a client of the same commands the agent has, and nothing in it is a capability the agent lacks.
+- A capture as one file: `export` writes a capture and everything it uses to one `.scanline` file, and `import` reads it into any host, where it answers the same questions and replays.
+- Tiers: the person decides what a client may do when the host starts. By default patching and `eval` work only on pages served from this machine, and `navigate` keeps to the origin a session was launched on. See [docs/SECURITY.md](docs/SECURITY.md).
+- Skills: seven recipes (the core loop, wrong pixels, a slow frame, memory, working with a person, playing, and writing rendering code that can be debugged by name), held in the binary so they always match it: `scanline skill`, or `help(skill)` over MCP. A test checks that every command a skill names exists.
+- A Claude Code plugin (`.claude-plugin/`): the MCP server and the skills, installed from this repository as a marketplace of one.
+- A release archive: `npm run package` builds the one binary (the probe, the replay page and the skills are inside it) and packs it with an install script. `scanline browser install` fetches the pinned Chrome for Testing; `--dry-run` says what it would do.
 - One owner of the input: when the agent takes control, the person's keys and mouse are kept out of the page; when the person has it, the agent may look but not act.
 - Runs: in a deterministic session (seeded random numbers, a fixed time step, a clock that starts from zero) the input a page has received can be saved and played again from a reload, on the same frames. What the page fetched while it ran is kept too, and given again on the frames it first arrived on. A fingerprint of the frame every 30 frames is checked against the original, and the replay stops where they first differ. Stepping and replay can run without waiting for the display: two minutes of play replays in about six seconds.
 - Console, uncaught errors and browser GPU warnings, each with its frame.
 - The host survives the GPU process or the whole browser being killed, and says what happened.
 
-**Not built yet**
+**Not built**
 
 - For WebGPU captures: which test rejected a draw, uniform values by name (WGSL reflection), render bundles built before the frame, external textures.
+- The stencil and mip views, and pixel history, geometry, profile and the replayed views for WebGPU.
+- Overdraw and the like on the live page. Adapters for Babylon.js and PlayCanvas.
+- A Debug hotkey that works when another application has the keyboard.
+- Readback of compressed and depth textures in the live page.
+- The fast binary channel for bulk data, and MCP over loopback HTTP (stdio only).
+- Windows and Linux.
+- Signed and notarised installers, and updates: these need the maintainer's Apple Developer identity and somewhere to publish releases. The packaging script has the steps and they have not been run.
 - A runner that starts the evaluation's agents by itself (the bugs, prompts and scorer exist: see `evals/`).
-- The stencil and mip views, and pixel history, geometry, profile and the views for WebGPU.
-- Overdraw and the like on the live page. WebGPU uniforms by name. Adapters for Babylon.js and PlayCanvas.
-- The rest of the interface: the capture viewer, live graphs and the activity log. A Debug hotkey that works when another application has the keyboard.
-- WGSL reflection. Readback of compressed and depth textures in the live page.
-- The fast binary channel for bulk data. Windows. Installers. A pinned browser download.
 
-It has been run only on macOS (Apple silicon) with the installed Google Chrome 157. Most runs were headless; a session with a visible window has been checked by hand once. Pointer lock and fullscreen are unverified.
+It has been run only on macOS (Apple silicon) with the installed Google Chrome 157. Most runs were headless; sessions with a visible window have been checked by hand for the Debug key and the flight recorder, and the rest of what needs eyes is listed in [docs/BY-HAND.md](docs/BY-HAND.md). No licence has been chosen for the code yet.
 
 ## Requirements
 
@@ -78,6 +86,22 @@ cargo build --release
 ```
 
 The probe and the replay page are built first because the binary embeds them: a host and the scripts it injects are always the same version.
+
+To make a release archive for this machine (the binary, the skills, the plugin files and an install script, in `dist/`):
+
+```bash
+npm run package
+```
+
+To see which browser a launch would use, and what installing the pinned Chrome for Testing would do:
+
+```bash
+scanline browser
+```
+
+```bash
+scanline browser install --dry-run
+```
 
 ## Use it from a shell
 
@@ -138,29 +162,52 @@ scanline recording rec_1
 ```
 
 ```bash
+scanline viewer
+```
+
+```bash
+scanline export cap_1 --path water-flicker.scanline
+```
+
+```bash
+scanline import water-flicker.scanline
+```
+
+```bash
 scanline stop
 ```
 
-`scanline --help` lists every command and `scanline <command> --help` one command's arguments. `scanline help` explains the workflow, `scanline help capture` taking a frame apart, `scanline help input` the input events, and `scanline help limits` what is not built. Add `--json` to any command for the whole result.
+`scanline --help` lists every command and `scanline <command> --help` one command's arguments. `scanline help` explains the workflow, `scanline help capture` taking a frame apart, `scanline help input` the input events, and `scanline help security` what a client may do, and `scanline help limits` what is not built. `scanline skill` lists the skills and `scanline skill wrong-pixels` prints one. Add `--json` to any command for the whole result.
 
 The first command starts a background host that holds the browsers; `scanline stop` ends it and closes them. Images and the host's log are kept under `~/Library/Application Support/Scanline` (set `SCANLINE_HOME` to move them).
 
 ## Use it from an agent
 
-Register the MCP server with an agent client. For Claude Code, in `.mcp.json`:
+The binary is also an MCP server: `scanline mcp`, on stdio. The tools are the same commands with a `gfx_` prefix: `gfx_launch`, `gfx_step`, `gfx_pixels` and so on. `gfx_help` returns the workflow and the skills, and matches the binary exactly.
 
-```json
-{
-  "mcpServers": {
-    "scanline": {
-      "command": "/absolute/path/to/scanline/target/release/scanline",
-      "args": ["mcp"]
-    }
-  }
-}
+**Claude Code.** This repository is a plugin and a marketplace of one. With `scanline` on your `PATH`:
+
+```bash
+claude plugin marketplace add photonstorm/scanline
 ```
 
-The tools are the same commands with a `gfx_` prefix: `gfx_launch`, `gfx_step`, `gfx_pixels` and so on. `gfx_help` returns the workflow, and matches the binary exactly. A skill for agents is in [skills/scanline](skills/scanline/SKILL.md).
+```bash
+claude plugin install scanline@scanline
+```
+
+That registers the MCP server and installs the seven skills. To try the plugin from a checkout without installing it:
+
+```bash
+claude --plugin-dir .
+```
+
+**Any other agent.** Register a stdio MCP server whose command is `scanline` with the argument `mcp`, and write the skills where the agent loads them from:
+
+```bash
+scanline skill --to ~/.claude/skills
+```
+
+To limit what the agent may do, set `SCANLINE_DENY` or `SCANLINE_ALLOW` in the server's environment, with no host already running: see [docs/SECURITY.md](docs/SECURITY.md).
 
 ## Layout
 
@@ -180,8 +227,10 @@ The tools are the same commands with a `gfx_` prefix: `gfx_launch`, `gfx_step`, 
 | `packages/scanline-hooks` | The page protocol as a package a page can import: it does nothing outside Scanline |
 | `evals/` | The agent evaluation: each planted bug's expected diagnosis, the prompt, the scorer and each round's results |
 | `spikes/` | The experiments the build plan asked for before milestone 1, and the Node launcher they share |
-| `docs/` | Spike results, and where the build departs from the specification |
-| `skills/` | Skills that teach an agent to use Scanline |
+| `docs/` | Spike results, where the build departs from the specification, the security review, and what is left to try by hand |
+| `skills/` | Skills that teach an agent to use Scanline. The binary holds a copy of each |
+| `.claude-plugin/` | The Claude Code plugin and its marketplace entry |
+| `tools/` | The script that builds and packs a release |
 | `tests/` | End-to-end tests of the built binary |
 
 ## Tests
@@ -190,7 +239,7 @@ The tools are the same commands with a `gfx_` prefix: `gfx_launch`, `gfx_step`, 
 npm test
 ```
 
-That builds the probe and the replay page, checks their types, runs the probe's browser tests (about a minute), the planted-bug checks, the Rust unit tests, the end-to-end tests of the binary, the tests of what Scanline says about each planted bug, the slow-frame journey, and the page protocol and engine adapters (about 10 to 15 s each). The browser tests launch headless Chromium with throwaway profiles. The parts can be run alone: `npm run test:probe`, `npm run test:bugs`, `cargo test`, `npm run test:e2e`, `npm run test:findings`, `npm run test:journeys`, `npm run test:protocol`.
+That builds the probe and the replay page, checks their types, runs the probe's browser tests (about a minute), the planted-bug checks, the Rust unit tests, the end-to-end tests of the binary, the tests of what Scanline says about each planted bug, the slow-frame journey, the page protocol and engine adapters, captures as files and the tiers, and the skills, browser installer and plugin files (about 10 to 60 s each). The browser tests launch headless Chromium with throwaway profiles. The parts can be run alone: `npm run test:probe`, `npm run test:bugs`, `cargo test`, `npm run test:e2e`, `npm run test:findings`, `npm run test:journeys`, `npm run test:protocol`, `npm run test:security`, `npm run test:package`.
 
 After changing `probe/tools/method-table.mjs`, run `npm run gen:hooks`. `node spikes/s5-replay.mjs` checks that captured frames replay to identical images, `node spikes/s9-overhead.mjs` measures what the hooks cost per call, and `node spikes/m2-verify.mjs` checks the WebGL state mirror against the context after 1,000 frames on every WebGL page.
 

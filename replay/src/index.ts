@@ -80,6 +80,18 @@ const TEXTURE_2D_ARRAY = 0x8C1A;
 
 // How RGBA data read back from a texture is uploaded into a texture of each internal
 // format: [format, channels]. The type comes from the kind of data (bytes or floats).
+// Depth and stencil formats: the format and type that allocate each with no data. WebGL 1's
+// unsized formats take the type the page gave.
+const DEPTH_UPLOAD: Record<number, (type?: number) => [number, number]> = {
+    0x81A5: () => [0x1902, 0x1403],
+    0x81A6: () => [0x1902, 0x1405],
+    0x8CAC: () => [0x1902, 0x1406],
+    0x88F0: () => [0x84F9, 0x84FA],
+    0x8CAD: () => [0x84F9, 0x8DAD],
+    0x1902: (type) => [0x1902, type || 0x1405],
+    0x84F9: (type) => [0x84F9, type || 0x84FA]
+};
+
 const UPLOAD: Record<number, [number, number]> = {
     0x1908: [0x1908, 4], 0x8058: [0x1908, 4], 0x8C43: [0x1908, 4], 0x8056: [0x1908, 4], 0x8057: [0x1908, 4], 0x881A: [0x1908, 4], 0x8814: [0x1908, 4],
     0x1907: [0x1907, 3], 0x8051: [0x1907, 3], 0x8C41: [0x1907, 3], 0x8D62: [0x1907, 3], 0x881B: [0x1907, 3], 0x8815: [0x1907, 3], 0x8C3A: [0x1907, 3], 0x8C3D: [0x1907, 3],
@@ -451,13 +463,18 @@ class Run
                 ? `A ${texture.format} texture's contents could not be captured (${texture.unreadable}), so replay shows it empty.`
                 : `Replaying ${texture.format} textures is not built yet, so one is empty in the replay.`);
 
-            if (!texture.immutable && upload && !three)
+            // A depth texture is never read back, and is nearly always a render target the
+            // frame fills itself. Without storage its framebuffer is incomplete and every
+            // draw to it is rejected, so it is given storage of the right format.
+            const empty: [number, number] | undefined = upload ? [upload[0], texture.type || 0x1401] : DEPTH_UPLOAD[texture.internalFormat]?.(texture.type);
+
+            if (!texture.immutable && empty && !three)
             {
                 const faces = target === TEXTURE_CUBE_MAP ? [0x8515, 0x8516, 0x8517, 0x8518, 0x8519, 0x851A] : [TEXTURE_2D];
 
                 for (const face of faces)
                 {
-                    gl.texImage2D(face, 0, texture.internalFormat, texture.width, texture.height, 0, upload[0], texture.type || 0x1401, null);
+                    gl.texImage2D(face, 0, texture.internalFormat, texture.width, texture.height, 0, empty[0], empty[1], null);
                 }
             }
 

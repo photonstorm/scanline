@@ -45,6 +45,95 @@ fn positional(command: &str) -> &'static [&'static str] {
     }
 }
 
+/// `scanline skill`: the skills held in this binary. Listed, printed, or written out as the
+/// folders an agent loads skills from.
+pub fn skill(args: &[String]) -> Result<String> {
+    use scanline_core::skills;
+
+    let mut name = None;
+    let mut to = None;
+    let mut i = 0;
+
+    while i < args.len() {
+        match args[i].as_str() {
+            "--to" => {
+                i += 1;
+                to = Some(args.get(i).ok_or_else(|| anyhow!("--to needs a directory: scanline skill --to ~/.claude/skills"))?.clone());
+            }
+            "--help" | "-h" => {
+                return Ok(format!(
+                    "scanline skill                    list the skills\nscanline skill <name>             print one (wrong-pixels is short for scanline-wrong-pixels)\nscanline skill --to <dir>         write every skill as <dir>/<name>/SKILL.md, for an agent that loads skills from folders\nscanline skill <name> --to <dir>  write one\n\n{}",
+                    skills::list()
+                ));
+            }
+            other if other.starts_with("--") => bail!("scanline skill does not take {other}. It takes a skill's name and --to <dir>."),
+            other => name = Some(other.to_string()),
+        }
+
+        i += 1;
+    }
+
+    let chosen = match &name {
+        Some(name) => vec![skills::find(name).ok_or_else(|| anyhow!("There is no skill \"{name}\".\n\n{}", skills::list()))?],
+        None => skills::SKILLS.iter().collect(),
+    };
+
+    let Some(to) = to else {
+        return Ok(match name {
+            Some(_) => chosen[0].file.to_string(),
+            None => format!("{}\n\nPrint one with `scanline skill <name>`. Write them out for an agent with `scanline skill --to <dir>`.", skills::list()),
+        });
+    };
+
+    let to = std::path::PathBuf::from(to);
+    let mut lines = Vec::new();
+
+    for skill in chosen {
+        let dir = to.join(skill.name);
+        let file = dir.join("SKILL.md");
+
+        std::fs::create_dir_all(&dir).map_err(|error| anyhow!("Could not create {}: {error}", dir.display()))?;
+        std::fs::write(&file, skill.file).map_err(|error| anyhow!("Could not write {}: {error}", file.display()))?;
+        lines.push(format!("  {}", file.display()));
+    }
+
+    Ok(format!("Wrote {} skill{} of scanline {}:\n{}", lines.len(), if lines.len() == 1 { "" } else { "s" }, env!("CARGO_PKG_VERSION"), lines.join("\n")))
+}
+
+/// `scanline browser`: which browser a launch would use, and installing the pinned one.
+/// Only from a shell: a download is the person's to start, never a client's.
+pub fn browser(args: &[String]) -> Result<String> {
+    use scanline_browser::pinned;
+
+    let home = scanline_core::default_home();
+
+    match args.first().map(String::as_str) {
+        None => Ok(pinned::describe(&home)),
+        Some("install") => {
+            let mut from = None;
+            let mut dry_run = false;
+            let mut i = 1;
+
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--dry-run" | "--dry_run" => dry_run = true,
+                    "--from" => {
+                        i += 1;
+                        from = Some(std::path::PathBuf::from(args.get(i).ok_or_else(|| anyhow!("--from needs the path of a Chrome for Testing zip."))?));
+                    }
+                    other => bail!("scanline browser install does not take {other}. It takes --dry-run and --from <zip>."),
+                }
+
+                i += 1;
+            }
+
+            pinned::install(&home, from.as_deref(), dry_run)
+        }
+        Some("--help" | "-h") => Ok(pinned::describe(&home)),
+        Some(other) => bail!("scanline browser does not take {other}. Use `scanline browser` or `scanline browser install`."),
+    }
+}
+
 pub fn usage() -> String {
     let mut lines = vec![
         format!("scanline {}: a browser for debugging WebGL and WebGPU rendering.", env!("CARGO_PKG_VERSION")),
@@ -66,6 +155,8 @@ pub fn usage() -> String {
         "  serve                    Run the host in this terminal (it is started for you otherwise).".into(),
         "  stop                     Stop the host and close its browsers.".into(),
         "  mcp                      Serve these commands to an agent over MCP on stdio.".into(),
+        "  browser [install]        Which browser a launch would use; install the pinned Chrome for Testing (--dry-run to see first).".into(),
+        "  skill [name] [--to dir]  Print a skill (the recipe for one kind of job), list them, or write them as folders for an agent.".into(),
         String::new(),
         "Arguments".into(),
         "  --name value             Any argument of the command. Values are read as JSON where they parse".into(),
@@ -328,8 +419,9 @@ pub async fn run(args: Vec<String>) -> Result<ExitCode> {
     } else if parsed.command == "help" {
         // A command's name is a topic too.
         let topic = parsed.params["topic"].as_str();
-        let is_topic =
-            |topic: &str| ["workflow", "input", "capture", "analysis", "patch", "page", "handoff", "sql", "security", "limits", "help"].contains(&topic);
+        let is_topic = |topic: &str| {
+            ["workflow", "input", "capture", "analysis", "patch", "page", "handoff", "sql", "security", "limits", "skills", "help"].contains(&topic)
+        };
         let text = match topic.filter(|topic| !is_topic(topic)).and_then(|topic| command_usage(&topic.replace('-', "_"))) {
             Some(usage) => usage,
             // What is in force is the running host's to say. With none running, what a host

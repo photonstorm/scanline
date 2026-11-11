@@ -626,15 +626,45 @@ function copyEvent (capture: Capture, name: string, destination: any, command: n
 
 // ---- Recording ----
 
+const CREATE_ENCODER = METHOD_NAMES.indexOf('GPUDevice.createCommandEncoder');
+
+// An encoder made before the frame began, used in it. Some engines (Babylon.js) make the
+// next frame's encoder as soon as they have submitted this one's. The capture makes it
+// again at the point it is first used. What was encoded on it before the frame, if
+// anything, is not in the capture; the replay check shows whether that mattered.
+function adopt (capture: Capture, method: number, self: any): boolean
+{
+    const gpu = capture.gpu!;
+
+    if (owners[method] !== 'GPUCommandEncoder' || CREATE_ENCODER < 0 || deviceFor(self) !== gpu.device)
+    {
+        return false;
+    }
+
+    let label = '';
+
+    try { label = G.String(self.label ?? ''); } catch { /* a label is a nicety */ }
+
+    capture.commands.push([CREATE_ENCODER, encodeArgs(capture, CREATE_ENCODER, label ? [{ label }] : []), local(capture, self), encode(capture, gpu.device)]);
+    note(capture, 'The frame used a command encoder that was made before it began. The capture makes one at the point it is first used; anything encoded on it earlier is not in the capture.');
+
+    return true;
+}
+
 export function gpuRecord (capture: Capture, _c: Rec, method: number, self: any, result: any, count: number, args: any[]): void
 {
-    if (skipped[method] || !ours(capture, self))
+    if (skipped[method])
     {
         return;
     }
 
     try
     {
+        if (!ours(capture, self) && !adopt(capture, method, self))
+        {
+            return;
+        }
+
         const gpu = capture.gpu!;
         const owner = owners[method];
         const name = names[method];
