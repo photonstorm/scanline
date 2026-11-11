@@ -8,7 +8,7 @@ Read this first, then [DEPARTURES.md](DEPARTURES.md) (what was built and how it 
 
 - Everything is on `main` at github.com/photonstorm/scanline.
 - It builds and runs on two machines: the Mac (Apple silicon, Chrome 157, Metal) and the PC (Windows 11, x64, an NVIDIA RTX 3080 Ti, Chrome 157, Direct3D).
-- **The full suite has not been run on either machine since the last two pieces of work** (`experiment` measuring turn about, and the PlayCanvas adapter with three fixes to capture that it turned up). The owner had to leave, so only the groups that work touched were run on the PC, and they passed: see section 1 for which. Before that, on the PC, the full suite passed: 261 tests in ten groups and 40 Rust unit tests, none failing (`npm test`, about 12 minutes there). Both slow-frame journeys passed with their timing comparison reported and not asserted: see "Things learned the hard way".
+- On the PC every group of the suite passed on the last build: 265 tests in ten groups and 40 Rust unit tests, none failing. They were run a group at a time, some before the last push and the rest straight after it, and not as one `npm test`. Both slow-frame journeys passed with their timing comparison reported and not asserted: see "Things learned the hard way".
 - **On the Mac the suite has not been run since the Windows build**, and the shared code changed: see section 1.
 - Every milestone of the build plan up to 1.0 is worked through, and from the list for after 1.0: the Babylon.js and PlayCanvas adapters, the native-capture profile, assertions for a test run, a recording as a video, and "Send to agent".
 - **Nothing has been compiled or run on Linux.**
@@ -54,7 +54,7 @@ npm ci --os=win32
 
 **Do this first.** Two things make it due.
 
-The last two pieces of work on the PC were pushed without a full run, because the owner had to leave: `experiment` measuring turn about, and the PlayCanvas adapter with the three fixes to capture it turned up (mapped buffers on WebGPU, the texture unit a texture is read through on WebGL, integer textures in the WebGL 2 replay). Those fixes are in the probe and the replay page, which every group uses. What was run on the PC after them is in "What was run last", at the end of this section; the rest was not. On the Mac, PlayCanvas arrives with `npm install` (it is in `package.json` now).
+The last two pieces of work on the PC (`experiment` measuring turn about, and the PlayCanvas adapter with the three fixes to capture it turned up: mapped buffers on WebGPU, the texture unit a texture is read through on WebGL, integer textures in the WebGL 2 replay) have been run on the PC only. Those fixes are in the probe and the replay page, which every group uses. On the Mac, PlayCanvas arrives with `npm install` (it is in `package.json` now).
 
 And the Windows build changed code both platforms share, none of which has been run on the Mac at all:
 
@@ -87,11 +87,9 @@ If a group fails on the Mac, the likeliest places are the ones nobody has run th
 
 ### What was run last
 
-On the PC, after the PlayCanvas adapter and the capture fixes: the Rust unit tests (40 pass), the type check, `npm run test:probe` (52 of 52, PlayCanvas among the engines), `npm run test:protocol` (16 of 16, PlayCanvas on both devices) and `npm run test:package` (5 of 5).
+On the PC on 11 November 2026, on the build that was pushed last, every group passed: the Rust unit tests (40), the type check, `test:wgsl` (10), `test:probe` (52, PlayCanvas among the engines), `test:bugs` (33), `test:e2e` (51), `test:findings` (54), `test:webgpu` (27), `test:journeys` (2), `test:protocol` (16, PlayCanvas on both devices), `test:security` (15) and `test:package` (5). The probe, protocol and package groups were run before the push and the rest after it, each on its own; `npm test` as one command has not been run since the PlayCanvas adapter.
 
-After `experiment` and before the adapter: `test:e2e` (51 of 51), `test:journeys`, `test:security` and `test:package`.
-
-**Not run since the capture fixes:** `test:wgsl`, `test:bugs`, `test:e2e`, `test:findings`, `test:webgpu`, `test:journeys` and `test:security`. `npm test` runs them all.
+On the Mac nothing has been run since before the Windows build.
 
 ## 2. What the Windows build left
 
