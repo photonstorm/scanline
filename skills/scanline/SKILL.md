@@ -86,7 +86,7 @@ Going deeper: `gfx_pixel_history(capture, x, y)` gives everything that happened 
 
 The capture's summary says whether replaying it matched the original frame. If it did not, treat answers from replay with suspicion. Capture handles are shared by every session on the host; each answer names the page and frame its capture is of.
 
-On WebGPU the commands are the same, with these differences. A pass that clears as it begins is an event, as are copies into a texture and compute dispatches. `gfx_draw` shows the pipeline and what each bind group holds (buffers, texture views, samplers); uniform values are bytes in those buffers and are not named. Which test rejected a draw is not worked out: read the pipeline's cull mode and depth compare in `gfx_draw`. A call the browser rejects takes its whole command buffer with it, so the summary quotes the browser's message and marks every event that was in that command buffer DID NOT RUN. That is the usual reason a WebGPU canvas is blank.
+On WebGPU the commands are the same, with these differences. A pass that clears as it begins is an event, as are copies into a texture and compute dispatches. `gfx_draw` shows the pipeline and what each bind group holds (buffers, texture views, samplers), by the names the shaders give them, with the values in its uniform buffers as they stood just before the draw. A call the browser rejects takes its whole command buffer with it, so the summary quotes the browser's message and marks every event that was in that command buffer DID NOT RUN. That is the usual reason a WebGPU canvas is blank.
 
 ## Try the fix before you write it
 
@@ -139,4 +139,4 @@ The person running Scanline decides what a client may do, and it cannot be chang
 
 ## What it cannot do
 
-On WebGPU captures: pixel history, geometry, per-draw profiling and the overdraw, wireframe, draw_id, mip and nan views are not built (they are for WebGL), nor is "which test rejected this draw". The depth and stencil views are: read those to see why a draw is hidden or masked. Babylon.js and PlayCanvas draws are not named by engine object. Windows is not supported. `gfx_help(topic: "limits")` has the current list. If the bug needs one of these, say so rather than guessing from screenshots.
+On WebGPU captures, what a render bundle draws is one event: the analysis that redraws the frame cannot take it apart. Babylon.js and PlayCanvas draws are not named by engine object. Windows is not supported. `gfx_help(topic: "limits")` has the current list. If the bug needs one of these, say so rather than guessing from screenshots.

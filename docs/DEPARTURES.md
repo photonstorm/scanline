@@ -184,7 +184,7 @@ Built: `pixel_history` (WebGL; rejected fragments need WebGL 2), `geometry` (Web
 
 Translated shaders are kept: a WebGL capture holds, for each shader the frame used, what the browser compiled its source to (ANGLE's translation, from `WEBGL_debug_shaders`), in the `translated` column of its `objects` table, and `shader_analysis(handle, capture)` writes it to a file. A shader the page deleted before the capture was taken has none: a deleted shader cannot be asked, and asking every shader as it is compiled would cost a round trip to the GPU process each. WebGPU has no call that gives the translation of a WGSL module.
 
-Not built from the milestone's list: attribution of GPU time within a draw, and exact error attribution beyond what a capture's rejected calls give. For WebGPU captures: pixel history, geometry, `profile` (the live per-pass timings in `stats` stand in for it) and the overdraw, wireframe, draw_id, mip and nan views. Each of those draws the frame's own geometry with another fragment shader or another state, which on WebGPU means building every pipeline again; that is the same work "which test rejected this draw" is waiting on.
+Not built from the milestone's list: attribution of GPU time within a draw, and exact error attribution beyond what a capture's rejected calls give. The analysis of WebGPU captures was not built at the milestone; it was built after milestone 7, and "WebGPU analysis" below says how.
 
 The depth and stencil views are built for WebGPU. The replay notes which depth-stencil texture each colour target was drawn to alongside. Depth is read by a pass that samples that texture into a float target, which works for `depth24plus`, a format a copy cannot read; stencil is copied out. A pass that discards its depth and stencil when it ends, as most do, is replayed keeping them. Checked against `fixtures/history/views-webgpu.html`, whose depths and stencil values are worked out by hand in its source.
 
@@ -318,13 +318,33 @@ Two things the new Babylon.js page (`fixtures/engines/babylon-shadows.html`) fou
 
 ## WebGPU capture: what it does not do
 
-- Which test rejected a draw that changed nothing. The tests are part of the pipeline, so trying a draw without one means building the pipeline again without it.
-- Uniform values by name. That needs WGSL reflection, which is not built. `draw` lists what each bind group holds.
+- What a render bundle draws, one draw at a time. A bundle is one event; its pipelines were set when it was built, so the analysis that redraws the frame leaves it out (draw_id, overdraw) or draws it as it is (wireframe), and says so.
 - Render bundles built before the captured frame, and external textures. The calls that use them fail in replay and the summary says so.
 - The contents of depth, stencil, multisampled and compressed textures. They are empty in replay; a pass normally clears them.
 - Buffers and storage textures the GPU wrote in an earlier frame (a compute simulation) are captured as the frame left them, not as it found them, so such a frame replays one step ahead. Render targets are read before the frame. The replay check shows when this matters.
 - More than one device in a capture. Calls on another device's objects are left out.
 - A call rejected in replay is found by wrapping every call in an error scope. WebGPU reports most errors when an encoder is finished, so the call named is `finish`, with the browser's message saying which pass call was at fault.
+
+## WebGPU analysis
+
+Built after milestone 7, for WebGPU captures: `pixel_history`, "which test rejected this draw" in `draw`, `geometry`, `profile`, uniforms by name in `draw`, and the `draw_id`, `overdraw`, `wireframe`, `mip` and `nan` views. Checked against `fixtures/history/analysis-webgpu.html`, whose every count is worked out by hand (`tests/webgpu.test.mjs`), and run on three.js, PixiJS and Babylon.js on their WebGPU renderers.
+
+WebGL lets a debugger switch a test off or swap a program between two draws. WebGPU fixes all of that in a pipeline, which cannot be changed. So each of these makes variants of the page's pipelines from the descriptors the capture kept, and issues the page's draws with them. The specification says what the commands return; how they are made on WebGPU is this project's.
+
+| Specification | Built | Why |
+|---|---|---|
+| (Not said.) How a pipeline is rebuilt when it was made with layout `'auto'`. | Its bind groups are made again from the page's descriptors against the variant's own layouts. | A pipeline made with `'auto'` takes only bind groups made from its own layouts, and a variant is another pipeline. Most samples and some engines use `'auto'`. |
+| Draw-ID and overdraw replace the fragment shader. | They keep it. A second fragment entry point is written into the page's module: it calls the page's own, then replaces the colour. The event's number arrives as the blend constant, so one variant serves every draw of a pipeline; overdraw adds one with an additive blend. | A different fragment shader uses different resources, which changes an `'auto'` layout and breaks the bind groups. Calling the page's keeps them, and keeps its `discard`: a fragment the shader throws away owns nothing and is not counted, which the WebGL views cannot say. |
+| WGSL reflection. | A reader of this project's own (`replay/src/wgsl.ts`), of declarations only: structs, resource variables, entry points, and the names each function mentions. It lays buffers out by the language's rules and writes the extra entry points. | The browser tells a page nothing about a shader. A full WGSL compiler in the page would be a large dependency for the little that is needed. A module it cannot follow leaves its bindings unnamed and its draws out of draw_id and overdraw, and the result says so. |
+| Geometry reads the vertex shader's output with transform feedback. | WebGPU has none. The draw's vertices are drawn as points to a float texture by an entry point that calls the page's vertex shader, puts each vertex on a pixel of its own and carries the position the page's shader gave it. | It runs the page's own shader on the page's own buffers, with nothing translated. |
+| Pixel history tries a draw with each test off, inside the page's pass. | In a pass of the replay's own on the same attachments, between the page's draws, with occlusion queries and the scissor box shrunk to the pixel. Variants: every test off, a fragment stage that keeps everything (so a discard can be told from a miss), and one test on at a time. | A page's pass cannot be given an occlusion query set after it has begun, and the frame is already split there to read the pixel. |
+| A multisampled target is resolved. | For draw_id, by taking one sample. | The average of two events' numbers is a third event's number. |
+| Wireframe uses a polygon mode. | WebGPU has none. Each triangle draw is issued as a line list with the page's shaders, from an index buffer that names each triangle's three edges. | Lines are not culled, so a triangle that faces away still shows; the result says so. |
+| Profile repeats each draw inside one timer query. | WebGPU times passes, not draws. Each draw is issued in two timed passes of the replay's own, 16 times in one and 32 in the other, and the figure is the difference: what a pass costs by itself cancels. An opaque draw is given a blend that replaces what is there, written in terms of the blend constant. | On a tile-based GPU (Apple's) only the last of several opaque draws to a pixel is shaded, so repeats of an opaque draw cost almost nothing: the fixture's full-screen shader read as 0.1 ms opaque and 1.7 ms blended. A blend that plainly replaces (one, zero) is taken for no blend; one that depends on the blend constant is not. With it the two read the same. |
+
+Limits, all in `help limits`: targets of 8-bit or half-float RGBA for draw_id and overdraw; no overdraw through an sRGB view of the canvas; the mip view colours 8-bit 2D textures; uniform values for the first 48 members and four elements of an array; an `override` used as an array length is not worked out. On the stock profile the browser rounds GPU timestamps to 65.5 µs, so `profile` is good to about 4 µs a draw there; the deep profile has them fine.
+
+**Found on the way, and not changed:** the WebGL `profile` repeats a draw inside one pass too, so on a tile-based GPU an opaque draw that fills many pixels can read low there as well. The same blend would fix it, with care for targets that cannot blend. `help limits` says so.
 
 ## Added, not in the specification
 

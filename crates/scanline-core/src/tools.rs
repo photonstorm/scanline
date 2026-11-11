@@ -404,7 +404,7 @@ pub const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "geometry",
-        description: "What one draw of a capture is given and what its vertex shader makes of it: each vertex attribute with its first values, then where the vertices land in clip space and how many triangles would reach the rasteriser at all (not off screen, behind the eye, of no area, NaN or culled). For a draw that draws nothing, or the wrong shape. WebGL 2.",
+        description: "What one draw of a capture is given and what its vertex shader makes of it: each vertex attribute with its first values, then where the vertices land in clip space and how many triangles would reach the rasteriser at all (not off screen, behind the eye, of no area, NaN or culled). For a draw that draws nothing, or the wrong shape. WebGL 2 and WebGPU.",
         schema: schema!(
             r#"["capture", "draw"]"#,
             session!(),
@@ -416,7 +416,7 @@ pub const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "pixel_history",
-        description: "Everything that happened to one pixel of a capture: each event that covered it, in order, with the value before and after, and for a draw that covered it without changing it, why: outside the scissor box, culled, failed the depth or stencil test, masked, or blended to the same value. Use it when something should be at a pixel and is not. WebGL captures.",
+        description: "Everything that happened to one pixel of a capture: each event that covered it, in order, with the value before and after, and for a draw that covered it without changing it, why: outside the scissor box, culled, failed the depth or stencil test, masked, or blended to the same value. Use it when something should be at a pixel and is not. WebGL and WebGPU captures.",
         schema: schema!(
             r#"["capture", "x", "y"]"#,
             r#""capture": { "type": "string" }"#,
@@ -429,7 +429,7 @@ pub const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "view",
-        description: "A capture seen another way, by replay. overdraw: how often each pixel was drawn. wireframe: triangles as outlines. draw_id: which draw owns each pixel. depth, stencil: that buffer as a picture, with the exact value at x, y. mip: which mip level each pixel sampled. nan: where a float target holds NaN or infinity. WebGL captures; depth and stencil also WebGPU.",
+        description: "A capture seen another way, by replay. overdraw: how often each pixel was drawn. wireframe: triangles as outlines. draw_id: which draw owns each pixel. depth, stencil: that buffer as a picture, with the exact value at x, y. mip: which mip level each pixel sampled. nan: where a float target holds NaN or infinity. WebGL and WebGPU captures.",
         schema: schema!(
             r#"["capture", "view"]"#,
             r#""capture": { "type": "string" }"#,
@@ -445,7 +445,7 @@ pub const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "profile",
-        description: "GPU time of a capture's draws, ranked: by draw, by the program they use (shader), or by pass. Measured by replaying each draw several times inside a timer query. Good for finding which draws and which shader cost the most; says how it was measured and what the figures cannot tell. WebGL 2 captures.",
+        description: "GPU time of a capture's draws, ranked: by draw, by the program they use (shader), or by pass. Measured by replaying each draw several times inside a timer query (WebGL 2) or in timed passes of its own (WebGPU). Good for finding which draws and which shader cost the most; says how it was measured and what the figures cannot tell.",
         schema: schema!(
             r#"["capture"]"#,
             r#""capture": { "type": "string" }"#,
@@ -877,8 +877,13 @@ per frame (WebGL) and per pass (WebGPU).
 Frame capture and replay for WebGL 1, WebGL 2 and WebGPU: the draw list with what each
 event changed, the state at each draw, the target at any draw, which draw produced a pixel,
 calls the browser rejected, SQL over a capture, and a list of what is worth a look.
-WebGL adds uniforms and texture bindings with the call that set each, and which test
-rejected a draw that changed nothing.
+Which test rejected a draw that changed nothing. WebGL adds uniforms and texture bindings
+with the call that set each; WebGPU names what each bind group holds as its shaders do,
+with the values in its buffers.
+
+Analysis of a capture, for WebGL and WebGPU: pixel history, geometry, profile, compare,
+lint, shader_analysis, and the overdraw, wireframe, draw_id, depth, stencil, mip and nan
+views.
 
 The page protocol (the __scanline global: labels, groups, game objects, marks, state,
 controls, debug views, checkpoints), and adapters that name draws by the engine's own
@@ -890,17 +895,13 @@ Tiers that limit what a client may do: help(topic: \"security\"). Skills, the re
 each kind of job: help(topic: \"skills\").
 
 Not built:
-  - For WebGPU captures: which test rejected a draw; uniform values by name (needs WGSL
-    reflection; the buffers and textures in each bind group are listed).
   - GPU time per pass on WebGL.
   - Hand-off to a person, beyond what is built (request_human, the control strip, the Debug
     key, the flight recorder, runs, one owner of the input): a Debug hotkey that works when
     some other application has the keyboard, and the browser's own pointer lock (a shim
     stands in: launch(pointer_lock: \"shim\")).
-  - Analysis, beyond what is built (pixel history, compare, lint, shader_analysis, the
-    overdraw, wireframe, draw_id, depth, stencil, mip and nan views, profile, geometry):
-    for WebGPU captures only compare, lint, shader_analysis and the depth and stencil
-    views are built.
+  - Analysis of what a WebGPU render bundle draws: a bundle is one event, and the views
+    that draw the frame with other pipelines leave it out or draw it as it is.
   - Live patching beyond what is built: debug views on the live page, a solid-colour mode
     for draws, substituting a texture from a file; and for
     WebGPU, uniforms by name, filters by event number or texture, and draws in render bundles.
@@ -927,8 +928,8 @@ Known limits
     textures. A capture that uses one replays it empty, and its replay check says so.
   - pixel_source lists the events that changed a pixel; pixel_history adds the draws that
     covered it and were rejected, and says by what: culling, the depth or stencil test, the
-    scissor box, or the fragment shader discarding it (WebGL 2). A multisampled target is
-    read resolved. Neither reads depth values: WebGL cannot.
+    scissor box, or the fragment shader discarding it (WebGL 2 and WebGPU). A multisampled
+    target is read resolved. Neither reads depth values: view depth does.
   - What each event changed is measured when a capture is taken, by reading its target back
     around every event. A frame too large for that (many events on large targets) goes without.
   - \"Last used\" is tracked for WebGL objects only.
@@ -954,7 +955,19 @@ Known limits
     it still replay; on WebGL only if a kept frame used it.
   - Capturing WebGPU has been run on raw WebGPU, three.js, PixiJS and Babylon.js, on one device, in a window.
     A device in a worker, and other engines, are untried.
-  - WGSL reflection (bindings, struct layouts) is not built; WGSL source and messages are.";
+  - WebGPU analysis reads WGSL itself, since the browser tells a page nothing about a shader:
+    declarations only (structs, resource variables, entry points). A shader it cannot follow
+    leaves its bindings unnamed and its draws out of draw_id and overdraw, and the answer
+    says so. Uniform values are listed for the first 48 members and the first 4 elements of
+    an array. An override used as an array length is not worked out.
+  - WebGPU views write numbers as colours: draw_id and overdraw need a target of 8-bit or
+    half-float RGBA; overdraw cannot count through an sRGB view of the canvas; the mip view
+    colours 8-bit 2D textures. The wireframe view does not cull, so a triangle that faces
+    away still shows its outline.
+  - profile on WebGPU: the stock profile's browser rounds GPU timestamps to 65.5 µs, so a
+    draw is timed to about 4 µs; launch(profile: \"deep\") for finer. The WebGL profile
+    repeats a draw inside one pass, where a tile-based GPU (Apple's) shades only the last of
+    several opaque draws to a pixel: an opaque draw that fills many pixels can read low there.";
 
 const CAPTURE: &str = "\
 Capturing a frame
@@ -999,7 +1012,8 @@ answer names the page and frame its capture is of.
 WebGPU
   The same commands. A pass that clears as it begins is an event (\"clear\"), as are copies
   into a texture (\"blit\") and compute dispatches. draw shows the pipeline and what each
-  bind group holds instead of uniforms. Nothing happens in WebGPU until commands are
+  bind group holds, by the names its shaders give them, with the values in its uniform and
+  storage buffers as they stood just before the draw. Nothing happens in WebGPU until commands are
   submitted, so to show a target after one draw the replay splits the frame there; the
   page's own frame is not affected. A call the browser rejects takes its whole command
   buffer with it: the summary gives the browser's message, and every event that was in that
@@ -1082,7 +1096,8 @@ Going deeper into a capture
   view(capture, view: \"nan\", target)   where a float target holds NaN or infinity
   profile(capture, by: \"shader\")       GPU time of the frame's draws, ranked by draw, by
                                          shader or by pass, measured by replaying each draw
-                                         several times inside a timer query
+                                         several times inside a timer query (WebGL 2) or in
+                                         timed passes of its own (WebGPU)
   trace(frames: 60)                      the live page stepped while the browser traces itself:
                                          how busy the GPU process was, and on what
   lint(capture)                          what is worth a look in the frame, most serious first
@@ -1102,8 +1117,11 @@ Which to reach for
   A frame is slow                                  profile by shader, then shader_analysis of
                                                    the costliest; view overdraw if it is fill
 
-pixel_history and geometry are for WebGL captures (WebGL 2 for rejected fragments and for
-the vertex shader's output). geometry runs the first instance only.
+All of these work on WebGL and WebGPU captures. On WebGL 1, pixel_history lists only events
+that changed the pixel and geometry cannot read the vertex shader's output. geometry runs
+the first instance only. A WebGPU pipeline cannot be changed, so these draw the frame with
+pipelines of their own made from the page's: a draw_id or overdraw fragment keeps what the
+page's shader kept, so a discard counts.
 shader_analysis reads text: it says what a shader could cost, not what it did.";
 
 const PATCH: &str = "\

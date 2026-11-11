@@ -2105,6 +2105,7 @@ pub async fn draw(host: &Arc<Host>, params: &Value) -> Result<Value> {
     let size = (state["targetSize"][0].as_i64().unwrap_or(0), state["targetSize"][1].as_i64().unwrap_or(0));
     let webgpu = meta["api"] == "webgpu";
 
+    let mut bindings = Value::Null;
     let mut lines = vec![format!(
         "{} event {index}: {} to {} (pass {}, call {}).",
         about(host, params, &handle, &meta),
@@ -2180,6 +2181,13 @@ pub async fn draw(host: &Arc<Host>, params: &Value) -> Result<Value> {
         ));
     } else if webgpu && (kind == "draw" || kind == "dispatch") {
         lines.extend(gpu_draw_lines(host, &handle, &state, tag));
+
+        if !state["bindGroups"].as_array().is_none_or(Vec::is_empty) {
+            let (named, reply) = gpu_uniform_lines(host, params, &handle, index, tag).await;
+
+            lines.extend(named);
+            bindings = reply;
+        }
     } else if kind == "draw" {
         lines.push(format!(
             "  {} × {}{}{}",
@@ -2360,6 +2368,10 @@ pub async fn draw(host: &Arc<Host>, params: &Value) -> Result<Value> {
     }
 
     let mut value = result("", json!({ "capture": handle, "draw": index, "state": state }));
+
+    if bindings.is_object() {
+        value["data"]["bindings"] = json!({ "named": bindings["bindings"], "buffers": bindings["buffers"], "provenance": "gpu-measured" });
+    }
 
     // What the event did to its target, measured by running the frame to just before and just after it.
     if let Ok(session) = host.replayer(params) {
@@ -2579,11 +2591,106 @@ fn gpu_draw_lines(host: &Host, handle: &str, state: &Value, tag: u64) -> Vec<Str
         lines.push(format!("  vertex buffer {}: {} from byte {}", buffer["slot"], named("buffer", &buffer["buffer"]), buffer["offset"]));
     }
 
-    if state["kind"] != "dispatch" && !state["bindGroups"].as_array().is_none_or(Vec::is_empty) {
-        lines.push("  Uniform values are bytes in the buffers bound above. resource(handle: \"buf_N\") reads a live buffer; WGSL reflection is not built, so they are not named here.".into());
+    lines
+}
+
+/// What a WebGPU draw's bind groups hold by the names its shaders give them, with the
+/// values in its buffers as they stood just before it: read by replaying up to the draw.
+async fn gpu_uniform_lines(host: &Arc<Host>, params: &Value, handle: &str, index: i64, tag: u64) -> (Vec<String>, Value) {
+    let Ok(session) = host.replayer(params) else {
+        return (
+            vec!["  Uniform values are bytes in the buffers bound above. Naming them and reading their values needs an open session to replay in.".into()],
+            Value::Null,
+        );
+    };
+
+    let reply = match load_into(host, &session, handle).await {
+        Ok(_) => session.replay("uniforms", &json!({ "key": handle, "draw": index }), LONG).await,
+        Err(error) => Err(error),
+    };
+    let Ok(reply) = reply else {
+        return (vec!["  The values in the buffers bound above could not be read by replay.".into()], Value::Null);
+    };
+
+    let bindings = reply["bindings"].as_array().cloned().unwrap_or_default();
+
+    if bindings.is_empty() {
+        return (Vec::new(), Value::Null);
     }
 
-    lines
+    let mut lines =
+        vec!["  What the shaders call each binding, and what its buffer held just before this event (gpu-measured). Names are the page's:".to_string()];
+    let mut shown = 0;
+
+    for binding in &bindings {
+        let buffer =
+            reply["buffers"].as_array().into_iter().flatten().find(|buffer| buffer["group"] == binding["group"] && buffer["binding"] == binding["binding"]);
+
+        lines.push(format!(
+            "    group {} binding {}: «{}» {}{}{}",
+            binding["group"],
+            binding["binding"],
+            page_text(binding["name"].as_str().unwrap_or("?"), 60),
+            page_text(binding["type"].as_str().unwrap_or(""), 80),
+            match binding["space"].as_str() {
+                Some("uniform") => " (uniform buffer)",
+                Some("storage") => " (storage buffer)",
+                _ => "",
+            },
+            match buffer {
+                Some(buffer) => format!(
+                    ", in {}{}",
+                    handle_for("buffer", &buffer["buffer"], tag).unwrap_or_else(|| "a buffer".into()),
+                    if buffer["offset"].as_u64().unwrap_or(0) > 0 { format!(" from byte {}", buffer["offset"]) } else { String::new() }
+                ),
+                None => String::new(),
+            }
+        ));
+
+        let Some(buffer) = buffer else { continue };
+
+        if let Some(why) = buffer["unread"].as_str() {
+            lines.push(format!("      its values are not listed: {}", page_text(why, 160)));
+            continue;
+        }
+
+        for value in buffer["values"].as_array().into_iter().flatten() {
+            if shown == 60 {
+                lines.push("      … more values than are listed here.".into());
+                shown += 1;
+            }
+
+            if shown > 60 {
+                break;
+            }
+
+            let numbers: Vec<String> = value["values"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .take(16)
+                .map(|number| number.as_f64().map(|n| format!("{}", (n * 1e6).round() / 1e6)).unwrap_or_else(|| "NaN".to_string()))
+                .collect();
+
+            lines.push(format!(
+                "      {} ({}) = {}",
+                page_text(value["name"].as_str().unwrap_or("?"), 80),
+                page_text(value["type"].as_str().unwrap_or(""), 40),
+                numbers.join(", ")
+            ));
+            shown += 1;
+        }
+
+        if buffer["more"] == true {
+            lines.push("      … and more members or elements than are listed.".into());
+        }
+    }
+
+    for note in reply["notes"].as_array().into_iter().flatten().filter_map(Value::as_str).take(3) {
+        lines.push(format!("    Note: {}", page_text(note, 200)));
+    }
+
+    (lines, reply)
 }
 
 /// Why an event changed nothing: it is replayed with each test that is on switched off in
@@ -2599,9 +2706,14 @@ async fn unchanged(host: &Arc<Host>, session: &Arc<Session>, handle: &str, index
         return format!("{start} Every fragment was rejected, clipped or wrote what was already there.");
     };
 
-    if tried["unsupported"] == true {
+    if !tried["unsupported"].is_null() {
         return format!(
-            "{start} Every fragment was rejected, clipped or wrote what was already there. Which test rejected it is not worked out for WebGPU yet: the tests are part of the pipeline (cull mode, depth compare, stencil), listed above."
+            "{start} Every fragment was rejected, clipped or wrote what was already there.{}",
+            if tried["unsupported"] == "bundle" {
+                " It is a render bundle, whose pipelines were fixed when it was built, so which test rejected it cannot be tried."
+            } else {
+                ""
+            }
         );
     }
 
@@ -2668,9 +2780,9 @@ fn last_depth_clear(host: &Host, handle: &str, index: i64, state: &Value) -> Opt
 
         if clear["mask"].as_u64().unwrap_or(0) & 0x100 != 0 {
             let depth = clear["clearDepth"].as_f64().unwrap_or(1.0);
-            let hopeless = match state["depth"]["func"].as_u64() {
-                Some(0x0201) => depth <= 0.0,
-                Some(0x0204) => depth >= 1.0,
+            let hopeless = match (state["depth"]["func"].as_u64(), state["depth"]["func"].as_str()) {
+                (Some(0x0201), _) | (_, Some("less")) => depth <= 0.0,
+                (Some(0x0204), _) | (_, Some("greater")) => depth >= 1.0,
                 _ => false,
             };
 

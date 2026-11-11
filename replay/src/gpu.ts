@@ -15,9 +15,9 @@
 //     Later calls reach the new encoder and pass, because the capture names objects by
 //     number and the replay maps those numbers to whatever stands in for them.
 
-type Json = any;
+export type Json = any;
 
-interface CaptureData
+export interface CaptureData
 {
     header: Json;
     objects: Json[];
@@ -56,6 +56,9 @@ const BUFFER_MAP_WRITE = 0x0002;
 const BUFFER_COPY_SRC = 0x0004;
 const BUFFER_COPY_DST = 0x0008;
 
+// The calls that draw in a render pass.
+export const DRAW_CALLS = ['draw', 'drawIndexed', 'drawIndirect', 'drawIndexedIndirect'];
+
 // State a pass keeps until it ends: set again on the pass that continues a split one.
 const PASS_STATE = ['setPipeline', 'setBindGroup', 'setVertexBuffer', 'setIndexBuffer', 'setViewport', 'setScissorRect', 'setBlendConstant', 'setStencilReference', 'setImmediates'];
 
@@ -78,7 +81,7 @@ const READABLE: Record<string, { bytes: number; kind: 'u8' | 'bgra' | 'f16' | 'f
     'rgba32uint': { bytes: 16, kind: 'u32', channels: 4 }
 };
 
-function halfToFloat (half: number): number
+export function halfToFloat (half: number): number
 {
     const exponent = (half >> 10) & 0x1F;
     const fraction = half & 0x3FF;
@@ -107,7 +110,7 @@ export interface Raw
 }
 
 // One pixel of a raw read as four numbers: 0–255 for 8-bit formats, as stored otherwise.
-function pixelOf (raw: Raw, index: number): number[]
+export function pixelOf (raw: Raw, index: number): number[]
 {
     const how = READABLE[raw.format];
     const at = index * raw.bytes;
@@ -130,7 +133,7 @@ function pixelOf (raw: Raw, index: number): number[]
     return out;
 }
 
-function isFloat (format: string): boolean
+export function isFloat (format: string): boolean
 {
     const kind = READABLE[format]?.kind;
 
@@ -138,7 +141,7 @@ function isFloat (format: string): boolean
 }
 
 // A raw read as RGBA8 rows from the top: what an image is made of.
-function toRgba8 (raw: Raw): Uint8Array
+export function toRgba8 (raw: Raw): Uint8Array
 {
     const how = READABLE[raw.format];
     const pixels = raw.width * raw.height;
@@ -166,13 +169,24 @@ function toRgba8 (raw: Raw): Uint8Array
     return out;
 }
 
-interface Open
+export interface Open
 {
     key: string;            // the pass
     encoderKey: string;
     kind: 'render' | 'compute';
     descriptor: Json;       // as given to the browser
     state: number[];        // the commands that set its state, in order
+}
+
+// What a render pass has set so far, by the capture's own numbers for its objects.
+export interface PassNow
+{
+    pipeline: number | null;
+    groups: Map<number, { id: number; offsets: any[] }>;
+    vertex: Map<number, { id: number; offset: number; size: number | null }>;
+    index: { id: number; format: string; offset: number; size: number | null } | null;
+    viewport: number[] | null;
+    scissor: number[] | null;
 }
 
 export class GpuRun
@@ -209,6 +223,16 @@ export class GpuRun
     scopes: Array<Promise<void>> | null = null;
     errors: Json[] = [];
 
+    // What an analysis hangs on the replay.
+    //   onDraw   before a draw in a render pass; true means the analysis issued it itself.
+    //   onBegin  may change the descriptor a render pass is begun with.
+    //   onEnd    after a render pass ends (or is cut short by a flush), with its encoder.
+    //   onTexture  after a texture is made, before the frame or in it.
+    onDraw: ((index: number, name: string, args: any[]) => Promise<boolean>) | null = null;
+    onBegin: ((descriptor: Json, index: number) => Json) | null = null;
+    onEnd: ((open: Open, encoder: any) => void) | null = null;
+    onTexture: ((texture: any, id: number) => void) | null = null;
+
     constructor (item: Loaded, methods: string[])
     {
         this.item = item;
@@ -221,7 +245,7 @@ export class GpuRun
         }
     }
 
-    static async create (item: Loaded, methods: string[]): Promise<GpuRun>
+    static async create (item: Loaded, methods: string[], wanted: string[] = []): Promise<GpuRun>
     {
         const gpu = (navigator as any).gpu;
 
@@ -239,7 +263,7 @@ export class GpuRun
 
         const run = new GpuRun(item, methods);
         const header = item.data.header;
-        const features = (header.features ?? []).filter((feature: string) => adapter.features.has(feature));
+        const features = [...new Set<string>([...(header.features ?? []), ...wanted])].filter((feature: string) => adapter.features.has(feature));
         const limits: Record<string, number> = {};
 
         for (const key of Object.keys(header.limits ?? {}))
@@ -462,7 +486,8 @@ export class GpuRun
             format: record.format,
             // Copies in and out, so it can be filled and read. A multisampled texture allows neither.
             // A depth or stencil texture can also be sampled, which is how its depth is read.
-            usage: (multisampled ? record.usage : (record.usage | COPY_SRC | COPY_DST)) | (DEPTH_FORMATS[record.format] ? TEXTURE_BINDING : 0),
+            // So can a multisampled one, which is how one sample of it is read.
+            usage: (multisampled ? record.usage : (record.usage | COPY_SRC | COPY_DST)) | (DEPTH_FORMATS[record.format] || multisampled ? TEXTURE_BINDING : 0),
             mipLevelCount: record.levels ?? 1,
             sampleCount: record.sampleCount ?? 1,
             dimension: record.dimension ?? '2d',
@@ -486,6 +511,8 @@ export class GpuRun
         {
             this.note(`A ${record.format} texture the frame used could not be read (${record.unreadable}) and is empty in the replay.`);
         }
+
+        this.onTexture?.(texture, record.id);
 
         return texture;
     }
@@ -786,7 +813,7 @@ export class GpuRun
 
         if (owner === 'GPUCommandEncoder' && (name === 'beginRenderPass' || name === 'beginComputePass'))
         {
-            const descriptor = name === 'beginRenderPass' ? this.kept(args[0]) : args[0];
+            const descriptor = name === 'beginRenderPass' ? (this.onBegin ? this.onBegin(this.kept(args[0]), index) : this.kept(args[0])) : args[0];
             const pass = name === 'beginRenderPass' ? receiver.beginRenderPass(descriptor) : receiver.beginComputePass(descriptor);
 
             // The depth-stencil texture that goes with each colour target of the pass.
@@ -815,12 +842,36 @@ export class GpuRun
         {
             // So that it can be read back, as the probe arranges in the page; and a depth or
             // stencil texture sampled, which is how the depth view reads it.
-            args[0] = { ...args[0], usage: args[0].usage | ((args[0].sampleCount ?? 1) === 1 ? COPY_SRC : 0) | (DEPTH_FORMATS[args[0].format] ? TEXTURE_BINDING : 0) };
+            args[0] = { ...args[0], usage: args[0].usage | ((args[0].sampleCount ?? 1) === 1 ? (COPY_SRC | COPY_DST) : 0) | (DEPTH_FORMATS[args[0].format] || (args[0].sampleCount ?? 1) > 1 ? TEXTURE_BINDING : 0) };
         }
 
-        const result = receiver[name](...args);
+        if (owner === 'GPUDevice' && name === 'createBuffer' && args[0] && typeof args[0].usage === 'number' && !(args[0].usage & BUFFER_MAP_READ))
+        {
+            // So that an analysis can read it, as buffers made before the frame can be.
+            args[0] = { ...args[0], usage: args[0].usage | BUFFER_COPY_SRC };
+        }
+
+        let target = receiver;
+
+        if (this.onDraw && this.open && owner === 'GPURenderPassEncoder' && (DRAW_CALLS.includes(name) || name === 'executeBundles'))
+        {
+            if (await this.onDraw(index, name, args))
+            {
+                return;
+            }
+
+            // The analysis may have split the pass, and this call belongs on what continues it.
+            target = this.decode(self);
+        }
+
+        const result = target[name](...args);
 
         this.register(made, result);
+
+        if (owner === 'GPUDevice' && name === 'createTexture' && result && typeof made?.i === 'number')
+        {
+            this.onTexture?.(result, made.i);
+        }
 
         if (owner === 'GPUTexture' && name === 'createView' && result)
         {
@@ -840,6 +891,11 @@ export class GpuRun
         {
             if (name === 'end')
             {
+                if (this.open?.kind === 'render')
+                {
+                    this.onEnd?.(this.open, this.objects.get(this.open.encoderKey));
+                }
+
                 this.open = null;
             }
             else if (this.open && PASS_STATE.includes(name))
@@ -961,6 +1017,11 @@ export class GpuRun
         if (open)
         {
             this.objects.get(open.key)?.end();
+
+            if (open.kind === 'render')
+            {
+                this.onEnd?.(open, this.objects.get(open.encoderKey));
+            }
         }
 
         // Command buffers finished earlier come first, then every encoder still open.
@@ -1027,6 +1088,148 @@ export class GpuRun
                 await after(i);
             }
         }
+    }
+
+    // ---- What an analysis asks of the pass that is open ----
+
+    // The pass that is open, as it stands now: a flush replaces it.
+    pass (): any
+    {
+        return this.open ? this.objects.get(this.open.key) : null;
+    }
+
+    // What the open pass has set, read from the calls that set it.
+    now (): PassNow
+    {
+        const out: PassNow = { pipeline: null, groups: new Map(), vertex: new Map(), index: null, viewport: null, scissor: null };
+        const given = (value: Json): any => (value && typeof value === 'object' && value.$u === 1 ? undefined : value);
+
+        for (const index of this.open?.state ?? [])
+        {
+            const [, encoded] = this.data.commands[index];
+            const [, name] = this.name(index);
+
+            switch (name)
+            {
+                case 'setPipeline':
+                    out.pipeline = encoded[0]?.i ?? null;
+                    break;
+
+                case 'setBindGroup':
+                    if (encoded[1] && typeof encoded[1].i === 'number')
+                    {
+                        out.groups.set(Number(encoded[0]) || 0, { id: encoded[1].i, offsets: encoded.slice(2).map((value: Json) => this.decode(value)) });
+                    }
+                    else
+                    {
+                        out.groups.delete(Number(encoded[0]) || 0);
+                    }
+                    break;
+
+                case 'setVertexBuffer':
+                    if (encoded[1] && typeof encoded[1].i === 'number')
+                    {
+                        out.vertex.set(Number(encoded[0]) || 0, { id: encoded[1].i, offset: given(encoded[2]) ?? 0, size: given(encoded[3]) ?? null });
+                    }
+                    else
+                    {
+                        out.vertex.delete(Number(encoded[0]) || 0);
+                    }
+                    break;
+
+                case 'setIndexBuffer':
+                    out.index = encoded[0] && typeof encoded[0].i === 'number' ? { id: encoded[0].i, format: String(encoded[1]), offset: given(encoded[2]) ?? 0, size: given(encoded[3]) ?? null } : null;
+                    break;
+
+                case 'setViewport':
+                    out.viewport = encoded.slice(0, 6).map(Number);
+                    break;
+
+                case 'setScissorRect':
+                    out.scissor = encoded.slice(0, 4).map(Number);
+                    break;
+            }
+        }
+
+        return out;
+    }
+
+    // Sets on another pass what the open pass has set, leaving out the calls named.
+    apply (pass: any, without: string[] = []): void
+    {
+        for (const index of this.open?.state ?? [])
+        {
+            const [, encoded] = this.data.commands[index];
+            const [, name] = this.name(index);
+
+            if (!without.includes(name) && typeof pass[name] === 'function')
+            {
+                pass[name](...encoded.map((value: Json) => this.decode(value)));
+            }
+        }
+    }
+
+    // Part of a buffer as it stands. Call flush first. Null when it cannot be read.
+    async bytes (buffer: any, offset: number, size: number): Promise<Uint8Array | null>
+    {
+        if (!buffer || !(buffer.usage & BUFFER_COPY_SRC))
+        {
+            return null;
+        }
+
+        // Copies are in whole words.
+        const from = Math.max(0, offset - (offset % 4));
+        const length = Math.min(buffer.size - (buffer.size % 4), Math.ceil((offset + size) / 4) * 4) - from;
+
+        if (length <= 0)
+        {
+            return null;
+        }
+
+        const into = this.device.createBuffer({ size: length, usage: BUFFER_MAP_READ | BUFFER_COPY_DST });
+        const encoder = this.device.createCommandEncoder();
+
+        encoder.copyBufferToBuffer(buffer, from, into, 0, length);
+        this.queue.submit([encoder.finish()]);
+
+        try
+        {
+            await into.mapAsync(0x0001);
+        }
+        catch
+        {
+            into.destroy();
+
+            return null;
+        }
+
+        const out = new Uint8Array(into.getMappedRange()).slice(offset - from, offset - from + size);
+
+        into.unmap();
+        into.destroy();
+
+        return out;
+    }
+
+    // Runs `body` and gives back what the browser said was invalid in it, or null.
+    async checked (body: () => void): Promise<string | null>
+    {
+        this.device.pushErrorScope('validation');
+
+        let thrown: string | null = null;
+
+        try
+        {
+            body();
+        }
+        catch (error: any)
+        {
+            thrown = String(error?.message ?? error);
+        }
+
+        const raised = await this.device.popErrorScope();
+
+        return thrown ?? (raised ? String(raised.message) : null);
     }
 
     // ---- Reading back ----
@@ -1104,17 +1307,17 @@ export class GpuRun
     }
 }
 
-function targetOf (row: Json): Json
+export function targetOf (row: Json): Json
 {
     return row.target ? { texture: row.target, level: row.targetLevel || 0 } : null;
 }
 
-function sameTarget (row: Json, target: Json): boolean
+export function sameTarget (row: Json, target: Json): boolean
 {
     return !row.noTarget && (row.target || 0) === (target?.texture || 0) && (!target?.texture || (row.targetLevel || 0) === (target.level || 0));
 }
 
-function endOf (data: CaptureData, draw: number | null | undefined): number
+export function endOf (data: CaptureData, draw: number | null | undefined): number
 {
     if (draw === null || draw === undefined)
     {

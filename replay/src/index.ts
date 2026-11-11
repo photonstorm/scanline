@@ -8,6 +8,8 @@
 
 import { METHOD_NAMES } from '../../probe/src/hooks/generated';
 import { gpuApi } from './gpu';
+import { gpuAnalysis } from './gpu-analysis';
+import { tally } from './tally';
 
 type Json = any;
 
@@ -1785,9 +1787,7 @@ const api = {
 
         if (isGpu(item))
         {
-            // A WebGPU draw's tests are part of its pipeline: trying it without one means
-            // making the pipeline again without it, which is not built.
-            return { unsupported: true };
+            return gpuAnalysis.why(item, methodsOf(item), args);
         }
 
         const row = item.data.draws[args.draw];
@@ -1875,7 +1875,9 @@ const api = {
 
         if (isGpu(item))
         {
-            return { unsupported: 'webgpu' };
+            const counted = await gpuAnalysis.overdraw(item, methodsOf(item), args);
+
+            return counted.counts ? { ...counted, counts: toBase64(await gzip(counted.counts)) } : counted;
         }
 
         if (item.data.draws.some((row) => row.kind === 'draw' && !row.target && row.stencil))
@@ -2016,7 +2018,7 @@ const api = {
 
         if (isGpu(item))
         {
-            return { unsupported: 'webgpu' };
+            return gpuAnalysis.profile(item, methodsOf(item), args);
         }
 
         const run = new Run(item);
@@ -2157,7 +2159,7 @@ const api = {
 
         if (isGpu(item))
         {
-            return { unsupported: 'webgpu' };
+            return gpuAnalysis.geometry(item, methodsOf(item), args);
         }
 
         const row = item.data.draws[args.draw];
@@ -2404,109 +2406,7 @@ const api = {
                     return slot >= 0 && slot < span ? [got[slot * 4], got[slot * 4 + 1], got[slot * 4 + 2], got[slot * 4 + 3]] : null;
                 };
 
-                // The primitives, as lists of vertex numbers, in the winding the mode gives them.
-                const primitives: number[][] = [];
-                const n = named.length;
-
-                switch (row.mode)
-                {
-                    case 0x0000: for (let i = 0; i < n; i++) { primitives.push([named[i]]); } break;
-                    case 0x0001: for (let i = 0; i + 1 < n; i += 2) { primitives.push([named[i], named[i + 1]]); } break;
-                    case 0x0003: for (let i = 0; i + 1 < n; i++) { primitives.push([named[i], named[i + 1]]); } break;
-                    case 0x0002:
-                        for (let i = 0; i + 1 < n; i++) { primitives.push([named[i], named[i + 1]]); }
-                        if (n > 2) { primitives.push([named[n - 1], named[0]]); }
-                        break;
-                    case 0x0004: for (let i = 0; i + 2 < n; i += 3) { primitives.push([named[i], named[i + 1], named[i + 2]]); } break;
-                    case 0x0005: for (let i = 0; i + 2 < n; i++) { primitives.push(i % 2 ? [named[i + 1], named[i], named[i + 2]] : [named[i], named[i + 1], named[i + 2]]); } break;
-                    default: for (let i = 1; i + 1 < n; i++) { primitives.push([named[0], named[i], named[i + 1]]); } break;
-                }
-
-                const per = row.mode === 0x0000 ? 1 : (row.mode <= 0x0003 ? 2 : 3);
-                const tally = { total: primitives.length, unread: 0, nan: 0, behind: 0, outside: 0, flat: 0, reach: 0, front: 0, back: 0 };
-                const planes: Record<string, number> = { left: 0, right: 0, bottom: 0, top: 0, near: 0, far: 0 };
-                const bounds = { min: [Infinity, Infinity, Infinity], max: [-Infinity, -Infinity, -Infinity] };
-                const clockwise = gl.getParameter(0x0B46) === 0x0900;
-
-                const sides: Array<[string, (c: number[]) => boolean]> = [
-                    ['left', (c) => c[0] < -c[3]], ['right', (c) => c[0] > c[3]],
-                    ['bottom', (c) => c[1] < -c[3]], ['top', (c) => c[1] > c[3]],
-                    ['near', (c) => c[2] < -c[3]], ['far', (c) => c[2] > c[3]]
-                ];
-
-                for (const primitive of primitives)
-                {
-                    const found = primitive.map(at);
-
-                    if (found.some((vertex) => vertex === null))
-                    {
-                        tally.unread++;
-                        continue;
-                    }
-
-                    const v = found as number[][];
-
-                    if (v.some((vertex) => vertex.some((part) => !Number.isFinite(part))))
-                    {
-                        tally.nan++;
-                        continue;
-                    }
-
-                    if (v.every((vertex) => vertex[3] <= 0))
-                    {
-                        tally.behind++;
-                        continue;
-                    }
-
-                    // Wholly beyond one side of the view volume: clipped away entire.
-                    const beyond = sides.find(([, test]) => v.every(test));
-
-                    if (beyond)
-                    {
-                        tally.outside++;
-                        planes[beyond[0]]++;
-                        continue;
-                    }
-
-                    if (per === 3 && v.every((vertex) => vertex[3] > 0))
-                    {
-                        const [a, b, c] = v.map((vertex) => [vertex[0] / vertex[3], vertex[1] / vertex[3]]);
-                        const area = (b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1]);
-
-                        if (Math.abs(area) < 1e-12)
-                        {
-                            tally.flat++;
-                            continue;
-                        }
-
-                        // Counter-clockwise in window space is a positive area.
-                        if ((area > 0) !== clockwise) { tally.front++; } else { tally.back++; }
-                    }
-
-                    for (const vertex of v)
-                    {
-                        if (vertex[3] > 0)
-                        {
-                            for (let axis = 0; axis < 3; axis++)
-                            {
-                                const ndc = vertex[axis] / vertex[3];
-
-                                bounds.min[axis] = Math.min(bounds.min[axis], ndc);
-                                bounds.max[axis] = Math.max(bounds.max[axis], ndc);
-                            }
-                        }
-                    }
-
-                    tally.reach++;
-                }
-
-                summary = {
-                    ...tally,
-                    per,
-                    planes,
-                    bounds: tally.reach > 0 ? bounds : null,
-                    first: named.slice(0, show).map((vertex) => at(vertex))
-                };
+                summary = tally(named, at, row.mode, gl.getParameter(0x0B46) === 0x0900, show, false);
             }
 
             return {
@@ -2542,7 +2442,9 @@ const api = {
 
         if (isGpu(item))
         {
-            return { unsupported: 'webgpu' };
+            const owners = await gpuAnalysis.drawId(item, methodsOf(item), args);
+
+            return owners.data ? { ...owners, ...(await packed(owners)) } : owners;
         }
 
         const run = new Run(item);
@@ -2937,7 +2839,9 @@ const api = {
 
         if (isGpu(item))
         {
-            return { unsupported: 'webgpu' };
+            const tinted = await gpuAnalysis.mip(item, methodsOf(item), args, MIP_COLOURS);
+
+            return { ...tinted, ...(await packed(tinted)) };
         }
 
         const run = new Run(item);
@@ -2967,7 +2871,9 @@ const api = {
 
         if (isGpu(item))
         {
-            return { unsupported: 'webgpu' };
+            const found = await gpuAnalysis.nan(item, methodsOf(item), args);
+
+            return found.marks ? { ...found, marks: toBase64(await gzip(found.marks)) } : found;
         }
 
         const run = new Run(item);
@@ -3034,7 +2940,9 @@ const api = {
 
         if (isGpu(item))
         {
-            return { unsupported: 'webgpu' };
+            const outlined = await gpuAnalysis.wireframe(item, methodsOf(item), args);
+
+            return { ...outlined, ...(await packed(outlined)) };
         }
 
         const run = new Run(item);
@@ -3077,7 +2985,7 @@ const api = {
 
         if (isGpu(item))
         {
-            return { unsupported: 'webgpu' };
+            return gpuAnalysis.history(item, methodsOf(item), args);
         }
 
         const run = new Run(item);
@@ -3298,6 +3206,14 @@ const api = {
         {
             run.dispose();
         }
+    },
+
+    // What a WebGPU draw's bind groups hold, by the names its shaders give them.
+    async uniforms (args: { key: string; draw: number }): Promise<Json>
+    {
+        const item = capture(args.key);
+
+        return isGpu(item) ? gpuAnalysis.uniforms(item, methodsOf(item), args) : { bindings: [], buffers: [], notes: [] };
     },
 
     // A recording of several frames, played through once: the canvas at the end of each

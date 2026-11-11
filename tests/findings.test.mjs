@@ -784,11 +784,12 @@ describe('views of a capture', () =>
 
         assert.deepEqual(early.json.data.values.map((entry) => [entry.value, entry.pixels]), [[0, 9600], [5, 9600]]);
 
-        // The views that need every pipeline rewritten are not built for WebGPU, and say so.
-        const owners = await scanline('view', capture, 'draw_id', '--session', session);
+        // The views that draw the frame with other pipelines work here too: A owns what it
+        // covers, and B what shows beside it.
+        const owners = await scanline('view', capture, 'draw_id', '--session', session, '--json');
 
-        assert.equal(owners.code, 1);
-        assert.match(owners.out, /The draw_id view is built for WebGL captures/);
+        assert.equal(owners.code, 0, owners.out);
+        assert.deepEqual(owners.json.data.owners.map((owner) => [owner.draw, owner.pixels]), [[1, 9600], [2, 4800]]);
     });
 
     test('the mip view shows which level each pixel sampled', async () =>

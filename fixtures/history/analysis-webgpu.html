@@ -1,0 +1,275 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Analysis: a WebGPU frame with known answers</title>
+<style>body { margin: 0; background: #111; } canvas { display: block; }</style>
+<canvas id="game" width="160" height="120"></canvas>
+<script type="module">
+// Every answer here can be worked out by hand. Add ?msaa=4 to draw the scene multisampled.
+//
+// Pass 0 draws to «hdr», a 64×64 rgba16float texture:
+//   event 0  the pass clears it
+//   event 1  H0: all of it, to (0.5, 0.25, 0, 1)
+//   event 2  H1: x 0–16, y 0–16, to 0 ÷ 0: 256 px of NaN
+//   event 3  H2: x 32–40, y 32–40, to 1 ÷ 0: 64 px of infinity
+//
+// Pass 1 draws to the canvas, 160×120, with a depth buffer cleared to 1:
+//   event 4  the pass clears it to (26, 26, 26)
+//   event 5  A: x 0–80, all rows, depth 0.25, red (204, 51, 51). Indexed.
+//   event 6  B: x 40–120, all rows, depth 0.75, blue (51, 51, 204). Behind A where they overlap.
+//   event 7  C: x 120–160, y 0–60, depth 0.5, green. Wound clockwise, so culled: draws nothing.
+//   event 8  D: x 120–160, all rows, depth 0.5. Its shader discards rows 0–59, and samples
+//            level 2 of «checks» (90, 60, 30) for the rest.
+//   event 9  E: x 0–40, y 0–30, depth 0.1, yellow, with the scissor box at x 100–120,
+//            y 0–20: wholly outside it, so it draws nothing.
+//
+// So the canvas ends as:
+//   x   0–80              A   9,600 px
+//   x  80–120             B   4,800 px
+//   x 120–160, y  0–60    nothing but the clear   2,400 px
+//   x 120–160, y 60–120   D   2,400 px
+//
+// Fragments drawn: A 9,600 + B 9,600 + D 2,400 = 21,600 (1.125 a pixel, 2 at most where A
+// and B overlap). Fragments that passed the depth test: 9,600 + 4,800 + 2,400 = 16,800
+// (0.875 a pixel).
+//
+// A, B, C and E use «flat», a pipeline with a layout of its own. D uses «textured» and the
+// hdr pass «glow», both with layout 'auto', which is the harder case for a debugger: their
+// bind groups work with no other pipeline.
+const canvas = document.getElementById('game');
+const adapter = await navigator.gpu.requestAdapter();
+const device = await adapter.requestDevice();
+const context = canvas.getContext('webgpu');
+const format = navigator.gpu.getPreferredCanvasFormat();
+const samples = Number(new URLSearchParams(location.search).get('msaa')) || 1;
+
+context.configure({ device, format, alphaMode: 'opaque' });
+
+const shared = `
+    struct Tint
+    {
+        colour: vec4f,
+        rect: vec4f,        // left, top, right, bottom, in pixels
+        depth: f32
+    }
+
+    @group(0) @binding(0) var<uniform> tint: Tint;
+
+    struct Placed { @builtin(position) position: vec4f, @location(0) uv: vec2f }
+
+    @vertex fn vertex (@location(0) corner: vec2f) -> Placed
+    {
+        let pixel = mix(tint.rect.xy, tint.rect.zw, corner);
+        var out: Placed;
+
+        out.position = vec4f(pixel.x / 160.0 * 2.0 - 1.0, 1.0 - pixel.y / 120.0 * 2.0, tint.depth, 1.0);
+        out.uv = corner;
+
+        return out;
+    }`;
+
+const flatCode = `${shared}
+
+    @fragment fn fragment (in: Placed) -> @location(0) vec4f
+    {
+        return tint.colour;
+    }`;
+
+const texturedCode = `${shared}
+
+    @group(0) @binding(1) var checks: texture_2d<f32>;
+    @group(0) @binding(2) var nearest: sampler;
+
+    @fragment fn fragment (in: Placed) -> @location(0) vec4f
+    {
+        if (in.position.y < 60.0)
+        {
+            discard;
+        }
+
+        return textureSampleLevel(checks, nearest, in.uv, 2.0);
+    }`;
+
+const glowCode = `
+    struct Glow { value: vec4f, zero: f32 }
+
+    @group(0) @binding(0) var<uniform> glow: Glow;
+
+    @vertex fn vertex (@builtin(vertex_index) index: u32) -> @builtin(position) vec4f
+    {
+        return vec4f(f32(i32(index) % 2) * 4.0 - 1.0, f32(i32(index) / 2) * 4.0 - 1.0, 0.0, 1.0);
+    }
+
+    @fragment fn fragment () -> @location(0) vec4f
+    {
+        return glow.value / glow.zero;
+    }`;
+
+const flatModule = device.createShaderModule({ label: 'flat', code: flatCode });
+const texturedModule = device.createShaderModule({ label: 'textured', code: texturedCode });
+const glowModule = device.createShaderModule({ label: 'glow', code: glowCode });
+
+const corners = { arrayStride: 8, attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x2' }] };
+const depthStencil = { format: 'depth24plus', depthWriteEnabled: true, depthCompare: 'less' };
+const multisample = { count: samples };
+
+const tintLayout = device.createBindGroupLayout({
+    label: 'tint',
+    entries: [{ binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } }]
+});
+
+const flat = device.createRenderPipeline({
+    label: 'flat',
+    layout: device.createPipelineLayout({ bindGroupLayouts: [tintLayout] }),
+    vertex: { module: flatModule, entryPoint: 'vertex', buffers: [corners] },
+    fragment: { module: flatModule, entryPoint: 'fragment', targets: [{ format }] },
+    primitive: { topology: 'triangle-list', cullMode: 'back', frontFace: 'ccw' },
+    depthStencil,
+    multisample
+});
+
+const textured = device.createRenderPipeline({
+    label: 'textured',
+    layout: 'auto',
+    vertex: { module: texturedModule, entryPoint: 'vertex', buffers: [corners] },
+    fragment: { module: texturedModule, entryPoint: 'fragment', targets: [{ format }] },
+    primitive: { topology: 'triangle-list', cullMode: 'back', frontFace: 'ccw' },
+    depthStencil,
+    multisample
+});
+
+const glowPipeline = device.createRenderPipeline({
+    label: 'glow',
+    layout: 'auto',
+    vertex: { module: glowModule, entryPoint: 'vertex' },
+    fragment: { module: glowModule, entryPoint: 'fragment', targets: [{ format: 'rgba16float' }] }
+});
+
+// Four corners for the indexed quads, then the same quad as six vertices wound clockwise.
+const vertices = device.createBuffer({ label: 'corners', size: 80, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
+
+device.queue.writeBuffer(vertices, 0, new Float32Array([
+    0, 0, 1, 0, 1, 1, 0, 1,
+    0, 0, 1, 1, 0, 1, 0, 0, 1, 0, 1, 1
+]));
+
+// Counter-clockwise as seen, with y up.
+const indices = device.createBuffer({ label: 'quad', size: 12, usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST });
+
+device.queue.writeBuffer(indices, 0, new Uint16Array([0, 3, 2, 0, 2, 1]));
+
+function uniform (label, numbers)
+{
+    const buffer = device.createBuffer({ label, size: 48, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+
+    device.queue.writeBuffer(buffer, 0, new Float32Array(numbers));
+
+    return buffer;
+}
+
+const tintOf = (label, colour, rect, depth) => uniform(label, [...colour, ...rect, depth, 0, 0, 0]);
+const flatGroup = (label, buffer) => device.createBindGroup({ label, layout: tintLayout, entries: [{ binding: 0, resource: { buffer } }] });
+
+const a = flatGroup('A', tintOf('A', [0.8, 0.2, 0.2, 1], [0, 0, 80, 120], 0.25));
+const b = flatGroup('B', tintOf('B', [0.2, 0.2, 0.8, 1], [40, 0, 120, 120], 0.75));
+const c = flatGroup('C', tintOf('C', [0.2, 0.8, 0.2, 1], [120, 0, 160, 60], 0.5));
+const e = flatGroup('E', tintOf('E', [0.8, 0.8, 0.2, 1], [0, 0, 40, 30], 0.1));
+
+// «checks»: 8×8 with four levels, each one flat colour.
+const checks = device.createTexture({ label: 'checks', size: [8, 8], format: 'rgba8unorm', mipLevelCount: 4, usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
+
+[[200, 200, 200], [150, 150, 150], [90, 60, 30], [10, 10, 10]].forEach((colour, level) =>
+{
+    const edge = 8 >> level;
+    const pixels = new Uint8Array(edge * edge * 4);
+
+    for (let i = 0; i < edge * edge; i++)
+    {
+        pixels.set([...colour, 255], i * 4);
+    }
+
+    device.queue.writeTexture({ texture: checks, mipLevel: level }, pixels, { bytesPerRow: edge * 4 }, [edge, edge]);
+});
+
+const d = device.createBindGroup({
+    label: 'D',
+    layout: textured.getBindGroupLayout(0),
+    entries: [
+        { binding: 0, resource: { buffer: tintOf('D', [1, 1, 1, 1], [120, 0, 160, 120], 0.5) } },
+        { binding: 1, resource: checks.createView() },
+        { binding: 2, resource: device.createSampler({ label: 'nearest', mipmapFilter: 'nearest' }) }
+    ]
+});
+
+const glowGroup = (label, value, zero) => device.createBindGroup({
+    label,
+    layout: glowPipeline.getBindGroupLayout(0),
+    entries: [{ binding: 0, resource: { buffer: uniform(label, [...value, zero, 0, 0, 0, 0, 0, 0, 0]) } }]
+});
+
+const h0 = glowGroup('H0', [0.5, 0.25, 0, 1], 1);
+const h1 = glowGroup('H1', [0, 0, 0, 0], 0);
+const h2 = glowGroup('H2', [1, 1, 1, 1], 0);
+
+const hdr = device.createTexture({ label: 'hdr', size: [64, 64], format: 'rgba16float', usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING });
+const depth = device.createTexture({ label: 'depth', size: [160, 120], format: 'depth24plus', sampleCount: samples, usage: GPUTextureUsage.RENDER_ATTACHMENT });
+const colour = samples > 1 ? device.createTexture({ label: 'multisampled colour', size: [160, 120], format, sampleCount: samples, usage: GPUTextureUsage.RENDER_ATTACHMENT }) : null;
+
+const state = window.game = { frame: 0 };
+
+function frame ()
+{
+    state.frame++;
+
+    const encoder = device.createCommandEncoder();
+    const glowing = encoder.beginRenderPass({
+        label: 'hdr',
+        colorAttachments: [{ view: hdr.createView(), clearValue: [0, 0, 0, 1], loadOp: 'clear', storeOp: 'store' }]
+    });
+
+    glowing.setPipeline(glowPipeline);
+    glowing.setBindGroup(0, h0);
+    glowing.draw(3);
+    glowing.setScissorRect(0, 0, 16, 16);
+    glowing.setBindGroup(0, h1);
+    glowing.draw(3);
+    glowing.setScissorRect(32, 32, 8, 8);
+    glowing.setBindGroup(0, h2);
+    glowing.draw(3);
+    glowing.end();
+
+    const canvasView = context.getCurrentTexture().createView();
+    const pass = encoder.beginRenderPass({
+        label: 'scene',
+        colorAttachments: [{
+            view: colour ? colour.createView() : canvasView,
+            resolveTarget: colour ? canvasView : undefined,
+            clearValue: [0.1, 0.1, 0.1, 1],
+            loadOp: 'clear',
+            storeOp: colour ? 'discard' : 'store'
+        }],
+        depthStencilAttachment: { view: depth.createView(), depthClearValue: 1, depthLoadOp: 'clear', depthStoreOp: 'discard' }
+    });
+
+    pass.setVertexBuffer(0, vertices);
+    pass.setIndexBuffer(indices, 'uint16');
+    pass.setPipeline(flat);
+    pass.setBindGroup(0, a);
+    pass.drawIndexed(6);
+    pass.setBindGroup(0, b);
+    pass.drawIndexed(6);
+    pass.setBindGroup(0, c);
+    pass.draw(6, 1, 4);
+    pass.setPipeline(textured);
+    pass.setBindGroup(0, d);
+    pass.drawIndexed(6);
+    pass.setPipeline(flat);
+    pass.setBindGroup(0, e);
+    pass.setScissorRect(100, 0, 20, 20);
+    pass.drawIndexed(6);
+    pass.end();
+    device.queue.submit([encoder.finish()]);
+    requestAnimationFrame(frame);
+}
+
+requestAnimationFrame(frame);
+</script>

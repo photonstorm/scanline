@@ -361,10 +361,8 @@ pub async fn pixel_history(host: &Arc<Host>, params: &Value) -> Result<Value> {
 
     let reply = session.replay("history", &json!({ "key": handle, "x": x, "y": y, "target": target }), LONG).await?;
 
-    if reply["unsupported"].is_string() {
-        bail!(
-            "pixel_history is built for WebGL captures. For a WebGPU capture, pixel_source lists the events that changed a pixel, and draw_list marks events that changed nothing."
-        );
+    if let Some(reason) = reply["unsupported"].as_str() {
+        bail!("pixel_history cannot be made of this capture ({reason}). pixel_source lists the events that changed a pixel.");
     }
 
     let float = reply["float"] == true;
@@ -509,7 +507,7 @@ pub async fn pixel_history(host: &Arc<Host>, params: &Value) -> Result<Value> {
     }
 
     // A blit only copies: the colour was made on the target it copied from.
-    if let Some(last) = out.iter().rev().find(|row| row["changed"] == true && row["kind"] == "blit") {
+    if let Some(last) = out.iter().rev().find(|row| row["changed"] == true && row["kind"] == "blit").filter(|_| meta["api"] != "webgpu") {
         let state = draw_state(host, &handle, &last["draw"])?;
         let tag = meta["instance_tag"].as_u64().unwrap_or(0);
         let from = match state["readFramebuffer"].as_i64().filter(|id| *id > 0) {
@@ -531,6 +529,15 @@ pub async fn pixel_history(host: &Arc<Host>, params: &Value) -> Result<Value> {
         lines.join("\n"),
         json!({ "capture": handle, "x": x, "y": y, "target": target_name, "history": out, "not_reaching": missed, "discarded": discarded, "provenance": "gpu-measured", "ms": reply["ms"] }),
     ))
+}
+
+/// What a WebGPU replay had to leave out or could not do, in its own words.
+fn replay_notes(reply: &Value, meta: &Value) -> Vec<String> {
+    if meta["api"] != "webgpu" {
+        return Vec::new();
+    }
+
+    reply["notes"].as_array().into_iter().flatten().filter_map(Value::as_str).take(6).map(|note| format!("Note: {}", page_text(note, 300))).collect()
 }
 
 // ---- Geometry ----
@@ -562,6 +569,7 @@ fn numbers(values: &Value) -> String {
         .into_iter()
         .flatten()
         .map(|value| match value.as_f64() {
+            Some(number) if number == 0.0 => "0".to_string(),
             Some(number) if number.fract() == 0.0 && number.abs() < 1e9 => format!("{number:.0}"),
             Some(number) => format!("{}", (number * 1e4).round() / 1e4),
             None => "NaN".to_string(),
@@ -584,14 +592,17 @@ pub async fn geometry(host: &Arc<Host>, params: &Value) -> Result<Value> {
     let reply = session.replay("geometry", &json!({ "key": handle, "draw": index, "vertices": params["vertices"] }), LONG).await?;
 
     match reply["unsupported"].as_str() {
-        Some("webgpu") => bail!("geometry is built for WebGL captures. For a WebGPU capture, draw(capture, draw) lists the vertex buffers and their layouts."),
         Some("not-a-draw") => {
             bail!("Event {index} is a {}, which has no geometry. draw_list shows which events are draws.", reply["kind"].as_str().unwrap_or("clear"))
         }
-        Some(_) => bail!("No program was in use at event {index}, so it drew nothing and has no vertex shader to run."),
+        Some(_) => bail!(
+            "No {} was in use at event {index}, so it drew nothing and has no vertex shader to run.",
+            if meta["api"] == "webgpu" { "pipeline" } else { "program" }
+        ),
         None => {}
     }
 
+    let webgpu = reply["api"] == "webgpu";
     let primitive = |per: u64, count: u64| match per {
         3 => plural(count as i64, "triangle"),
         2 => plural(count as i64, "line"),
@@ -615,7 +626,7 @@ pub async fn geometry(host: &Arc<Host>, params: &Value) -> Result<Value> {
 
     for attribute in reply["attributes"].as_array().into_iter().flatten() {
         let name = attribute["name"].as_str().unwrap_or("?");
-        let kind = glsl_type(&attribute["glslType"]);
+        let kind = attribute["wgslType"].as_str().unwrap_or_else(|| glsl_type(&attribute["glslType"]));
 
         if !attribute["constant"].is_null() {
             lines.push(format!(
@@ -673,7 +684,8 @@ pub async fn geometry(host: &Arc<Host>, params: &Value) -> Result<Value> {
         let total = count("total");
 
         lines.push(format!(
-            "Vertex shader output (clip-space positions, read with transform feedback): {}{}.",
+            "Vertex shader output (clip-space positions, read {}): {}{}.",
+            if webgpu { "by drawing each vertex as a point that carries its position" } else { "with transform feedback" },
             primitive(per, total),
             if reply["capped"].is_null() { String::new() } else { format!(" (the first {} vertices of the draw)", reply["capped"]) }
         ));
@@ -751,13 +763,14 @@ pub async fn geometry(host: &Arc<Host>, params: &Value) -> Result<Value> {
             let ndc = |key: &str, axis: usize| bounds[key][axis].as_f64().unwrap_or(0.0);
 
             lines.push(format!(
-                "  They span x {:.3} to {:.3}, y {:.3} to {:.3}, depth {:.3} to {:.3} in normalised device coordinates (−1 to 1 is in view).",
+                "  They span x {:.3} to {:.3}, y {:.3} to {:.3}, depth {:.3} to {:.3} in normalised device coordinates ({}).",
                 ndc("min", 0),
                 ndc("max", 0),
                 ndc("min", 1),
                 ndc("max", 1),
                 ndc("min", 2),
-                ndc("max", 2)
+                ndc("max", 2),
+                if webgpu { "x and y from −1 to 1 and depth from 0 to 1 are in view" } else { "−1 to 1 is in view" }
             ));
 
             if viewport.len() == 4 {
@@ -782,7 +795,12 @@ pub async fn geometry(host: &Arc<Host>, params: &Value) -> Result<Value> {
         lines.push(format!("Vertex shader output: not read. {why}"));
     }
 
-    lines.push("Positions are before the divide by w. A vertex is in view when −w ≤ x, y, z ≤ w.".into());
+    lines.push(if webgpu {
+        "Positions are before the divide by w. A vertex is in view when −w ≤ x, y ≤ w and 0 ≤ z ≤ w.".to_string()
+    } else {
+        "Positions are before the divide by w. A vertex is in view when −w ≤ x, y, z ≤ w.".to_string()
+    });
+    lines.extend(replay_notes(&reply, &meta));
 
     Ok(result(lines.join("\n"), json!({ "capture": handle, "draw": index, "geometry": reply, "provenance": "gpu-measured" })))
 }
@@ -1351,18 +1369,24 @@ pub async fn profile(host: &Arc<Host>, params: &Value) -> Result<Value> {
     let mut samples: BTreeMap<i64, Vec<f64>> = BTreeMap::new();
     let mut times = 16;
     let mut disjoint = false;
+    let mut passes = false;
+    let mut coarse = false;
 
     for _ in 0..3 {
         let reply = session.replay("profile", &json!({ "key": handle, "times": params["times"] }), LONG).await?;
 
         match reply["unsupported"].as_str() {
-            Some("webgpu") => bail!("profile is built for WebGL captures. For a WebGPU page, stats() gives GPU time per pass while it runs."),
+            Some("no-timestamps") => bail!(
+                "This browser gave the replay no timestamp-query feature, so GPU time cannot be measured by replay. stats() gives GPU time per pass while the page runs, where its device has the feature."
+            ),
             Some(_) => bail!("This browser has no timer queries for WebGL 2 (EXT_disjoint_timer_query_webgl2), so GPU time cannot be measured by replay."),
             None => {}
         }
 
         times = reply["times"].as_u64().unwrap_or(16);
         disjoint |= reply["disjoint"] == true;
+        passes |= reply["how"] == "passes";
+        coarse |= reply["coarse"] == true;
 
         for row in reply["rows"].as_array().into_iter().flatten() {
             samples.entry(row["draw"].as_i64().unwrap_or(-1)).or_default().push(row["ns"].as_f64().unwrap_or(0.0));
@@ -1449,8 +1473,20 @@ pub async fn profile(host: &Arc<Host>, params: &Value) -> Result<Value> {
         }
     }
 
-    lines.push("How it is measured: the frame is replayed, and each draw is issued 16 times in a row inside a timer query before the frame moves on. The figure is that time divided by 16. It ranks draws against each other well; it is not what the draw cost in the page, where it ran once among the others.".into());
-    lines.push("The GPU is made to finish each draw before the next is timed, by reading a pixel of its target back, so a slow draw is not charged to the ones after it. A target with no colour to read (depth only, multisampled) cannot be waited for that way. Treat small differences as noise.".into());
+    if passes {
+        lines.push(format!("How it is measured: WebGPU times passes, not draws. The frame is replayed, and before each draw runs it is issued in two passes of the replay's own on the same attachments: {times} times in one and {} in the other. The figure is the difference between the two, divided by {times}, which leaves out what a pass costs by itself. It ranks draws against each other well; it is not what the draw cost in the page, where it ran once among the others.", times * 2));
+        lines.push(if coarse {
+            format!(
+                "This browser rounds GPU timestamps to 65.5 µs (the stock profile does), so each figure is good to about {:.1} µs and a cheaper draw reads as 0. launch(profile: \"deep\") gives timestamps as the GPU reports them; times: n repeats each draw more.",
+                65.536 / times as f64
+            )
+        } else {
+            "A draw that costs less than the timer can tell apart reads as 0. Treat small differences as noise.".to_string()
+        });
+    } else {
+        lines.push("How it is measured: the frame is replayed, and each draw is issued 16 times in a row inside a timer query before the frame moves on. The figure is that time divided by 16. It ranks draws against each other well; it is not what the draw cost in the page, where it ran once among the others.".into());
+        lines.push("The GPU is made to finish each draw before the next is timed, by reading a pixel of its target back, so a slow draw is not charged to the ones after it. A target with no colour to read (depth only, multisampled) cannot be waited for that way. Treat small differences as noise.".into());
+    }
 
     if disjoint {
         lines.push("Warning: the GPU reported a disjoint while timing (it was interrupted), so some of these figures are unreliable. Run it again.".into());
@@ -1497,6 +1533,13 @@ pub async fn view(host: &Arc<Host>, params: &Value) -> Result<Value> {
             Some("no-stencil") => bail!("The browser would not give the replay a stencil buffer, which overdraw is counted in."),
             Some("no-polygon-mode") => bail!("This browser lacks WEBGL_polygon_mode, which the wireframe view draws with."),
             Some("float-target") => bail!("The draw_id view writes event numbers as 8-bit colours, and that target holds floats."),
+            Some("target-format") => bail!(
+                "The {which} view writes its numbers as colours, which takes a target of 8-bit or half-float RGBA, and that target is {}.",
+                reply["format"].as_str().unwrap_or("something else")
+            ),
+            Some("srgb-view") => {
+                bail!("Overdraw is counted by adding to the canvas, and this frame draws to the canvas through an sRGB view, where additions do not add up.")
+            }
             Some("webgl1") => bail!("The {which} view needs WebGL 2 (it copies the buffer with a blit), and {handle} is a WebGL 1 capture."),
             Some("no-stencil-buffer") => {
                 bail!(
@@ -1520,6 +1563,7 @@ pub async fn view(host: &Arc<Host>, params: &Value) -> Result<Value> {
             let mut lines = vec![format!("{}: overdraw of the canvas. gpu-measured.", about(host, params, &handle, &meta))];
             let mut data = json!({ "capture": handle, "view": "overdraw", "provenance": "gpu-measured" });
             let mut images = Vec::new();
+            let mut last_reply = Value::Null;
 
             // Twice: everything that was rasterised, and what survived the depth test.
             for (name, visible, what) in
@@ -1577,8 +1621,10 @@ pub async fn view(host: &Arc<Host>, params: &Value) -> Result<Value> {
                 images.push(json!({ "view": path, "original": path, "width": width, "height": height, "scale": 1.0, "space": "canvas_px" }));
 
                 data[name] = json!({ "mean": total as f64 / pixels, "max": most, "twice_or_more": share(2), "four_or_more": share(4), "worst": { "x": left, "y": up, "w": right - left + 1, "h": down - up + 1 } });
+                last_reply = reply;
             }
 
+            lines.extend(replay_notes(&last_reply, &meta));
             lines.push("In the pictures: black is never drawn, then blue for once, green twice, yellow-green three times, yellow four, orange five to seven, red eight to fifteen, white more. A large gap between the two figures means a lot was drawn and then hidden: draw front to back, or cull what cannot be seen.".into());
 
             let mut value = result(lines.join("\n"), data);
@@ -1607,13 +1653,14 @@ pub async fn view(host: &Arc<Host>, params: &Value) -> Result<Value> {
 
             let mut value = result(
                 format!(
-                    "{}: the frame{} with its triangles drawn as outlines, in their own colours. gpu-measured. {}",
+                    "{}: the frame{} with its triangles drawn as outlines, in their own colours. gpu-measured. {}{}",
                     about(host, params, &handle, &meta),
                     match params["at_draw"].as_i64() {
                         Some(draw) => format!(" up to event {draw}"),
                         None => String::new(),
                     },
-                    path.display()
+                    path.display(),
+                    replay_notes(&reply, &meta).iter().map(|note| format!("\n{note}")).collect::<String>()
                 ),
                 json!({ "capture": handle, "view": "wireframe", "at_draw": params["at_draw"], "provenance": "gpu-measured" }),
             );
@@ -1701,7 +1748,12 @@ pub async fn view(host: &Arc<Host>, params: &Value) -> Result<Value> {
                 ));
             }
 
-            lines.push("A pixel belongs to the last draw whose triangles covered it and passed the depth, stencil and scissor tests. Blending is ignored (a translucent draw owns what it covers), and so is what the page's fragment shaders do: a discard, or a depth the shader writes itself. In the picture each draw has its own colour; black is no draw.".into());
+            lines.push(if meta["api"] == "webgpu" {
+                "A pixel belongs to the last draw that wrote a fragment there: one that passed the depth, stencil and scissor tests and that its fragment shader did not discard. Blending is ignored (a translucent draw owns what it covers). In the picture each draw has its own colour; black is no draw.".to_string()
+            } else {
+                "A pixel belongs to the last draw whose triangles covered it and passed the depth, stencil and scissor tests. Blending is ignored (a translucent draw owns what it covers), and so is what the page's fragment shaders do: a discard, or a depth the shader writes itself. In the picture each draw has its own colour; black is no draw.".to_string()
+            });
+            lines.extend(replay_notes(&reply, &meta));
 
             if reply["skipped"].as_u64().unwrap_or(0) > 0 {
                 lines.push(format!("{} draws could not be given a stand-in shader and were left out.", reply["skipped"]));

@@ -32,7 +32,7 @@ Timings on a paused, stepped page are of the frames you stepped. A single frame 
 
 `gfx_capture()`, then `gfx_profile(capture, by: "pass")` to see which pass holds the time, and `gfx_profile(capture, by: "shader")` to rank the programs. It replays each draw several times inside a timer and says how it measured. Trust the order and the rough proportions, not the last digit.
 
-On a WebGPU page `profile` is not built. Use the per-pass GPU times in `gfx_stats`, `gfx_pass_tree(capture)` to see what each pass draws, and `gfx_experiment(kind: "skip", filter: {pipeline: "pip_N"})` to measure what one pipeline costs.
+On a WebGPU page `gfx_profile` works the same way, and `by: "shader"` groups by pipeline. WebGPU times passes, not draws, so the replay issues each draw in timed passes of its own; the result says how. On the stock profile the browser rounds GPU timestamps, so a cheap draw reads as 0: `gfx_launch(profile: "deep")` gives fine ones. The per-pass GPU times in `gfx_stats` are from the live page, and `gfx_experiment(kind: "skip", filter: {pipeline: "pip_N"})` measures what one pipeline costs there.
 
 `gfx_view(capture, view: "overdraw")` counts how many times each pixel was drawn. High overdraw with a cheap shader is a sorting or culling problem, not a shader problem.
 
