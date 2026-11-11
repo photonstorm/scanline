@@ -650,14 +650,14 @@ pub const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "experiment",
-        description: "Try a change for a number of frames, measure GPU and CPU frame time with and without it, and take it away again. scissor_1px (every draw clipped to one pixel): is the cost in filling pixels? flat_fragment (one flat colour): in computing colours? textures_2x2 (tiny stand-in textures): in fetching texels? skip with a filter: what do those draws cost? Says what the result implies.",
+        description: "Try a change for a number of frames, measure GPU and CPU frame time with and without it (three times each, turn about), and take it away again. scissor_1px (every draw clipped to one pixel): is the cost in filling pixels? flat_fragment (one flat colour): in computing colours? textures_2x2 (tiny stand-in textures): in fetching texels? skip with a filter: what do those draws cost? Says what the result implies.",
         schema: schema!(
             r#"["kind"]"#,
             session!(),
             context!(),
             r#""kind": { "type": "string", "enum": ["scissor_1px", "flat_fragment", "textures_2x2", "skip"] }"#,
             r#""filter": { "type": "object", "description": "For skip and flat_fragment: which draws. WebGL: {\"program\": \"prg_2\"}, {\"texture\": \"tex_3\"} and/or {\"draws\": [6, 8]}. WebGPU: {\"pipeline\": \"pip_2\"}, {\"texture\": \"tex_3\"} and/or {\"draws\": [6, 8]}." }"#,
-            r#""frames": { "type": "integer", "description": "How many frames to measure each way. Default 60." }"#,
+            r#""frames": { "type": "integer", "description": "How many frames to measure each way, in three turns of no fewer than 10. Default 60." }"#,
         ),
         read_only: false,
     },
@@ -1028,8 +1028,9 @@ Known limits
   - GPU time on a desktop graphics card is not steady. Such a card slows its clock when it
     has little to do, so the same frame can read several times higher a few seconds later,
     and a frame made cheaper can read no lower. Read stats more than once, and trust a
-    difference that holds across readings: experiment measures with and without a change
-    one straight after the other, which is the fairest single comparison there is.
+    difference that holds across readings. experiment measures with and without a change
+    three times each, turn about, gives the middle reading of each, and says so when the
+    readings of one disagree among themselves.
   - profile repeats each draw, and a tile-based GPU (Apple's) shades only the last of several
     opaque draws to a pixel. So a draw with no blend is repeated with one that replaces what
     is there, which costs the same and is shaded every time. A draw to a target that cannot

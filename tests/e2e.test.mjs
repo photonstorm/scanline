@@ -1561,7 +1561,11 @@ describe('live patches', () =>
         const tried = await scanline('experiment', 'scissor_1px', '--frames', '20', '--json');
 
         assert.equal(tried.code, 0, tried.out);
-        assert.match(tried.json.summary, /Tried for 20 frames: every draw clipped to a single pixel/);
+        // Three turns each way, turn about, of no fewer than ten frames: twenty asked for is thirty.
+        assert.match(tried.json.summary, /Tried for 30 frames: every draw clipped to a single pixel/);
+        assert.match(tried.json.summary, /Each is the middle of 3 readings, taken turn about/);
+        assert.deepEqual([tried.json.data.gpu_ms.readings.without.length, tried.json.data.gpu_ms.readings.with.length], [3, 3]);
+        assert.equal(typeof tried.json.data.gpu_ms.steady, 'boolean');
         assert.match(tried.json.summary, /The page is back as it was/);
         assert.equal(typeof tried.json.data.cpu_ms.without, 'number');
         assert.match((await scanline('patches')).out, /No patches are in force/);
@@ -1589,7 +1593,7 @@ describe('live patches', () =>
             const flat = await scanline('experiment', 'flat_fragment', '--frames', '20', '--json');
 
             assert.equal(flat.code, 0, flat.out);
-            assert.match(flat.json.summary, /Tried for 20 frames: every matching draw writing one flat colour \(every draw is drawn in one flat colour/);
+            assert.match(flat.json.summary, /Tried for 30 frames: every matching draw writing one flat colour \(every draw is drawn in one flat colour/);
             assert.ok(flat.json.data.gpu_ms.with < flat.json.data.gpu_ms.without * 0.6, `${page}: ${JSON.stringify(flat.json.data.gpu_ms)}`);
             assert.match((await scanline('patches')).out, /No patches are in force/);
         }
@@ -1605,7 +1609,7 @@ describe('live patches', () =>
             const tiny = await scanline('experiment', 'textures_2x2', '--frames', '12', '--json');
 
             assert.equal(tiny.code, 0, tiny.out);
-            assert.match(tiny.json.summary, new RegExp(`Tried for 12 frames: every plain 2D colour texture stood in for by a 2×2 one \\(${stood} textures stood in for; ${left} left as they are`), tiny.json.summary);
+            assert.match(tiny.json.summary, new RegExp(`Tried for 30 frames: every plain 2D colour texture stood in for by a 2×2 one \\(${stood} textures stood in for; ${left} left as they are`), tiny.json.summary);
             assert.match(tiny.json.summary, /What went is the cost of fetching texels from large textures/);
             assert.match((await scanline('patches')).out, /No patches are in force/);
             assertPixel((await scanline('pixels', 100, 220, '--json')).json.data.rgba8, crate, `${page}: the crate has its own picture again`);

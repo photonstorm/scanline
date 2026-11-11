@@ -680,7 +680,149 @@ pub async fn experiment(session: &Arc<Session>, params: &Value) -> Result<Value>
         }
     };
 
-    let before = measure(session, &context, frames).await?;
+    // With the change and without it, turn about, and the middle reading of each. One
+    // reading of each, one after the other, compares two states of the machine as much as
+    // two ways of drawing: a desktop graphics card slows its clock when it has little to
+    // do, and the same frame can read several times higher a few seconds later.
+    let each = frames.div_ceil(TURNS as u64).max(10);
+    let tried = each * TURNS as u64;
+    let mut without = Vec::new();
+    let mut with = Vec::new();
+    let mut description = String::new();
+    let mut failed = None;
+
+    for turn in 0..TURNS {
+        without.push(measure(session, &context, each).await?);
+
+        let (handles, made) = match put_on(session, &context, kind, &patch).await {
+            Ok(made) => made,
+            Err(error) => {
+                failed = Some(error);
+                break;
+            }
+        };
+
+        if turn == 0 {
+            description = made;
+        }
+
+        let during = measure(session, &context, each).await;
+
+        // Whatever happened, the page goes back to drawing as it did.
+        take_off(session, &handles).await;
+
+        match during {
+            Ok(reading) => with.push(reading),
+            Err(error) => {
+                failed = Some(error);
+                break;
+            }
+        }
+    }
+
+    // One more frame, so that the canvas shows the page's own drawing again and not the
+    // last frame of the experiment.
+    let _ = step(session, &json!({ "frames": 1 })).await;
+
+    if let Some(error) = failed {
+        return Err(error);
+    }
+
+    let gpu = |readings: &[(Option<f64>, f64)]| readings.iter().map(|reading| reading.0).collect::<Option<Vec<f64>>>();
+    let cpu = |readings: &[(Option<f64>, f64)]| middle(&readings.iter().map(|reading| reading.1).collect::<Vec<f64>>());
+    let (gpu_without, gpu_with) = (gpu(&without), gpu(&with));
+    let mut lines = vec![format!("Tried for {tried} frames: {what} ({description}). The page is back as it was.")];
+    let mut steady = None;
+
+    match (&gpu_without, &gpu_with) {
+        (Some(without), Some(with)) => {
+            let (plain, changed) = (middle(without), middle(with));
+
+            lines.push(format!(
+                "GPU time a frame: {} ms without the change, {} ms with it{}. Each is the middle of {TURNS} readings, taken turn about.",
+                number(&json!(plain), 3),
+                number(&json!(changed), 3),
+                if plain > 0.0 {
+                    format!(" ({:.0}% {})", ((changed - plain) / plain * 100.0).abs(), if changed < plain { "less" } else { "more" })
+                } else {
+                    String::new()
+                }
+            ));
+
+            // Readings of the same frame that disagree say the machine moved, not the page.
+            let apart = |readings: &[f64]| readings.iter().cloned().fold(0.0, f64::max) > readings.iter().cloned().fold(f64::INFINITY, f64::min) * 1.5;
+            let listed = |readings: &[f64]| readings.iter().map(|reading| number(&json!(reading), 3)).collect::<Vec<_>>().join(", ");
+
+            steady = Some(!apart(without) && !apart(with));
+
+            if steady == Some(false) {
+                // When no reading of one kind reaches any of the other, which way the
+                // change went is not in doubt, whatever the machine was doing.
+                let highest = |readings: &[f64]| readings.iter().cloned().fold(0.0, f64::max);
+                let lowest = |readings: &[f64]| readings.iter().cloned().fold(f64::INFINITY, f64::min);
+                let clear = highest(with) < lowest(without) || highest(without) < lowest(with);
+
+                lines.push(format!(
+                    "THE READINGS DISAGREE with each other (without: {} ms; with: {} ms), so the GPU's speed was changing while they were taken, as a desktop graphics card's does when it has little to do. {}",
+                    listed(without),
+                    listed(with),
+                    if clear {
+                        "Every reading of one kind is beyond every reading of the other, so which way the change went is sure; how far is rough."
+                    } else {
+                        "The two kinds overlap, so this says little: run it again, or with more frames, and trust what repeats."
+                    }
+                ));
+            }
+        }
+        _ => lines.push("GPU time could not be measured: the browser gave no timer queries for this context.".into()),
+    }
+
+    lines.push(format!("CPU time in the page's frame callbacks: {} ms without, {} ms with.", number(&json!(cpu(&without)), 3), number(&json!(cpu(&with)), 3)));
+    lines.push(meaning.to_string());
+    lines.push("Frames this light are near the limit of what the timer can tell apart: trust a large difference, not a small one.".into());
+
+    Ok(result(
+        lines.join("\n"),
+        json!({
+            "kind": kind,
+            "frames": tried,
+            "gpu_ms": {
+                "without": gpu_without.as_deref().map(middle),
+                "with": gpu_with.as_deref().map(middle),
+                "readings": { "without": gpu_without, "with": gpu_with },
+                "steady": steady,
+            },
+            "cpu_ms": { "without": cpu(&without), "with": cpu(&with) },
+            "provenance": "gpu-measured",
+        }),
+    ))
+}
+
+/// How many times an experiment measures each way.
+const TURNS: usize = 3;
+
+/// The middle one of some readings.
+fn middle(readings: &[f64]) -> f64 {
+    let mut sorted = readings.to_vec();
+
+    sorted.sort_by(f64::total_cmp);
+    sorted.get(sorted.len() / 2).copied().unwrap_or(0.0)
+}
+
+/// Takes an experiment's change away again.
+async fn take_off(session: &Arc<Session>, handles: &[String]) {
+    for handle in handles {
+        let made_here = session.state.lock().unwrap().patches.remove(handle);
+
+        if let Some((instance, id)) = made_here {
+            let _ = session.probe(&instance, "patch.remove", json!({ "patch": id }), SHORT).await;
+        }
+    }
+}
+
+/// Puts an experiment's change in force: one patch, or for textures_2x2 one for every
+/// texture. Gives back the patches made, and what they did in words.
+async fn put_on(session: &Arc<Session>, context: &ContextRef, kind: &str, patch: &Value) -> Result<(Vec<String>, String)> {
     let mut handles = Vec::new();
     let said_made;
     let mut left = 0;
@@ -696,7 +838,7 @@ pub async fn experiment(session: &Arc<Session>, params: &Value) -> Result<Value>
                 continue;
             }
 
-            match add(session, &context, json!({ "kind": "texture", "texture": row["id"], "with": "white", "plain": true, "filter": {} })).await {
+            match add(session, context, json!({ "kind": "texture", "texture": row["id"], "with": "white", "plain": true, "filter": {} })).await {
                 Ok((handle, _)) => handles.push(handle),
                 Err(_) => left += 1,
             }
@@ -714,59 +856,11 @@ pub async fn experiment(session: &Arc<Session>, params: &Value) -> Result<Value>
             if left > 0 { format!("; {left} left as they are: render targets, depth, cube maps, arrays and integer formats") } else { String::new() }
         );
     } else {
-        let (handle, made) = add(session, &context, patch).await?;
+        let (handle, made) = add(session, context, patch.clone()).await?;
 
-        said_made = said(session, &context, made["description"].as_str().unwrap_or(""));
+        said_made = said(session, context, made["description"].as_str().unwrap_or(""));
         handles.push(handle);
     }
 
-    let during = measure(session, &context, frames).await;
-
-    // Whatever happened, the page goes back to drawing as it did.
-    for handle in &handles {
-        let made_here = session.state.lock().unwrap().patches.remove(handle);
-
-        if let Some((instance, id)) = made_here {
-            let _ = session.probe(&instance, "patch.remove", json!({ "patch": id }), SHORT).await;
-        }
-    }
-
-    // One more frame, so that the canvas shows the page's own drawing again and not the
-    // last frame of the experiment.
-    let _ = step(session, &json!({ "frames": 1 })).await;
-
-    let during = during?;
-    let description = said_made;
-    let mut lines = vec![format!("Tried for {frames} frames: {what} ({description}). The page is back as it was.")];
-
-    match (before.0, during.0) {
-        (Some(without), Some(with)) => {
-            lines.push(format!(
-                "GPU time a frame: {} ms without the change, {} ms with it{}.",
-                number(&json!(without), 3),
-                number(&json!(with), 3),
-                if without > 0.0 {
-                    format!(" ({:.0}% {})", ((with - without) / without * 100.0).abs(), if with < without { "less" } else { "more" })
-                } else {
-                    String::new()
-                }
-            ));
-        }
-        _ => lines.push("GPU time could not be measured: the browser gave no timer queries for this context.".into()),
-    }
-
-    lines.push(format!("CPU time in the page's frame callbacks: {} ms without, {} ms with.", number(&json!(before.1), 3), number(&json!(during.1), 3)));
-    lines.push(meaning.to_string());
-    lines.push("Frames this light are near the limit of what the timer can tell apart: trust a large difference, not a small one.".into());
-
-    Ok(result(
-        lines.join("\n"),
-        json!({
-            "kind": kind,
-            "frames": frames,
-            "gpu_ms": { "without": before.0, "with": during.0 },
-            "cpu_ms": { "without": before.1, "with": during.1 },
-            "provenance": "gpu-measured",
-        }),
-    ))
+    Ok((handles, said_made))
 }

@@ -1,7 +1,7 @@
 {
     "name": "scanline",
     "description": "Scanline, a debugger for WebGL and WebGPU rendering that an agent drives.",
-    "owner": { "name": "Scanline" },
+    "owner": { "name": "Richard Davey" },
     "plugins": [
         {
             "name": "scanline",
