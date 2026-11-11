@@ -429,7 +429,7 @@ pub const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "view",
-        description: "A capture seen another way, by replay. overdraw: how often each pixel was drawn. wireframe: triangles as outlines. draw_id: which draw owns each pixel. depth, stencil: that buffer as a picture, with the exact value at x, y. mip: which mip level each pixel sampled. nan: where a float target holds NaN or infinity. WebGL captures.",
+        description: "A capture seen another way, by replay. overdraw: how often each pixel was drawn. wireframe: triangles as outlines. draw_id: which draw owns each pixel. depth, stencil: that buffer as a picture, with the exact value at x, y. mip: which mip level each pixel sampled. nan: where a float target holds NaN or infinity. WebGL captures; depth and stencil also WebGPU.",
         schema: schema!(
             r#"["capture", "view"]"#,
             r#""capture": { "type": "string" }"#,
@@ -899,7 +899,8 @@ Not built:
     stands in: launch(pointer_lock: \"shim\")).
   - Analysis, beyond what is built (pixel history, compare, lint, shader_analysis, the
     overdraw, wireframe, draw_id, depth, stencil, mip and nan views, profile, geometry):
-    all of these but compare, lint and shader_analysis for WebGPU.
+    for WebGPU captures only compare, lint, shader_analysis and the depth and stencil
+    views are built.
   - Live patching beyond what is built: debug views on the live page, a solid-colour mode
     for draws, substituting a texture from a file; and for
     WebGPU, uniforms by name, filters by event number or texture, and draws in render bundles.

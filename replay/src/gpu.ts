@@ -40,6 +40,17 @@ const TYPED: Record<string, any> = {
 const COPY_SRC = 0x01;
 const COPY_DST = 0x02;
 const RENDER_ATTACHMENT = 0x10;
+const TEXTURE_BINDING = 0x04;
+
+// Depth and stencil formats: which aspects each has.
+const DEPTH_FORMATS: Record<string, { depth: boolean; stencil: boolean }> = {
+    'depth16unorm': { depth: true, stencil: false },
+    'depth24plus': { depth: true, stencil: false },
+    'depth24plus-stencil8': { depth: true, stencil: true },
+    'depth32float': { depth: true, stencil: false },
+    'depth32float-stencil8': { depth: true, stencil: true },
+    'stencil8': { depth: false, stencil: true }
+};
 const BUFFER_MAP_READ = 0x0001;
 const BUFFER_MAP_WRITE = 0x0002;
 const BUFFER_COPY_SRC = 0x0004;
@@ -188,6 +199,11 @@ export class GpuRun
     pending: any[] = [];
     submitted = new Set<any>();
     open: Open | null = null;
+
+    // Which texture each view is of, and which depth-stencil texture each colour target was
+    // last drawn to alongside: what the depth and stencil views read.
+    viewOwner = new WeakMap<object, any>();
+    depthBehind = new Map<any, any>();
 
     // When set, every command runs inside an error scope and what it raised is kept.
     scopes: Array<Promise<void>> | null = null;
@@ -357,6 +373,7 @@ export class GpuRun
             const owner = texture ? this.object('texture', texture) : this.canvasTexture;
 
             view = owner.createView(this.revive(descriptor));
+            this.viewOwner.set(view, owner);
             this.views.set(key, view);
         }
 
@@ -444,7 +461,8 @@ export class GpuRun
             size: [record.width, record.height, record.depthOrArrayLayers ?? 1],
             format: record.format,
             // Copies in and out, so it can be filled and read. A multisampled texture allows neither.
-            usage: multisampled ? record.usage : (record.usage | COPY_SRC | COPY_DST),
+            // A depth or stencil texture can also be sampled, which is how its depth is read.
+            usage: (multisampled ? record.usage : (record.usage | COPY_SRC | COPY_DST)) | (DEPTH_FORMATS[record.format] ? TEXTURE_BINDING : 0),
             mipLevelCount: record.levels ?? 1,
             sampleCount: record.sampleCount ?? 1,
             dimension: record.dimension ?? '2d',
@@ -771,21 +789,43 @@ export class GpuRun
             const descriptor = name === 'beginRenderPass' ? this.kept(args[0]) : args[0];
             const pass = name === 'beginRenderPass' ? receiver.beginRenderPass(descriptor) : receiver.beginComputePass(descriptor);
 
+            // The depth-stencil texture that goes with each colour target of the pass.
+            if (name === 'beginRenderPass' && descriptor?.depthStencilAttachment?.view)
+            {
+                const behind = this.viewOwner.get(descriptor.depthStencilAttachment.view);
+
+                for (const attachment of descriptor.colorAttachments ?? [])
+                {
+                    const colour = attachment ? this.viewOwner.get(attachment.resolveTarget ?? attachment.view) : null;
+
+                    if (colour && behind)
+                    {
+                        this.depthBehind.set(colour, behind);
+                    }
+                }
+            }
+
             this.register(made, pass);
             this.open = { key: this.keyOf(made), encoderKey: this.keyOf(self), kind: name === 'beginRenderPass' ? 'render' : 'compute', descriptor, state: [] };
 
             return;
         }
 
-        if (owner === 'GPUDevice' && name === 'createTexture' && args[0] && (args[0].sampleCount ?? 1) === 1 && typeof args[0].usage === 'number')
+        if (owner === 'GPUDevice' && name === 'createTexture' && args[0] && typeof args[0].usage === 'number')
         {
-            // So that it can be read back, as the probe arranges in the page.
-            args[0] = { ...args[0], usage: args[0].usage | COPY_SRC };
+            // So that it can be read back, as the probe arranges in the page; and a depth or
+            // stencil texture sampled, which is how the depth view reads it.
+            args[0] = { ...args[0], usage: args[0].usage | ((args[0].sampleCount ?? 1) === 1 ? COPY_SRC : 0) | (DEPTH_FORMATS[args[0].format] ? TEXTURE_BINDING : 0) };
         }
 
         const result = receiver[name](...args);
 
         this.register(made, result);
+
+        if (owner === 'GPUTexture' && name === 'createView' && result)
+        {
+            this.viewOwner.set(result, receiver);
+        }
 
         if (owner === 'GPUDevice' && name === 'createCommandEncoder')
         {
@@ -1118,6 +1158,129 @@ export const gpuApi = {
             await run.queue.onSubmittedWorkDone();
 
             return { width: raw.width, height: raw.height, data: toRgba8(raw), target, float: isFloat(raw.format), error: run.uncaptured + run.failed, notes: run.notes, ms: performance.now() - started };
+        }
+        finally
+        {
+            run.dispose();
+        }
+    },
+
+    // The depth or the stencil buffer that goes with a target, after an event or at the end
+    // of the frame. Depth is read by a pass that samples the depth texture into a float
+    // target, which works for the formats a copy cannot read (depth24plus). Stencil is copied
+    // out. Either way the answer is four bytes a pixel, as the WebGL recipes give it: a depth
+    // as a 24-bit number in the first three, a stencil value in the first.
+    async depthStencil (item: Loaded, methods: string[], args: { draw?: number | null; target?: Json; aspect: 'depth' | 'stencil' }): Promise<Json>
+    {
+        const run = await GpuRun.create(item, methods);
+
+        try
+        {
+            await run.play(endOf(item.data, args.draw));
+            await run.flush();
+
+            const row = args.draw === null || args.draw === undefined ? null : item.data.draws[args.draw];
+            const target = args.target ?? (row ? targetOf(row) : null);
+            const behind = run.depthBehind.get(run.texture(target));
+            const aspects = behind ? DEPTH_FORMATS[behind.format] : undefined;
+
+            if (!behind || !aspects || !aspects[args.aspect])
+            {
+                return { unsupported: args.aspect === 'depth' ? 'no-depth' : 'no-stencil-buffer' };
+            }
+
+            const device = run.device;
+            const width: number = behind.width;
+            const height: number = behind.height;
+            const data = new Uint8Array(width * height * 4);
+
+            const copyOut = async (texture: any, aspect: string, bytes: number): Promise<Uint8Array> =>
+            {
+                const stride = Math.ceil(width * bytes / 256) * 256;
+                const buffer = device.createBuffer({ size: Math.max(4, stride * height), usage: BUFFER_MAP_READ | BUFFER_COPY_DST });
+                const encoder = device.createCommandEncoder();
+
+                encoder.copyTextureToBuffer({ texture, aspect }, { buffer, bytesPerRow: stride, rowsPerImage: height }, { width, height, depthOrArrayLayers: 1 });
+                run.queue.submit([encoder.finish()]);
+
+                await buffer.mapAsync(0x0001);
+
+                const mapped = new Uint8Array(buffer.getMappedRange());
+                const out = new Uint8Array(width * height * bytes);
+
+                for (let y = 0; y < height; y++)
+                {
+                    out.set(mapped.subarray(y * stride, y * stride + width * bytes), y * width * bytes);
+                }
+
+                buffer.unmap();
+                buffer.destroy();
+
+                return out;
+            };
+
+            if (args.aspect === 'stencil')
+            {
+                if (behind.sampleCount > 1)
+                {
+                    return { unsupported: 'multisampled-stencil' };
+                }
+
+                const values = await copyOut(behind, 'stencil-only', 1);
+
+                for (let i = 0; i < values.length; i++)
+                {
+                    data[i * 4] = values[i];
+                    data[i * 4 + 3] = 255;
+                }
+            }
+            else
+            {
+                const multisampled = behind.sampleCount > 1;
+                const module = device.createShaderModule({ code: `
+                    @group(0) @binding(0) var depth: ${multisampled ? 'texture_depth_multisampled_2d' : 'texture_depth_2d'};
+                    @vertex fn vertex (@builtin(vertex_index) index: u32) -> @builtin(position) vec4f
+                    {
+                        return vec4f(f32(i32(index) % 2) * 4.0 - 1.0, f32(i32(index) / 2) * 4.0 - 1.0, 0.0, 1.0);
+                    }
+                    @fragment fn fragment (@builtin(position) at: vec4f) -> @location(0) vec4f
+                    {
+                        return vec4f(textureLoad(depth, vec2i(at.xy), 0), 0.0, 0.0, 1.0);
+                    }` });
+                const pipeline = device.createRenderPipeline({
+                    layout: 'auto',
+                    vertex: { module, entryPoint: 'vertex' },
+                    fragment: { module, entryPoint: 'fragment', targets: [{ format: 'r32float' }] }
+                });
+                const out = device.createTexture({ size: [width, height], format: 'r32float', usage: RENDER_ATTACHMENT | COPY_SRC });
+                const group = device.createBindGroup({ layout: pipeline.getBindGroupLayout(0), entries: [{ binding: 0, resource: behind.createView({ aspect: 'depth-only' }) }] });
+                const encoder = device.createCommandEncoder();
+                const pass = encoder.beginRenderPass({ colorAttachments: [{ view: out.createView(), clearValue: [0, 0, 0, 0], loadOp: 'clear', storeOp: 'store' }] });
+
+                pass.setPipeline(pipeline);
+                pass.setBindGroup(0, group);
+                pass.draw(3);
+                pass.end();
+                run.queue.submit([encoder.finish()]);
+
+                const depths = new Float32Array((await copyOut(out, 'all', 4)).buffer);
+
+                for (let i = 0; i < depths.length; i++)
+                {
+                    const n = Math.min(16777215, Math.round(Math.min(1, Math.max(0, depths[i])) * 16777215));
+
+                    data[i * 4] = n & 255;
+                    data[i * 4 + 1] = (n >> 8) & 255;
+                    data[i * 4 + 2] = (n >> 16) & 255;
+                    data[i * 4 + 3] = 255;
+                }
+
+                out.destroy();
+            }
+
+            await run.queue.onSubmittedWorkDone();
+
+            return { width, height, data, format: behind.format, error: run.uncaptured + run.failed, notes: run.notes };
         }
         finally
         {

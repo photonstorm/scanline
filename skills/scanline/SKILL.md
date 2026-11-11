@@ -139,4 +139,4 @@ The person running Scanline decides what a client may do, and it cannot be chang
 
 ## What it cannot do
 
-On WebGPU captures: pixel history, geometry, the replayed views (overdraw, wireframe, draw_id, depth, stencil, mip, nan) and per-draw profiling are not built (they are for WebGL), nor is "which test rejected this draw". Babylon.js and PlayCanvas draws are not named by engine object. Windows is not supported. `gfx_help(topic: "limits")` has the current list. If the bug needs one of these, say so rather than guessing from screenshots.
+On WebGPU captures: pixel history, geometry, per-draw profiling and the overdraw, wireframe, draw_id, mip and nan views are not built (they are for WebGL), nor is "which test rejected this draw". The depth and stencil views are: read those to see why a draw is hidden or masked. Babylon.js and PlayCanvas draws are not named by engine object. Windows is not supported. `gfx_help(topic: "limits")` has the current list. If the bug needs one of these, say so rather than guessing from screenshots.

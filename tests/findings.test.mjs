@@ -739,6 +739,58 @@ describe('views of a capture', () =>
         assert.match(none.out, /That target has no stencil buffer/);
     });
 
+    test('WebGPU: the depth and stencil views read the buffers a pass threw away', async () =>
+    {
+        const launched = await scanline('launch', server.url('fixtures/history/views-webgpu.html'), '--headless', '--paused');
+        const session = /Launched (ses_\d+)/.exec(launched.out)?.[1];
+
+        await scanline('step', 3, '--session', session);
+
+        const taken = await scanline('capture', '--session', session);
+        const capture = /^(cap_\d+):/m.exec(taken.out)?.[1];
+
+        assert.match(taken.out, /Replay check: replaying the capture gives an image identical/);
+
+        // Rectangle A at depth 0.25 over the left half, B at 0.75 behind it and to its right:
+        // worked out by hand in the fixture. The buffer is depth24plus-stencil8, which cannot
+        // be copied out, and the page discards it at the end of the pass.
+        const close = (a, b) => Math.abs(a - b) < 1e-6;
+        const depthAt = async (x, ...more) => (await scanline('view', capture, 'depth', '--x', x, '--y', 60, ...more, '--session', session, '--json')).json;
+        const left = await depthAt(20);
+
+        assert.ok(close(left.data.depth_at.depth, 0.25), JSON.stringify(left.data));
+        assert.ok(close(left.data.nearest, 0.25) && close(left.data.farthest, 0.75));
+        assert.equal(left.data.at_far, 4800);
+        assert.ok(close((await depthAt(60)).data.depth_at.depth, 0.25), 'B is behind A where they overlap');
+        assert.ok(close((await depthAt(100)).data.depth_at.depth, 0.75));
+        assert.equal((await depthAt(140)).data.depth_at.depth, 1);
+
+        // After A alone, B's place still holds the clear value.
+        assert.equal((await depthAt(100, '--at_draw', 1)).data.depth_at.depth, 1);
+        assert.deepEqual(readFileSync(left.images[0].view).subarray(0, 4), PNG);
+
+        // A replaces the stencil with 5; B adds 1 where it passes the depth test, and nothing where it fails.
+        const stencil = await scanline('view', capture, 'stencil', '--x', 60, '--y', 60, '--session', session, '--json');
+
+        assert.equal(stencil.code, 0, stencil.out);
+        assert.deepEqual(stencil.json.data.values, [
+            { value: 0, pixels: 4800, box: { x: 120, y: 0, w: 40, h: 120 } },
+            { value: 1, pixels: 4800, box: { x: 80, y: 0, w: 40, h: 120 } },
+            { value: 5, pixels: 9600, box: { x: 0, y: 0, w: 80, h: 120 } }
+        ]);
+        assert.equal(stencil.json.data.stencil_at.value, 5);
+
+        const early = await scanline('view', capture, 'stencil', '--at_draw', 1, '--session', session, '--json');
+
+        assert.deepEqual(early.json.data.values.map((entry) => [entry.value, entry.pixels]), [[0, 9600], [5, 9600]]);
+
+        // The views that need every pipeline rewritten are not built for WebGPU, and say so.
+        const owners = await scanline('view', capture, 'draw_id', '--session', session);
+
+        assert.equal(owners.code, 1);
+        assert.match(owners.out, /The draw_id view is built for WebGL captures/);
+    });
+
     test('the mip view shows which level each pixel sampled', async () =>
     {
         const launched = await scanline('launch', server.url('fixtures/history/views.html'), '--headless', '--paused');

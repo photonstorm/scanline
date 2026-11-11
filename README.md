@@ -53,7 +53,7 @@ Every milestone of the build plan up to 1.0 has been worked through on macOS (Ap
 **Not built**
 
 - For WebGPU captures: which test rejected a draw, uniform values by name (WGSL reflection), render bundles built before the frame, external textures.
-- Pixel history, geometry, profile and the replayed views for WebGPU captures.
+- For WebGPU captures: pixel history, geometry, profile, and the overdraw, wireframe, draw-ID, mip and NaN views (the depth and stencil views are built).
 - Overdraw and the like on the live page. Adapters for Babylon.js and PlayCanvas.
 - A Debug hotkey that works when another application has the keyboard.
 - Readback of compressed and depth textures in the live page.

@@ -101,3 +101,7 @@ Scanline has no adapter for Babylon.js, so its draws are not named by mesh, but 
 ## Views with known answers (`history/views.html`)
 
 A WebGL 2 page for the stencil and mip views. Two overlapping squares write the stencil buffer (one replaces it with 5, the other adds 1), so the values and how many pixels hold each can be worked out by hand: they are in the page's opening comment. One mipmapped texture is drawn at three sizes with a nearest mip filter, so each square reads exactly one level (0, 2 and 3), and a second texture has no mipmaps at all.
+
+`history/views-webgpu.html` is the WebGPU page for the depth and stencil views: two rectangles at known depths, one replacing the stencil and one adding to it where it passes the depth test, on a `depth24plus-stencil8` buffer the pass discards when it ends. The values by column are in its opening comment.
+
+`history/deleted.html` (and `?api=webgpu`) deletes a texture and a vertex buffer at frame 20 and replaces them, for the flight recorder: a recording that spans frame 20 has to replay the frames before it with what the page has thrown away.

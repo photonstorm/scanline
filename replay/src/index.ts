@@ -2652,7 +2652,9 @@ const api = {
 
         if (isGpu(item))
         {
-            return { unsupported: 'webgpu' };
+            const read = await gpuApi.depthStencil(item, methodsOf(item), { ...args, aspect: 'depth' });
+
+            return read.unsupported ? read : { ...read, ...(await packed(read as any)) };
         }
 
         const run = new Run(item);
@@ -2789,7 +2791,9 @@ const api = {
 
         if (isGpu(item))
         {
-            return { unsupported: 'webgpu' };
+            const read = await gpuApi.depthStencil(item, methodsOf(item), { ...args, aspect: 'stencil' });
+
+            return read.unsupported ? read : { ...read, ...(await packed(read as any)) };
         }
 
         const run = new Run(item);

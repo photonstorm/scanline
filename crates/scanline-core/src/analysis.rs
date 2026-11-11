@@ -1499,10 +1499,17 @@ pub async fn view(host: &Arc<Host>, params: &Value) -> Result<Value> {
             Some("float-target") => bail!("The draw_id view writes event numbers as 8-bit colours, and that target holds floats."),
             Some("webgl1") => bail!("The {which} view needs WebGL 2 (it copies the buffer with a blit), and {handle} is a WebGL 1 capture."),
             Some("no-stencil-buffer") => {
-                bail!("That target has no stencil buffer: the page's canvas was made without one (stencil: true), or the framebuffer has none attached.")
+                bail!(
+                    "That target has no stencil buffer: the page's canvas was made without one (stencil: true), the framebuffer has none attached, or (WebGPU) no pass up to that point drew to it with a depth-stencil attachment that has a stencil aspect."
+                )
             }
             Some("no-stencil-copy") => bail!("The stencil buffer of that target could not be copied out: its format is not one the replay could match."),
-            Some("no-depth") => bail!("That target has no depth buffer the replay could copy: none is attached, or its format is not one a texture can take."),
+            Some("multisampled-stencil") => bail!(
+                "That target's stencil buffer is multisampled, and WebGPU cannot copy a multisampled texture out. The depth view can read it: it samples."
+            ),
+            Some("no-depth") => bail!(
+                "That target has no depth buffer the replay could read: no pass up to that point drew to it with a depth attachment, or (WebGL) its format is not one a texture can take."
+            ),
             Some(other) => bail!("The {which} view cannot be made of this capture ({other})."),
             None => Ok(()),
         }

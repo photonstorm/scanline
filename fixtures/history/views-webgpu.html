@@ -1,0 +1,116 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Views: a WebGPU depth and stencil buffer with known answers</title>
+<style>body { margin: 0; background: #111; } canvas { display: block; }</style>
+<canvas id="game" width="160" height="120"></canvas>
+<script type="module">
+// Every answer here can be worked out by hand. The canvas is 160×120, with a
+// depth24plus-stencil8 buffer cleared to depth 1 and stencil 0 each frame.
+//
+//   rectangle A: x 0–80, the whole height, at depth 0.25. It replaces the stencil with 5.
+//   rectangle B: x 40–120, the whole height, at depth 0.75. Where it passes the depth test
+//                it adds 1 to the stencil; where it fails (behind A) it changes nothing.
+//
+// So, by column:
+//   x   0–80:  depth 0.25, stencil 5    (9,600 px)
+//   x  80–120: depth 0.75, stencil 1    (4,800 px)
+//   x 120–160: depth 1,    stencil 0    (4,800 px)
+//
+// The pass throws its depth and stencil away when it ends (storeOp discard), as most pages
+// do: the replay has to keep them to show them.
+const canvas = document.getElementById('game');
+const adapter = await navigator.gpu.requestAdapter();
+const device = await adapter.requestDevice();
+const context = canvas.getContext('webgpu');
+const format = navigator.gpu.getPreferredCanvasFormat();
+
+context.configure({ device, format, alphaMode: 'opaque' });
+
+const module = device.createShaderModule({ label: 'rectangles', code: `
+    struct Rect { @location(0) span: vec2f, @location(1) depth: f32, @location(2) colour: vec3f }
+    struct Out { @builtin(position) position: vec4f, @location(0) colour: vec3f }
+
+    @vertex fn vertex (@builtin(vertex_index) index: u32, rect: Rect) -> Out
+    {
+        let corner = vec2f(f32(index & 1u), f32((index >> 1u) & 1u));
+        var out: Out;
+        out.position = vec4f(mix(rect.span.x, rect.span.y, corner.x) * 2.0 - 1.0, corner.y * 2.0 - 1.0, rect.depth, 1.0);
+        out.colour = rect.colour;
+        return out;
+    }
+
+    @fragment fn fragment (in: Out) -> @location(0) vec4f
+    {
+        return vec4f(in.colour, 1.0);
+    }` });
+
+const instances = {
+    arrayStride: 24,
+    stepMode: 'instance',
+    attributes: [
+        { shaderLocation: 0, offset: 0, format: 'float32x2' },
+        { shaderLocation: 1, offset: 8, format: 'float32' },
+        { shaderLocation: 2, offset: 12, format: 'float32x3' }
+    ]
+};
+
+const pipeline = (label, passOp) => device.createRenderPipeline({
+    label,
+    layout: 'auto',
+    vertex: { module, entryPoint: 'vertex', buffers: [instances] },
+    fragment: { module, entryPoint: 'fragment', targets: [{ format }] },
+    primitive: { topology: 'triangle-strip' },
+    depthStencil: {
+        format: 'depth24plus-stencil8',
+        depthWriteEnabled: true,
+        depthCompare: 'less',
+        stencilFront: { compare: 'always', passOp, depthFailOp: 'keep', failOp: 'keep' },
+        stencilBack: { compare: 'always', passOp, depthFailOp: 'keep', failOp: 'keep' }
+    }
+});
+
+const replaces = pipeline('replaces the stencil', 'replace');
+const adds = pipeline('adds to the stencil', 'increment-clamp');
+const depth = device.createTexture({ label: 'depth and stencil', size: [160, 120], format: 'depth24plus-stencil8', usage: GPUTextureUsage.RENDER_ATTACHMENT });
+const rects = device.createBuffer({ label: 'rectangles', size: 48, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
+
+// Left edge, right edge (as fractions of the width), depth, colour.
+device.queue.writeBuffer(rects, 0, new Float32Array([
+    0, 0.5, 0.25, 0.8, 0.3, 0.2,
+    0.25, 0.75, 0.75, 0.2, 0.4, 0.8
+]));
+
+const state = window.game = { frame: 0 };
+
+function frame ()
+{
+    state.frame++;
+
+    const encoder = device.createCommandEncoder();
+    const pass = encoder.beginRenderPass({
+        label: 'scene',
+        colorAttachments: [{ view: context.getCurrentTexture().createView(), clearValue: [0.1, 0.1, 0.1, 1], loadOp: 'clear', storeOp: 'store' }],
+        depthStencilAttachment: {
+            view: depth.createView(),
+            depthClearValue: 1,
+            depthLoadOp: 'clear',
+            depthStoreOp: 'discard',
+            stencilClearValue: 0,
+            stencilLoadOp: 'clear',
+            stencilStoreOp: 'discard'
+        }
+    });
+
+    pass.setVertexBuffer(0, rects);
+    pass.setStencilReference(5);
+    pass.setPipeline(replaces);
+    pass.draw(4, 1, 0, 0);
+    pass.setPipeline(adds);
+    pass.draw(4, 1, 0, 1);
+    pass.end();
+    device.queue.submit([encoder.finish()]);
+    requestAnimationFrame(frame);
+}
+
+requestAnimationFrame(frame);
+</script>
