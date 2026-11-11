@@ -103,6 +103,9 @@ class Run
     readFramebuffer: any = null;
     packBuffer: any = null;
 
+    // Scratch framebuffers that stand in for multisampled ones when they are read.
+    resolves = new Map<any, { from: any; width: number; height: number }>();
+
     // `extra` adds to the page's own context attributes: a stencil buffer for counting overdraw.
     constructor (capture: Loaded, extra: Record<string, unknown> = {})
     {
@@ -985,6 +988,25 @@ class Run
     {
         const gl = this.gl;
         const out = float ? new Float32Array(width * height * 4) : new Uint8Array(width * height * 4);
+        const resolve = this.resolves.get(framebuffer);
+
+        if (resolve)
+        {
+            // A multisampled target, resolved as it stands now. A blit is clipped by the
+            // scissor box, so that is switched off round it.
+            const scissor = gl.isEnabled(0x0C11);
+
+            gl.disable(0x0C11);
+            gl.bindFramebuffer(0x8CA8, resolve.from);
+            gl.bindFramebuffer(0x8CA9, framebuffer);
+            gl.blitFramebuffer(0, 0, resolve.width, resolve.height, 0, 0, resolve.width, resolve.height, 0x4000, 0x2600);
+            gl.bindFramebuffer(0x8CA9, this.drawFramebuffer);
+
+            if (scissor)
+            {
+                gl.enable(0x0C11);
+            }
+        }
 
         if (this.gl2)
         {
@@ -1030,6 +1052,11 @@ class Run
         const gl = this.gl;
         const header = this.capture.data.header;
 
+        if (target?.framebuffer && !target.texture)
+        {
+            return this.renderbufferTarget(target.framebuffer);
+        }
+
         if (!target || !target.texture)
         {
             return { framebuffer: null, width: header.width, height: header.height, float: false, scratch: null };
@@ -1064,6 +1091,44 @@ class Run
         const float = [0x881A, 0x8814, 0x881B, 0x8815, 0x822D, 0x822E, 0x822F, 0x8230, 0x8C3A].includes(texture.internalFormat) || texture.type === 0x1406;
 
         return { framebuffer: scratch, width: Math.max(1, texture.width >> level), height: Math.max(1, texture.height >> level), float, scratch };
+    }
+
+    // The framebuffer to read for one of the page's framebuffers whose colour is a
+    // renderbuffer. A multisampled one cannot be read: it is resolved into a scratch
+    // framebuffer of the same format first, each time it is read.
+    renderbufferTarget (id: number): { framebuffer: any; width: number; height: number; float: boolean; scratch: any }
+    {
+        const gl = this.gl;
+        const renderbuffer = colourRenderbuffer(this.capture.data, id);
+        const object = this.object('framebuffer', id);
+
+        if (!renderbuffer || !object)
+        {
+            throw new Error('That framebuffer has no colour to read: it is depth only, or its attachment is not part of this capture.');
+        }
+
+        const float = [0x881A, 0x8814, 0x881B, 0x8815, 0x822D, 0x822E, 0x822F, 0x8230, 0x8C3A].includes(renderbuffer.internalFormat);
+        const size = { width: renderbuffer.width, height: renderbuffer.height };
+
+        if (!renderbuffer.samples || !this.gl2)
+        {
+            return { framebuffer: object, ...size, float, scratch: null };
+        }
+
+        const bound = gl.getParameter(0x8CA7);
+        const single = gl.createRenderbuffer();
+        const scratch = gl.createFramebuffer();
+
+        gl.bindRenderbuffer(0x8D41, single);
+        gl.renderbufferStorage(0x8D41, renderbuffer.internalFormat, size.width, size.height);
+        gl.bindRenderbuffer(0x8D41, bound);
+        gl.bindFramebuffer(0x8CA8, scratch);
+        gl.framebufferRenderbuffer(0x8CA8, 0x8CE0, 0x8D41, single);
+        gl.bindFramebuffer(0x8CA8, this.readFramebuffer);
+
+        this.resolves.set(scratch, { from: object, ...size });
+
+        return { framebuffer: scratch, ...size, float, scratch };
     }
 
     // A target as RGBA8 rows, top to bottom.
@@ -1150,14 +1215,216 @@ function endOf (data: CaptureData, draw: number | null | undefined): number
     return row.command + 1;
 }
 
+// What an event drew to, as something to read: a level of a texture, a framebuffer whose
+// colour is a renderbuffer (or that has none), or null for the canvas.
+function targetOfRow (row: Json): Json
+{
+    if (row.target)
+    {
+        return { texture: row.target, level: row.targetLevel || 0 };
+    }
+
+    return row.framebuffer ? { framebuffer: row.framebuffer } : null;
+}
+
+function keyOfTarget (target: Json): string
+{
+    if (target?.texture)
+    {
+        return `${target.texture}:${target.level || 0}`;
+    }
+
+    return target?.framebuffer ? `fbo:${target.framebuffer}` : 'canvas';
+}
+
+// The renderbuffer that holds a framebuffer's colour, if one does.
+function colourRenderbuffer (data: CaptureData, framebuffer: number): Json | null
+{
+    const record = data.objects.find((object) => object.kind === 'framebuffer' && object.id === framebuffer);
+    const attached = record?.attachments?.[0x8CE0];
+
+    return attached?.renderbuffer ? data.objects.find((object) => object.kind === 'renderbuffer' && object.id === attached.renderbuffer) ?? null : null;
+}
+
+function sizeOfTarget (data: CaptureData, target: Json): [number, number]
+{
+    if (target?.texture)
+    {
+        const texture = data.objects.find((object) => object.kind === 'texture' && object.id === target.texture);
+        const level = target.level || 0;
+
+        if (texture)
+        {
+            return [Math.max(1, texture.width >> level), Math.max(1, texture.height >> level)];
+        }
+    }
+
+    const renderbuffer = target?.framebuffer ? colourRenderbuffer(data, target.framebuffer) : null;
+
+    return renderbuffer ? [renderbuffer.width, renderbuffer.height] : [data.header.width, data.header.height];
+}
+
 function sameTarget (row: Json, target: Json): boolean
 {
-    return (row.target || 0) === (target?.texture || 0) && (!target?.texture || (row.targetLevel || 0) === (target.level || 0));
+    return keyOfTarget(targetOfRow(row)) === keyOfTarget(target);
 }
 
 async function packed (image: { width: number; height: number; data: Uint8Array }): Promise<Json>
 {
     return { width: image.width, height: image.height, encoding: 'rgba8+gzip+base64', data: toBase64(await gzip(image.data)) };
+}
+
+// A program with another's vertex shader and a fragment shader that keeps every fragment
+// and writes nothing that matters. Attributes sit where the original's do. Null when it
+// cannot be made: the vertex shader's source is gone, or the pair will not link.
+function shapeProgram (gl: any, original: any): { program: any; uniforms: Array<{ name: string; type: number; size: number }>; blocks: string[] } | null
+{
+    try
+    {
+        const vertex = (gl.getAttachedShaders(original) ?? []).find((shader: any) => gl.getShaderParameter(shader, 0x8B4F) === 0x8B31);
+        const source: string | null = vertex ? gl.getShaderSource(vertex) : null;
+
+        if (!source)
+        {
+            return null;
+        }
+
+        const modern = /^\s*#version\s+300\s+es/.test(source);
+        const fragment = gl.createShader(0x8B30);
+
+        gl.shaderSource(fragment, modern
+            ? '#version 300 es\nprecision mediump float;\nout vec4 scanlineShape;\nvoid main () { scanlineShape = vec4(1.0); }'
+            : 'void main () { gl_FragColor = vec4(1.0); }');
+        gl.compileShader(fragment);
+
+        const again = gl.createShader(0x8B31);
+
+        gl.shaderSource(again, source);
+        gl.compileShader(again);
+
+        const program = gl.createProgram();
+
+        gl.attachShader(program, again);
+        gl.attachShader(program, fragment);
+
+        for (let i = 0; i < gl.getProgramParameter(original, 0x8B89); i++)
+        {
+            const name = gl.getActiveAttrib(original, i)?.name;
+            const location = name ? gl.getAttribLocation(original, name) : -1;
+
+            if (location >= 0)
+            {
+                gl.bindAttribLocation(program, location, name);
+            }
+        }
+
+        gl.linkProgram(program);
+        gl.deleteShader(again);
+        gl.deleteShader(fragment);
+
+        if (!gl.getProgramParameter(program, 0x8B82))
+        {
+            gl.deleteProgram(program);
+
+            return null;
+        }
+
+        const uniforms: Array<{ name: string; type: number; size: number }> = [];
+
+        for (let i = 0; i < gl.getProgramParameter(program, 0x8B86); i++)
+        {
+            const active = gl.getActiveUniform(program, i);
+
+            if (active)
+            {
+                uniforms.push({ name: active.name, type: active.type, size: active.size });
+            }
+        }
+
+        const blocks: string[] = [];
+
+        if (typeof gl.getActiveUniformBlockName === 'function')
+        {
+            for (let i = 0; i < gl.getProgramParameter(program, 0x8A36); i++)
+            {
+                blocks.push(gl.getActiveUniformBlockName(program, i));
+            }
+        }
+
+        return { program, uniforms, blocks };
+    }
+    catch
+    {
+        return null;
+    }
+}
+
+// Gives the shape program the values the original's uniforms hold now.
+function syncUniforms (gl: any, original: any, shape: NonNullable<ReturnType<typeof shapeProgram>>): void
+{
+    const current = gl.getParameter(0x8B8D);
+
+    gl.useProgram(shape.program);
+
+    const set = (location: any, type: number, value: any): void =>
+    {
+        const list = typeof value === 'number' || typeof value === 'boolean' ? [Number(value)] : Array.from(value as ArrayLike<number | boolean>, Number);
+
+        switch (type)
+        {
+            case 0x1406: gl.uniform1fv(location, list); break;
+            case 0x8B50: gl.uniform2fv(location, list); break;
+            case 0x8B51: gl.uniform3fv(location, list); break;
+            case 0x8B52: gl.uniform4fv(location, list); break;
+            case 0x8B5A: gl.uniformMatrix2fv(location, false, list); break;
+            case 0x8B5B: gl.uniformMatrix3fv(location, false, list); break;
+            case 0x8B5C: gl.uniformMatrix4fv(location, false, list); break;
+            case 0x8B65: gl.uniformMatrix2x3fv(location, false, list); break;
+            case 0x8B66: gl.uniformMatrix2x4fv(location, false, list); break;
+            case 0x8B67: gl.uniformMatrix3x2fv(location, false, list); break;
+            case 0x8B68: gl.uniformMatrix3x4fv(location, false, list); break;
+            case 0x8B69: gl.uniformMatrix4x2fv(location, false, list); break;
+            case 0x8B6A: gl.uniformMatrix4x3fv(location, false, list); break;
+            case 0x1405: gl.uniform1uiv(location, list); break;
+            case 0x8DC6: gl.uniform2uiv(location, list); break;
+            case 0x8DC7: gl.uniform3uiv(location, list); break;
+            case 0x8DC8: gl.uniform4uiv(location, list); break;
+            case 0x8B53: case 0x8B57: gl.uniform2iv(location, list); break;
+            case 0x8B54: case 0x8B58: gl.uniform3iv(location, list); break;
+            case 0x8B55: case 0x8B59: gl.uniform4iv(location, list); break;
+            // Integers, booleans and every kind of sampler.
+            default: gl.uniform1iv(location, list); break;
+        }
+    };
+
+    for (const uniform of shape.uniforms)
+    {
+        const base = uniform.name.replace(/\[0\]$/, '');
+
+        for (let element = 0; element < uniform.size; element++)
+        {
+            const name = uniform.size > 1 || uniform.name.endsWith('[0]') ? `${base}[${element}]` : base;
+            const from = gl.getUniformLocation(original, name);
+            const to = gl.getUniformLocation(shape.program, name);
+
+            if (from !== null && to !== null)
+            {
+                set(to, uniform.type, gl.getUniform(original, from));
+            }
+        }
+    }
+
+    for (let index = 0; index < shape.blocks.length; index++)
+    {
+        const there = gl.getUniformBlockIndex(original, shape.blocks[index]);
+
+        if (there !== 0xFFFFFFFF)
+        {
+            gl.uniformBlockBinding(shape.program, index, gl.getActiveUniformBlockParameter(original, there, 0x8A3F));
+        }
+    }
+
+    gl.useProgram(current);
 }
 
 const api = {
@@ -1217,7 +1484,7 @@ const api = {
 
             // By default, the target the event itself drew to.
             const row = args.draw === null || args.draw === undefined ? null : item.data.draws[args.draw];
-            const target = args.target ?? (row && row.target ? { texture: row.target, level: row.targetLevel } : null);
+            const target = args.target ?? (row ? targetOfRow(row) : null);
             const image = run.image(target);
 
             return { ...(await packed(image)), target, float: image.float, error: run.gl.getError(), notes: run.notes, ms: performance.now() - started };
@@ -1292,10 +1559,9 @@ const api = {
 
         for (const row of data.draws)
         {
-            const texture = row.target ? data.objects.find((object) => object.kind === 'texture' && object.id === row.target) : null;
-            const level = row.targetLevel || 0;
+            const [width, height] = sizeOfTarget(data, targetOfRow(row));
 
-            cost += texture ? Math.max(1, texture.width >> level) * Math.max(1, texture.height >> level) : data.header.width * data.header.height;
+            cost += width * height;
         }
 
         if (cost > budget)
@@ -1311,8 +1577,8 @@ const api = {
 
             data.draws.forEach((row, index) => byCommand.set(row.command, index));
 
-            const targetOf = (row: Json): Json => (row.target ? { texture: row.target, level: row.targetLevel || 0 } : null);
-            const keyOf = (row: Json): string => (row.target ? `${row.target}:${row.targetLevel || 0}` : 'canvas');
+            const targetOf = targetOfRow;
+            const keyOf = (row: Json): string => keyOfTarget(targetOfRow(row));
             const methods = data.methods ?? METHOD_NAMES;
 
             // The last read of each target stays good until something other than an event
@@ -1446,7 +1712,7 @@ const api = {
             throw new Error(`The capture has ${item.data.draws.length} events, numbered from 0; there is no draw ${args.draw}.`);
         }
 
-        const target = row.target ? { texture: row.target, level: row.targetLevel || 0 } : null;
+        const target = targetOfRow(row);
         const started = performance.now();
 
         const attempt = (change: ((gl: any, width: number, height: number) => void) | null): number =>
@@ -1495,9 +1761,7 @@ const api = {
         if (enabled.includes(0x8C89)) { tests.push({ what: 'rasterizer_discard', change: (gl) => gl.disable(0x8C89) }); }
         if (mask.some((channel) => !channel)) { tests.push({ what: 'color_mask', change: (gl) => gl.colorMask(true, true, true, true) }); }
 
-        const texture = row.target ? item.data.objects.find((object) => object.kind === 'texture' && object.id === row.target) : null;
-        const level = row.targetLevel || 0;
-        const size = texture ? [Math.max(1, texture.width >> level), Math.max(1, texture.height >> level)] : [item.data.header.width, item.data.header.height];
+        const size = sizeOfTarget(item.data, targetOfRow(row));
         const viewport: number[] = row.viewport ?? [0, 0, size[0], size[1]];
 
         if (viewport[0] !== 0 || viewport[1] !== 0 || viewport[2] !== size[0] || viewport[3] !== size[1])
@@ -1818,7 +2082,7 @@ const api = {
             run.play(endOf(item.data, args.draw));
 
             const row = args.draw === null || args.draw === undefined ? null : item.data.draws[args.draw];
-            const target = args.target ?? (row && row.target ? { texture: row.target, level: row.targetLevel } : null);
+            const target = args.target ?? (row ? targetOfRow(row) : null);
             const image = run.image(target);
 
             return { ...(await packed(image)), notes: run.notes };
@@ -1861,6 +2125,22 @@ const api = {
 
             let geometry: { framebuffer: any; width: number; height: number; float: boolean; scratch: any } | null = null;
             let current: Json | null = null;
+
+            // The shape of a draw, apart from what its fragment shader does: the program's
+            // own vertex shader with a fragment shader that keeps every fragment. A draw
+            // whose shape covers the pixel while none of its own fragments survive there
+            // had them discarded.
+            const shapes = new Map<any, ReturnType<typeof shapeProgram>>();
+
+            const shapeOf = (program: any): ReturnType<typeof shapeProgram> =>
+            {
+                if (!shapes.has(program))
+                {
+                    shapes.set(program, shapeProgram(gl, program));
+                }
+
+                return shapes.get(program)!;
+            };
 
             const value = (): number[] => Array.from(run.read(geometry!.framebuffer, args.x, geometry!.height - 1 - args.y, 1, 1, geometry!.float));
 
@@ -1922,6 +2202,7 @@ const api = {
                     after: null,
                     scissor: box === null || (args.x >= box[0] && args.x < box[0] + box[2] && bottom >= box[1] && bottom < box[1] + box[3]),
                     covered: null,
+                    shape: null,
                     cull: null,
                     depth: null,
                     stencil: null
@@ -1964,6 +2245,17 @@ const api = {
 
                 only(null);
                 ask(current, 'covered', command);
+
+                const program = gl.getParameter(0x8B8D);
+                const shape = program ? shapeOf(program) : null;
+
+                if (shape)
+                {
+                    syncUniforms(gl, program, shape);
+                    gl.useProgram(shape.program);
+                    ask(current, 'shape', command);
+                    gl.useProgram(program);
+                }
 
                 if (enabled.includes(0x0B44))
                 {
@@ -2013,6 +2305,14 @@ const api = {
                 }
 
                 gl.deleteQuery(entry.query);
+            }
+
+            for (const shape of shapes.values())
+            {
+                if (shape)
+                {
+                    gl.deleteProgram(shape.program);
+                }
             }
 
             return {

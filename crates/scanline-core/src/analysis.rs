@@ -384,7 +384,10 @@ pub async fn pixel_history(host: &Arc<Host>, params: &Value) -> Result<Value> {
     let queries = reply["queries"] == true;
     let mut lines = vec![format!("{} pixel ({x}, {y}) of {target_name}: its history through the frame. gpu-measured.", about(host, params, &handle, &meta))];
     let mut out = Vec::new();
-    let (mut shown, mut missed) = (0, 0);
+    let (mut shown, mut missed, mut discarded) = (0, 0, 0);
+
+    // Whether some draw's shape could not be tried apart from its shader.
+    let mut unsure = false;
 
     for row in &rows {
         let index = row["draw"].as_i64().unwrap_or(0);
@@ -415,9 +418,16 @@ pub async fn pixel_history(host: &Arc<Host>, params: &Value) -> Result<Value> {
             format!("{} → {}", show(&row["before"]), show(&row["after"]))
         } else if row["kind"] != "draw" {
             if row["scissor"] == false { "left it alone: the pixel is outside the scissor box".to_string() } else { "left it as it was".to_string() }
+        } else if row["covered"] == false && row["shape"] == true {
+            // The draw's triangles cover the pixel, and with its own fragment shader no
+            // fragment survives there.
+            discarded += 1;
+
+            "REJECTED: its fragment shader discarded it (the triangle covers the pixel, and no fragment of the shader's survives there)".to_string()
         } else if row["covered"] == false {
-            // No fragment landed on the pixel, or the shader discarded every one that did.
+            // No fragment landed on the pixel.
             missed += 1;
+            unsure |= row["shape"].is_null();
             continue;
         } else if row["covered"].is_null() {
             // No occlusion queries: all that is known is that the value did not change.
@@ -466,6 +476,7 @@ pub async fn pixel_history(host: &Arc<Host>, params: &Value) -> Result<Value> {
             "after": row["after"],
             "changed": changed,
             "covered": row["covered"],
+            "discarded": row["covered"] == false && row["shape"] == true,
             "passes": { "scissor": row["scissor"], "cull": row["cull"], "depth": row["depth"], "stencil": row["stencil"] },
         }));
     }
@@ -476,8 +487,13 @@ pub async fn pixel_history(host: &Arc<Host>, params: &Value) -> Result<Value> {
 
     lines.push(if queries {
         format!(
-            "{missed} other draw{} on this target did not reach the pixel: no fragment of theirs landed on it, or their shader discarded every one that did (the two cannot be told apart).",
-            if missed == 1 { "" } else { "s" }
+            "{missed} other draw{} on this target did not reach the pixel: {}",
+            if missed == 1 { "" } else { "s" },
+            if unsure {
+                "no fragment of theirs landed on it, or their shader discarded every one that did (for some the two could not be told apart: the vertex shader could not be linked on its own)."
+            } else {
+                "their triangles do not cover it."
+            }
         )
     } else {
         "This is a WebGL 1 capture, which has no occlusion queries: only events that changed the pixel are listed, and a draw a test rejected is not.".to_string()
@@ -492,13 +508,28 @@ pub async fn pixel_history(host: &Arc<Host>, params: &Value) -> Result<Value> {
         ));
     }
 
+    // A blit only copies: the colour was made on the target it copied from.
+    if let Some(last) = out.iter().rev().find(|row| row["changed"] == true && row["kind"] == "blit") {
+        let state = draw_state(host, &handle, &last["draw"])?;
+        let tag = meta["instance_tag"].as_u64().unwrap_or(0);
+        let from = match state["readFramebuffer"].as_i64().filter(|id| *id > 0) {
+            Some(id) => format!("fbo_{id}{}", if tag > 0 { format!("_w{tag}") } else { String::new() }),
+            None => "canvas".to_string(),
+        };
+
+        lines.push(format!(
+            "Event {} is a blit from {from}, so the colour was made there. pixel_history(capture: \"{handle}\", x, y, target: \"{from}\") follows it, at the place the blit copied from.",
+            last["draw"]
+        ));
+    }
+
     if meta["replay_matches"] != true {
         lines.push("Warning: this capture's replay did not match the original frame, so this may be wrong.".into());
     }
 
     Ok(result(
         lines.join("\n"),
-        json!({ "capture": handle, "x": x, "y": y, "target": target_name, "history": out, "not_reaching": missed, "provenance": "gpu-measured", "ms": reply["ms"] }),
+        json!({ "capture": handle, "x": x, "y": y, "target": target_name, "history": out, "not_reaching": missed, "discarded": discarded, "provenance": "gpu-measured", "ms": reply["ms"] }),
     ))
 }
 

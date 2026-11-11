@@ -35,6 +35,28 @@ Each page sets `window.fixture` (or posts it from a worker) to
 
 `slow/webgl2.html` is a row of columns against a low sun at 1920×1080, in three passes: a mask of the sun and what stands in front of it, the scene, and light shafts added over the scene from the mask. The shafts are one full-screen draw whose fragment shader samples the mask 64 times a pixel, and they take nearly all of the frame's GPU time. Twenty-four samples look the same. It is the page journey J3 is run on (`tests/journeys.test.mjs`). `slow/webgpu.html` is the same scene in raw WebGPU: three labelled passes (`mask`, `scene`, `godrays`), five pipelines with layout `auto`, and the shafts' inputs in one bind group.
 
+## Pixel history (`history/`)
+
+`history/webgl2.html` is a still scene on a 320×240 canvas whose every pixel's history is known by hand. `?samples=4` draws it into a four-sample RGB8 renderbuffer (`fbo_1`) and resolves that to the canvas with a blit, which is then event 5.
+
+| Event | What | Where (x, y from the top-left) | Depth |
+|---|---|---|---|
+| 0 | Clear to (32, 64, 96) | everywhere | cleared to 1 |
+| 1 | Grey floor (128, 128, 128) | y 120 to 239 | 0.5 |
+| 2 | Red disc: an 80×80 quad whose shader discards outside its inscribed circle | x 40 to 119, y 20 to 99 | 0.4 |
+| 3 | Green ramp: a 160×60 quad at depth 0.9 whose shader writes its own depth, 0 at its left edge to 1 at its right | x 80 to 239, y 150 to 209 | written: (x − 80) / 160 |
+| 4 | Blue quad | x 240 to 299, y 160 to 219 | 0.8 |
+
+The depth test is `LESS` throughout. So:
+
+| Pixel | History |
+|---|---|
+| (80, 60), the disc's middle | cleared, then red |
+| (44, 24), a corner of the disc's quad | cleared; event 2 covers it and its shader discards it |
+| (100, 180), the ramp's left | cleared, grey, then green: the shader wrote depth 0.125, in front of the floor |
+| (220, 180), the ramp's right | cleared, grey; event 3 fails the depth test: the shader wrote 0.875 |
+| (260, 180), the blue quad | cleared, grey; event 4 fails the depth test |
+
 ## The page protocol (`protocol/`)
 
 `protocol/webgl2.html` is an orchard: sky, ground and five trees, in raw WebGL 2, written the way the `scanline-debuggable-rendering` skill asks. Every object is labelled, every draw is in a group (`sky`, `ground`, `trees / tree-N`, and `debug` when the bounds view is on), each tree declares itself as an entity, and the page provides its state, three controls (`sun.height`, `wind`, `season`), one view (`bounds`), marks (`assets loaded`, `first frame`, `second passed` once a second), its own time control and a checkpoint. A frame is 11 draws, or 31 with the view on.

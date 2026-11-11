@@ -1,0 +1,146 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Pixel history: discard, written depth, multisampling</title>
+<style>body { margin: 0; background: #111; } canvas { display: block; }</style>
+<canvas id="scene" width="320" height="240"></canvas>
+<script type="module">
+// A scene whose every pixel's history is known by hand, for checking pixel_history.
+// Raw WebGL 2. Nothing moves. fixtures/README.md has the table of answers.
+//
+// ?samples=4 draws the same scene into a multisampled renderbuffer and resolves it to the
+// canvas with a blit.
+
+const samples = Number(new URL(location.href).searchParams.get('samples') ?? 0);
+const gl = document.getElementById('scene').getContext('webgl2', { antialias: false, depth: true, alpha: false });
+
+function program (fragment)
+{
+    const made = gl.createProgram();
+
+    for (const [type, source] of [[gl.VERTEX_SHADER, `#version 300 es
+        layout(location = 0) in vec2 corner;
+        uniform vec4 rect;
+        uniform float depth;
+        out vec2 uv;
+        void main ()
+        {
+            uv = corner;
+            vec2 at = rect.xy + corner * rect.zw;
+            gl_Position = vec4(at.x / 160.0 - 1.0, 1.0 - at.y / 120.0, depth * 2.0 - 1.0, 1.0);
+        }`], [gl.FRAGMENT_SHADER, fragment]])
+    {
+        const shader = gl.createShader(type);
+
+        gl.shaderSource(shader, source);
+        gl.compileShader(shader);
+        gl.attachShader(made, shader);
+    }
+
+    gl.linkProgram(made);
+
+    return { program: made, rect: gl.getUniformLocation(made, 'rect'), depth: gl.getUniformLocation(made, 'depth'), colour: gl.getUniformLocation(made, 'colour') };
+}
+
+// Plain: one colour.
+const plain = program(`#version 300 es
+    precision mediump float;
+    uniform vec4 colour;
+    out vec4 result;
+    void main () { result = colour; }`);
+
+// A disc: fragments outside the circle inscribed in the quad are discarded.
+const disc = program(`#version 300 es
+    precision mediump float;
+    uniform vec4 colour;
+    in vec2 uv;
+    out vec4 result;
+    void main ()
+    {
+        if (length(uv - 0.5) > 0.5) { discard; }
+        result = colour;
+    }`);
+
+// A ramp: the fragment's depth is written by the shader, 0 at the left edge to 1 at the right.
+const ramp = program(`#version 300 es
+    precision mediump float;
+    uniform vec4 colour;
+    in vec2 uv;
+    out vec4 result;
+    void main ()
+    {
+        gl_FragDepth = uv.x;
+        result = colour;
+    }`);
+
+const quad = gl.createBuffer();
+
+gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0, 0, 1, 0, 0, 1, 1, 1]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+let target = null;
+
+if (samples > 0)
+{
+    const colour = gl.createRenderbuffer();
+    const depth = gl.createRenderbuffer();
+
+    gl.bindRenderbuffer(gl.RENDERBUFFER, colour);
+    gl.renderbufferStorageMultisample(gl.RENDERBUFFER, samples, gl.RGB8, 320, 240);
+    gl.bindRenderbuffer(gl.RENDERBUFFER, depth);
+    gl.renderbufferStorageMultisample(gl.RENDERBUFFER, samples, gl.DEPTH_COMPONENT24, 320, 240);
+
+    target = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, target);
+    gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.RENDERBUFFER, colour);
+    gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, depth);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+}
+
+function draw (using, x, y, width, height, depth, colour)
+{
+    gl.useProgram(using.program);
+    gl.uniform4f(using.rect, x, y, width, height);
+    gl.uniform1f(using.depth, depth);
+    gl.uniform4f(using.colour, colour[0], colour[1], colour[2], 1);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+}
+
+function frame ()
+{
+    gl.bindFramebuffer(gl.FRAMEBUFFER, target);
+    gl.viewport(0, 0, 320, 240);
+    gl.enable(gl.DEPTH_TEST);
+    gl.depthFunc(gl.LESS);
+    gl.clearColor(0.125, 0.25, 0.375, 1);
+    gl.clearDepth(1);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+    // 1. A grey floor across the bottom half, at depth 0.5.
+    draw(plain, 0, 120, 320, 120, 0.5, [0.5, 0.5, 0.5]);
+
+    // 2. A red disc in an 80×80 quad at (40, 20), depth 0.4. Its corners are discarded.
+    draw(disc, 40, 20, 80, 80, 0.4, [1, 0, 0]);
+
+    // 3. A green ramp over the floor, 160×60 at (80, 150). The quad is at depth 0.9, but
+    //    the shader writes depth 0 (left) to 1 (right): its left half beats the floor's
+    //    0.5 and its right half loses to it.
+    draw(ramp, 80, 150, 160, 60, 0.9, [0, 1, 0]);
+
+    // 4. A blue quad behind the floor: 60×60 at (240, 160), depth 0.8. The depth test rejects it.
+    draw(plain, 240, 160, 60, 60, 0.8, [0, 0, 1]);
+
+    if (target)
+    {
+        gl.bindFramebuffer(gl.READ_FRAMEBUFFER, target);
+        gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
+        gl.blitFramebuffer(0, 0, 320, 240, 0, 0, 320, 240, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+    }
+
+    window.fixture = { name: samples ? `history-msaa${samples}` : 'history', frames: (window.fixture?.frames ?? 0) + 1 };
+    requestAnimationFrame(frame);
+}
+
+requestAnimationFrame(frame);
+</script>

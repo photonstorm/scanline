@@ -331,6 +331,8 @@ fn readable(method: &str, args: &Value, tag: u64) -> Value {
 struct Sizes {
     canvas: (i64, i64),
     textures: HashMap<i64, (i64, i64)>,
+    /// Framebuffers whose colour is a renderbuffer, and that renderbuffer's size.
+    framebuffers: HashMap<i64, (i64, i64)>,
 }
 
 impl Sizes {
@@ -344,6 +346,18 @@ impl Sizes {
                 .filter(|object| object["kind"] == "texture")
                 .map(|object| (object["id"].as_i64().unwrap_or(0), (object["width"].as_i64().unwrap_or(0), object["height"].as_i64().unwrap_or(0))))
                 .collect(),
+            framebuffers: body["objects"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|object| object["kind"] == "framebuffer")
+                .filter_map(|object| {
+                    let renderbuffer = object["attachments"]["36064"]["renderbuffer"].as_i64()?;
+                    let found = body["objects"].as_array()?.iter().find(|other| other["kind"] == "renderbuffer" && other["id"] == renderbuffer)?;
+
+                    Some((object["id"].as_i64()?, (found["width"].as_i64()?, found["height"].as_i64()?)))
+                })
+                .collect(),
         }
     }
 
@@ -355,7 +369,7 @@ impl Sizes {
 
                 ((width >> level).max(1), (height >> level).max(1))
             }
-            None => self.canvas,
+            None => row["framebuffer"].as_i64().and_then(|framebuffer| self.framebuffers.get(&framebuffer)).copied().unwrap_or(self.canvas),
         }
     }
 }
@@ -2020,6 +2034,24 @@ pub async fn draw(host: &Arc<Host>, params: &Value) -> Result<Value> {
         state["command"]
     )];
 
+    // A blit copies from another target, which is where its pixels were made.
+    if kind == "blit" {
+        let from = match state["readFramebuffer"].as_i64().filter(|id| *id > 0) {
+            Some(_) => named("framebuffer", &state["readFramebuffer"]),
+            None => "the canvas".to_string(),
+        };
+        let rects = state["rects"].as_array().map(|rects| rects.iter().map(Value::to_string).collect::<Vec<_>>()).unwrap_or_default();
+
+        lines.push(if rects.len() == 8 {
+            format!(
+                "  Copies from {from}, the box from ({}, {}) to ({}, {}), to the box from ({}, {}) to ({}, {}) here. Boxes are as WebGL has them: from the bottom-left.",
+                rects[0], rects[1], rects[2], rects[3], rects[4], rects[5], rects[6], rects[7]
+            )
+        } else {
+            format!("  Copies from {from}.")
+        });
+    }
+
     // What the page or its engine says this event is. Its words, not Scanline's.
     if let Some(path) = state["path"].as_str() {
         lines.push(format!("  In group «{}».", page_text(path, 200)));
@@ -2310,7 +2342,13 @@ async fn effect(host: &Arc<Host>, session: &Arc<Session>, handle: &str, index: i
     // Before: the same target after the previous event. For the first event, the target as the frame found it.
     let before = if index > 0 {
         let state = draw_state(host, handle, &json!(index))?;
-        let target = if state["target"].as_i64().unwrap_or(0) > 0 { json!({ "texture": state["target"], "level": state["targetLevel"] }) } else { Value::Null };
+        let target = if state["target"].as_i64().unwrap_or(0) > 0 {
+            json!({ "texture": state["target"], "level": state["targetLevel"] })
+        } else if state["framebuffer"].as_i64().unwrap_or(0) > 0 {
+            json!({ "framebuffer": state["framebuffer"] })
+        } else {
+            Value::Null
+        };
 
         replay_image(&session.replay("image", &json!({ "key": handle, "draw": index - 1, "target": target }), LONG).await?).ok()
     } else {
@@ -2755,13 +2793,21 @@ pub(crate) fn target_of(host: &Host, handle: &str, params: &Value) -> Result<(Va
         Some(name) => {
             let rows = host.store.query(handle, "SELECT id FROM objects WHERE handle = ?1 AND kind = 'texture'", &[Sql::Text(name.to_string())], 1)?;
 
+            // A framebuffer whose colour is a renderbuffer has no texture to name: it is named itself.
+            let framebuffer =
+                host.store.query(handle, "SELECT id FROM objects WHERE handle = ?1 AND kind = 'framebuffer'", &[Sql::Text(name.to_string())], 1)?;
+
+            if let Some(row) = framebuffer.rows.first() {
+                return Ok((json!({ "framebuffer": row[0] }), name.to_string()));
+            }
+
             match rows.rows.first() {
                 Some(row) => Ok((json!({ "texture": row[0], "level": params["level"].as_u64().unwrap_or(0) }), name.to_string())),
                 None => {
                     let targets = host.store.query(handle, "SELECT DISTINCT target FROM draws", &[], 20)?;
                     let known: Vec<&str> = targets.rows.iter().filter_map(|row| row[0].as_str()).collect();
 
-                    bail!("\"{name}\" is not a texture in {handle}. Targets the frame drew to: {}.", known.join(", "))
+                    bail!("\"{name}\" is not a texture or a framebuffer in {handle}. Targets the frame drew to: {}.", known.join(", "))
                 }
             }
         }

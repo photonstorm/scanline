@@ -334,6 +334,79 @@ describe('the history of a pixel', () =>
 
 describe('lint and shader analysis', () =>
 {
+    // fixtures/history/webgl2.html: a scene whose every pixel's history is known by hand.
+    // Events: 0 the clear, 1 a grey floor, 2 a red disc (corners discarded), 3 a green ramp
+    // whose shader writes its own depth, 4 a blue quad behind the floor.
+    for (const [name, query, target] of [['to the canvas', '', []], ['to a multisampled renderbuffer', '?samples=4', ['--target', 'fbo_1']]])
+    {
+        test(`pixel history is right on discard, shader-written depth and a quad behind another, ${name}`, async () =>
+        {
+            const launched = await scanline('launch', server.url(`fixtures/history/webgl2.html${query}`), '--headless', '--paused');
+            const session = /Launched (ses_\d+)/.exec(launched.out)?.[1];
+
+            await scanline('step', 3, '--session', session);
+
+            const taken = await scanline('capture', '--session', session);
+            const capture = /^(cap_\d+):/m.exec(taken.out)?.[1];
+
+            assert.match(taken.out, /Replay check: replaying the capture gives an image identical/);
+
+            const history = async (x, y) => (await scanline('pixel_history', capture, x, y, ...target, '--session', session, '--json')).json;
+            const steps = (reply) => reply.data.history.map((row) => [row.draw, row.changed, row.after]);
+            const [sky, grey, red, green] = [[32, 64, 96, 255], [128, 128, 128, 255], [255, 0, 0, 255], [0, 255, 0, 255]];
+
+            // The middle of the disc: cleared, then drawn red.
+            assert.deepEqual(steps(await history(80, 60)), [[0, true, sky], [2, true, red]]);
+
+            // A corner of the disc's quad: the triangle covers it, the shader discards it.
+            const corner = await history(44, 24);
+
+            assert.deepEqual(steps(corner), [[0, true, sky], [2, false, sky]]);
+            assert.equal(corner.data.history[1].discarded, true);
+            assert.match(corner.summary, /event {4}2 {2}REJECTED: its fragment shader discarded it/);
+            assert.match(corner.summary, /3 other draws on this target did not reach the pixel: their triangles do not cover it\./);
+
+            // The ramp's left side: its quad sits behind the floor (0.9 against 0.5), but the
+            // shader writes a depth of 0.125 there, so it wins.
+            assert.deepEqual(steps(await history(100, 180)), [[0, true, sky], [1, true, grey], [3, true, green]]);
+
+            // Its right side: the shader writes 0.875, and it loses to the floor.
+            const right = await history(220, 180);
+
+            assert.deepEqual(steps(right), [[0, true, sky], [1, true, grey], [3, false, grey]]);
+            assert.equal(right.data.history[2].passes.depth, false);
+            assert.equal(right.data.history[2].discarded, false);
+            assert.match(right.summary, /event {4}3 {2}REJECTED: it fails the depth test \(LESS\)/);
+
+            // The blue quad, behind the floor.
+            const behind = await history(260, 180);
+
+            assert.deepEqual(steps(behind), [[0, true, sky], [1, true, grey], [4, false, grey]]);
+            assert.match(behind.summary, /event {4}4 {2}REJECTED: it fails the depth test \(LESS\)/);
+
+            if (target.length > 0)
+            {
+                // On the canvas the pixel came from the blit, which says where to look.
+                const canvas = await scanline('pixel_history', capture, 80, 60, '--session', session);
+
+                assert.match(canvas.out, /event {4}5 {2}\(0, 0, 0, 255\) → \(255, 0, 0, 255\) {3}\[blit\]/);
+                assert.match(canvas.out, /Event 5 is a blit from fbo_1, so the colour was made there\. pixel_history\(capture: "cap_\d+", x, y, target: "fbo_1"\)/);
+                assert.match((await scanline('draw', capture, 5, '--session', session)).out, /Copies from fbo_1, the box from \(0, 0\) to \(320, 240\)/);
+
+                // What each event changed is measured on the renderbuffer, resolved.
+                const list = await scanline('draw_list', capture, '--session', session);
+
+                assert.match(list.out, /2 {2}TRIANGLE_STRIP ×4 {2}prg_2 → fbo_1 {2}depth LESS {2}⇒ 50\d\d px at 40, 20, 80, 80/);
+                assert.match(list.out, /4 {2}TRIANGLE_STRIP ×4 {2}prg_1 → fbo_1 {2}depth LESS {2}⇒ changed nothing/);
+
+                // And the target can be looked at as it stood after any event.
+                const shot = await scanline('pixels', 80, 60, '--capture', capture, '--at_draw', 1, '--target', 'fbo_1', '--session', session, '--json');
+
+                assert.match(shot.json.summary, /fbo_1 after event 1, pixel \(80, 60\): rgba8 \(32, 64, 96, 255\)/, shot.out);
+            }
+        });
+    }
+
     test('lint gathers what is worth a look, for a capture and for a live session', async () =>
     {
         const { capture, session } = await captured('b10', 30);

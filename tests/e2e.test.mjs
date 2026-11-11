@@ -697,7 +697,7 @@ describe('frame capture', () =>
 
         const badTarget = await scanline('pixel_source', cap, '1', '1', '--target', 'tex_99');
 
-        assert.match(badTarget.out, /"tex_99" is not a texture in cap_\d+\. Targets the frame drew to: canvas\./);
+        assert.match(badTarget.out, /"tex_99" is not a texture or a framebuffer in cap_\d+\. Targets the frame drew to: canvas\./);
 
         await scanline('close');
         await scanline('launch', server.url('fixtures/spikes/blank.html'), '--headless');

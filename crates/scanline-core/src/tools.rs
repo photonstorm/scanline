@@ -132,7 +132,7 @@ pub const TOOLS: &[Tool] = &[
             r#""source": { "type": "string", "description": "canvas (default), page, or a texture handle such as tex_3." }"#,
             r#""capture": { "type": "string", "description": "A capture handle: the picture comes from replaying that capture instead of the live page." }"#,
             r#""at_draw": { "type": "integer", "description": "With capture: the target as it stood after this event. Default: the end of the frame." }"#,
-            r#""target": { "type": "string", "description": "With capture: canvas (default) or a texture the frame drew to." }"#,
+            r#""target": { "type": "string", "description": "With capture: canvas (default), a texture the frame drew to (tex_4), or a framebuffer whose colour is a renderbuffer (fbo_1)." }"#,
             r#""level": { "type": "integer", "description": "Mip level, for a texture. Default 0." }"#,
             r#""layer": { "type": "integer", "description": "Array layer, 3D slice or cube face (0–5), for a texture." }"#,
             region!(),
@@ -156,6 +156,9 @@ pub const TOOLS: &[Tool] = &[
             r#""source": { "type": "string", "description": "A texture handle such as tex_3, to read a texture instead of the canvas." }"#,
             r#""level": { "type": "integer" }"#,
             r#""layer": { "type": "integer" }"#,
+            r#""capture": { "type": "string", "description": "Read from a capture's replay instead of the live page." }"#,
+            r#""at_draw": { "type": "integer", "description": "With capture: the target as it stood after this event. Default: the end of the frame." }"#,
+            r#""target": { "type": "string", "description": "With capture: canvas (default), a texture the frame drew to (tex_4), or a framebuffer whose colour is a renderbuffer (fbo_1)." }"#,
         ),
         read_only: true,
     },
@@ -305,7 +308,7 @@ pub const TOOLS: &[Tool] = &[
             r#""capture": { "type": "string" }"#,
             r#""x": { "type": "integer" }"#,
             r#""y": { "type": "integer" }"#,
-            r#""target": { "type": "string", "description": "canvas (default) or a texture the frame drew to, such as tex_4." }"#,
+            r#""target": { "type": "string", "description": "canvas (default), a texture the frame drew to (tex_4), or a framebuffer whose colour is a renderbuffer (fbo_1)." }"#,
             session!(),
         ),
         read_only: true,
@@ -352,7 +355,7 @@ pub const TOOLS: &[Tool] = &[
             r#""capture": { "type": "string" }"#,
             r#""x": { "type": "integer", "description": "Pixels from the left of the target." }"#,
             r#""y": { "type": "integer", "description": "Pixels from the top of the target." }"#,
-            r#""target": { "type": "string", "description": "A texture the frame drew to, such as tex_4. Default: the canvas." }"#,
+            r#""target": { "type": "string", "description": "A texture the frame drew to (tex_4), or a framebuffer whose colour is a renderbuffer (fbo_1). Default: the canvas." }"#,
             session!(),
         ),
         read_only: true,
@@ -754,7 +757,9 @@ Known limits
   - Texture readback: compressed, depth and stencil formats are not read yet, nor multisampled
     textures. A capture that uses one replays it empty, and its replay check says so.
   - pixel_source lists the events that changed a pixel; pixel_history adds the draws that
-    covered it and were rejected (WebGL 2). Neither reads depth values: WebGL cannot.
+    covered it and were rejected, and says by what: culling, the depth or stencil test, the
+    scissor box, or the fragment shader discarding it (WebGL 2). A multisampled target is
+    read resolved. Neither reads depth values: WebGL cannot.
   - What each event changed is measured when a capture is taken, by reading its target back
     around every event. A frame too large for that (many events on large targets) goes without.
   - \"Last used\" is tracked for WebGL objects only.
