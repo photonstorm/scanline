@@ -157,6 +157,9 @@
     .button { cursor: pointer; }
     .button:hover { border-color: var(--quiet); }
 
+    #send-bar { display: flex; align-items: center; gap: 10px; flex: none; padding: 8px 14px; border-bottom: 1px solid var(--line); }
+    #note { flex: 0 1 320px; min-width: 120px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 4px; background: transparent; color: inherit; font: inherit; }
+    #send-what { flex: 1; min-width: 0; color: var(--quiet); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     #capture-what { flex: 1; min-width: 0; color: var(--quiet); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
     #capture-body { display: flex; flex: 1; min-height: 0; }
@@ -226,6 +229,12 @@
             <select id="captures"></select>
             <button class="button" id="take" type="button">Capture this frame</button>
             <div id="capture-what"></div>
+        </div>
+        <div id="send-bar">
+            <label for="note">For the agent</label>
+            <input id="note" type="text" maxlength="400" placeholder="What is wrong here? (optional)">
+            <button class="button" id="send" type="button">Send to agent</button>
+            <div id="send-what">Choose an event, click a pixel to pin it, and send: the agent gets the capture, the event and the pixel.</div>
         </div>
         <div id="capture-body">
             <ol id="events" aria-label="Events of the frame"></ol>
@@ -514,7 +523,7 @@
 
     // ---- Capture ----
 
-    const capture = { listing: null, handle: null, events: [], draw: null, picture: false, image: null, shaders: [], pane: 'target' };
+    const capture = { listing: null, handle: null, events: [], draw: null, picture: false, image: null, shaders: [], shader: null, pin: null, pane: 'target' };
 
     async function listCaptures ()
     {
@@ -635,6 +644,8 @@
 
     function selectShader (index)
     {
+        capture.shader = index;
+
         [...$('shader-list').children].forEach((item, at) => item.setAttribute('aria-selected', String(at === index)));
 
         const source = $('source');
@@ -666,10 +677,63 @@
         canvas.getContext('2d', { willReadFrequently: true }).drawImage(image, 0, 0);
     }
 
+    // What the person has chosen, sent to the agent as an event: the capture, the event,
+    // the pixel they pinned and the shader they were reading, with a note if they wrote one.
+    async function sendToAgent (note)
+    {
+        if (!capture.handle)
+        {
+            $('send-what').textContent = 'Open a capture first.';
+
+            return false;
+        }
+
+        const event = capture.events.find((row) => row.draw === capture.draw);
+        const chosen = {
+            capture: capture.handle,
+            draw: capture.draw,
+            target: event ? event.target.split(' ')[0] : null,
+            pixel: capture.pin,
+            shader: capture.pane === 'shaders' && capture.shader !== null ? capture.shaders[capture.shader]?.[0] ?? null : null,
+            note: String(note ?? $('note').value).trim()
+        };
+
+        try
+        {
+            await call('send_to_agent', chosen, true);
+            $('send-what').textContent = `Sent: ${capture.handle}${capture.draw === null ? '' : `, event ${capture.draw}`}${capture.pin ? `, pixel (${capture.pin.x}, ${capture.pin.y})` : ''}${chosen.note ? ', with your note' : ''}.`;
+            $('note').value = '';
+
+            return true;
+        }
+        catch (error)
+        {
+            $('send-what').textContent = error.message.split('\n')[0];
+
+            return false;
+        }
+    }
+
+    function pin (x, y)
+    {
+        const canvas = $('picture');
+
+        if (!capture.image || x < 0 || y < 0 || x >= canvas.width || y >= canvas.height)
+        {
+            return false;
+        }
+
+        capture.pin = { x, y, rgba: [...canvas.getContext('2d').getImageData(x, y, 1, 1).data] };
+        $('send-what').textContent = `Pinned pixel (${x}, ${y}) of event ${capture.draw}: rgba ${capture.pin.rgba.join(', ')}. Send to agent passes it on.`;
+
+        return true;
+    }
+
     async function selectDraw (draw)
     {
         capture.draw = draw;
         capture.picture = false;
+        capture.pin = null;
 
         [...$('events').children].forEach((item, index) => item.setAttribute('aria-selected', String(capture.events[index].draw === draw)));
 
@@ -748,6 +812,17 @@
         $('pixel').replaceChildren(swatch, `(${x}, ${y})  rgba ${r}, ${g}, ${b}, ${a}`);
     });
 
+    $('picture').addEventListener('click', (event) =>
+    {
+        const canvas = $('picture');
+        const rect = canvas.getBoundingClientRect();
+
+        pin(Math.floor((event.clientX - rect.left) * canvas.width / rect.width), Math.floor((event.clientY - rect.top) * canvas.height / rect.height));
+    });
+
+    $('send').addEventListener('click', () => sendToAgent());
+    $('note').addEventListener('keydown', (event) => { if (event.key === 'Enter') { sendToAgent(); } });
+
     const panes = { target: 'target', state: 'state-pane', shaders: 'shaders-pane' };
 
     function selectPane (name)
@@ -790,7 +865,13 @@
         return true;
     };
 
+    // As the person would: pin a pixel of the picture on show, and send what is chosen.
+    window.pinPixel = (x, y) => pin(x, y);
+    window.send = (note) => sendToAgent(note);
+
     window.shown = () => ({
+        pin: capture.pin,
+        sent: $('send-what').textContent,
         tab,
         status: live.status,
         rows: activity.rows,

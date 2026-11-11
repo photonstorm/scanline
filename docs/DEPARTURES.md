@@ -327,6 +327,10 @@ Two things the new Babylon.js page (`fixtures/engines/babylon-shadows.html`) fou
 - More than one device in a capture. Calls on another device's objects are left out.
 - A call rejected in replay is found by wrapping every call in an error scope. WebGPU reports most errors when an encoder is finished, so the call named is `finish`, with the browser's message saying which pass call was at fault.
 
+## Send to agent
+
+Built after milestone 7 (PRD UI-5, which the build plan puts after 1.0). In the viewer's Capture tab the person chooses an event, clicks a pixel of its picture to pin it, writes a note if they like, and presses Send to agent. The host queues a `selection` event holding the capture, the event number, the target, the pixel with its value, the shader if they were reading one, the note, and the call to make next. `wait(kinds: ["selection"])` returns it. `viewer(pin: [x, y], send: "note")` does the same as the person's clicks, which is how it is tested. A texture cannot be chosen: the viewer has no texture list.
+
 ## The Babylon.js adapter
 
 Built after milestone 7 (the build plan puts it after 1.0). Babylon announces itself to nobody, so the adapter finds a scene the way Phaser's finds a renderer: a setter on `Object.prototype` for `_renderingManager`, which every Babylon scene assigns as it is constructed. From the scene it finds the classes it needs by looking at what the scene holds each frame, and wraps on their prototypes: `Scene.render`, `RenderTargetTexture.render`, `Mesh.render`, `ShadowGenerator._renderSubMeshForShadowMap`, the post-process manager, sprite managers, particle systems, layers and effect layers. Each mesh draw carries the mesh's class, name and material, and whether it is a shadow-map draw. The scene's switches (shadows, lights, textures, post-processes, fog, wireframe) and the hardware scaling level are controls.

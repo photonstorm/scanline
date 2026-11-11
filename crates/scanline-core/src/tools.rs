@@ -388,6 +388,8 @@ pub const TOOLS: &[Tool] = &[
             r#""draw": { "type": "integer", "description": "With capture: the event to select." }"#,
             r#""pane": { "type": "string", "enum": ["target", "state", "shaders"], "description": "With show: \"capture\": which pane of the event to show." }"#,
             r#""output": { "type": "boolean", "description": "Return a picture of the viewer." }"#,
+            r#""pin": { "type": "array", "items": { "type": "integer" }, "description": "[x, y]: pin a pixel of the picture on show, as a click does." }"#,
+            r#""send": { "description": "Press Send to agent, as the person would: what is chosen arrives as a selection event. A string is the note." }"#,
         ),
         read_only: false,
     },
@@ -1249,6 +1251,11 @@ level. Ask them, and let Scanline hold the evidence.
       After the press the person can mark the frozen picture: a click is a point, a drag
       a box, and the strip takes a typed note. Each arrives as an annotation event in
       canvas pixels: wait(kinds: [\"annotation\"]) or events.
+  Send to agent, in the viewer
+      the person chooses an event of a capture, clicks a pixel of its picture to pin it,
+      writes a note if they like, and presses the button. It arrives as a selection event
+      with the handles to use as they are (capture, draw, target, pixel, shader), the note,
+      and the call to make next: wait(kinds: [\"selection\"]) or events.
   capture(when: {error: true})
       no person needed: the page runs until it raises an error, a frame takes too long
       ({frame_ms_over: 20}), it marks an event ({mark: \"name\"}) or an expression becomes

@@ -1572,6 +1572,31 @@ describe('the viewer and the activity log', () =>
         assert.ok(!log.some((row) => row.command === 'stats' || row.command === 'memory'), 'the graphs\' polling is not logged');
 
         assert.match((await scanline('viewer', '--show', 'nonsense')).out, /The viewer has three tabs: activity, live and capture/);
+
+        // Send to agent: the person pins a pixel of the picture, writes a note, and sends.
+        // The agent gets the handles to use as they are, and the call to make next.
+        const cursor = (await scanline('events', '--json')).json.data.next;
+        const sent = await scanline('viewer', '--pin', '[100, 220]', '--send', 'this crate looks wrong', '--json');
+
+        assert.equal(sent.code, 0, sent.out);
+        assert.deepEqual([sent.json.data.showing.pin.x, sent.json.data.showing.pin.y], [100, 220]);
+        assert.match(sent.json.data.showing.sent, /^Sent: cap_\d+, event 9, pixel \(100, 220\), with your note/);
+
+        const arrived = await scanline('wait', '--kinds', '["selection"]', '--cursor', cursor, '--json');
+        const selection = arrived.json.data.events[0];
+
+        assert.equal(selection.kind, 'selection');
+        assert.equal(selection.data.capture, capture);
+        assert.equal(selection.data.draw, 9);
+        assert.equal(selection.data.target, 'canvas');
+        assert.deepEqual([selection.data.pixel.x, selection.data.pixel.y, selection.data.pixel.rgba.length], [100, 220, 4]);
+        assert.equal(selection.data.note, 'this crate looks wrong');
+        assert.equal(selection.data.next, `pixel_history(capture: "${capture}", x: 100, y: 220)`);
+
+        const followed = await scanline('pixel_history', capture, 100, 220);
+
+        assert.equal(followed.code, 0, followed.out);
+        assert.match((await scanline('viewer', '--pin', '[9999, 5]')).out, /is not a pixel of the picture the viewer is showing/);
     });
 });
 

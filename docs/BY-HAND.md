@@ -138,6 +138,7 @@ scanline viewer
 - [ ] Live shows four graphs (frame time, GPU time, draws, memory) that move while the game runs and go flat when you run `scanline pause`.
 - [ ] Capture lists the captures; choosing one shows its events down the left. Clicking an event shows the picture as it stood after that event. Moving the pointer over the picture gives the pixel's position and value; the wheel zooms, and at high zoom the pixels are sharp squares, not blurred.
 - [ ] The State and Shaders panes show that event's state and its shader source, readable without scrolling sideways.
+- [ ] Send to agent: click a pixel of the picture (the line under the capture bar says it is pinned), type a few words in "For the agent" and press Send to agent. In the shell, `scanline events` shows a `selection` event with the capture, the event number, the pixel and your words.
 - [ ] Is anything hard to read, too small, or in the wrong place? This is the first time anyone has looked at it with their own eyes.
 
 ## A capture as a file (milestone 7)

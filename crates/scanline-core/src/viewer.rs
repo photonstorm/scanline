@@ -37,7 +37,9 @@ async fn answer_now(host: Arc<Host>, session: Arc<Session>, asked: Value) {
 
     // The viewer looks and does not launch, close or steer: those are the agent's and the
     // strip's. A capture is looked at through this session's browser.
-    let outcome = if matches!(method.as_str(), "launch" | "close" | "navigate" | "viewer" | "eval" | "policy") {
+    let outcome = if method == "send_to_agent" {
+        Ok(send_to_agent(&session, &params))
+    } else if matches!(method.as_str(), "launch" | "close" | "navigate" | "viewer" | "eval" | "policy") {
         Err(anyhow::anyhow!("The viewer does not run {method}."))
     } else {
         params["_by"] = json!(if asked["person"] == true && !UPKEEP.contains(&method.as_str()) { "person" } else { "viewer" });
@@ -76,6 +78,51 @@ async fn answer_now(host: Arc<Host>, session: Arc<Session>, asked: Value) {
     let _ = session.viewer_eval(&format!("receive({id}, {reply})")).await;
 }
 
+/// "Send to agent" (01-PRD.md, UI-5): what the person has chosen in the viewer, queued as an
+/// event the agent reads with `wait` or `events`. The handles are ones the agent can use
+/// as they are. The note is the person's own words: the viewer is a page of the host's,
+/// which the game cannot reach, so nothing in it comes from the page under test.
+fn send_to_agent(session: &Session, chosen: &Value) -> Value {
+    let mut data = json!({});
+
+    for key in ["capture", "target", "shader"] {
+        if let Some(handle) = chosen[key].as_str().filter(|text| text.len() <= 40 && text.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')) {
+            data[key] = json!(handle);
+        }
+    }
+
+    if let Some(draw) = chosen["draw"].as_i64() {
+        data["draw"] = json!(draw);
+    }
+
+    if let (Some(x), Some(y)) = (chosen["pixel"]["x"].as_i64(), chosen["pixel"]["y"].as_i64()) {
+        data["pixel"] = json!({ "x": x, "y": y, "rgba": chosen["pixel"]["rgba"].as_array().map(|parts| parts.iter().filter_map(Value::as_u64).take(4).collect::<Vec<_>>()) });
+    }
+
+    if let Some(note) = chosen["note"].as_str().map(str::trim).filter(|note| !note.is_empty()) {
+        data["note"] = json!(note.chars().take(400).collect::<String>());
+    }
+
+    // What to do with it, so the agent need not work it out.
+    let capture = data["capture"].as_str().unwrap_or("");
+
+    data["next"] = json!(match (data["draw"].as_i64(), data["pixel"]["x"].as_i64(), data["pixel"]["y"].as_i64()) {
+        (_, Some(x), Some(y)) => format!(
+            "pixel_history(capture: \"{capture}\", x: {x}, y: {y}{})",
+            match data["target"].as_str().filter(|target| *target != "canvas") {
+                Some(target) => format!(", target: \"{target}\""),
+                None => String::new(),
+            }
+        ),
+        (Some(draw), _, _) => format!("draw(capture: \"{capture}\", draw: {draw})"),
+        _ => format!("draw_list(capture: \"{capture}\")"),
+    });
+
+    session.queue("selection", data.clone());
+
+    result("Sent to the agent.", data)
+}
+
 /// Opens the viewer, says what it is showing, or shows something in it as the person would.
 pub async fn viewer(_host: &Arc<Host>, session: &Arc<Session>, params: &Value) -> Result<Value> {
     let opened = session.open_viewer().await?;
@@ -104,6 +151,27 @@ pub async fn viewer(_host: &Arc<Host>, session: &Arc<Session>, params: &Value) -
         if shown.is_none() {
             bail!("The viewer did not answer. Close its window and call viewer again.");
         }
+    }
+
+    // Pin a pixel of the picture on show, and send what is chosen, as the person would.
+    if let Some(at) = params["pin"].as_array().filter(|at| at.len() == 2 && at.iter().all(Value::is_i64)) {
+        if session.viewer_eval(&format!("pinPixel({}, {})", at[0], at[1])).await != Some(json!(true)) {
+            bail!(
+                "({}, {}) is not a pixel of the picture the viewer is showing. Show a capture and an event first: viewer(show: \"capture\", capture, draw).",
+                at[0],
+                at[1]
+            );
+        }
+    }
+
+    if !params["send"].is_null() && params["send"] != false {
+        let note = params["send"].as_str().unwrap_or("");
+
+        if session.viewer_eval(&format!("send({})", Value::String(note.to_string()))).await != Some(json!(true)) {
+            bail!("The viewer has nothing to send: no capture is open in it. viewer(show: \"capture\", capture: \"cap_1\", draw: n) opens one.");
+        }
+
+        lines.push("Sent what the viewer shows to the agent, as the person's Send to agent button does. It arrives as a selection event: wait(kinds: [\"selection\"]).".to_string());
     }
 
     let showing = session.viewer_eval("shown()").await.unwrap_or(Value::Null);
