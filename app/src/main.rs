@@ -30,6 +30,15 @@ fn main() {
 
     let args = cef::args::Args::new();
 
+    // Chromium's helpers run in its sandbox, as Chrome's do: it is entered before anything
+    // else is loaded, and lasts as long as the process.
+    let _sandbox = helper.then(|| {
+        let mut sandbox = cef::sandbox::Sandbox::new();
+
+        sandbox.initialize(args.as_main_args());
+        sandbox
+    });
+
     // CEF's framework is loaded at run time on macOS, from inside the bundle.
     let loader = cef::library_loader::LibraryLoader::new(&std::env::current_exe().expect("own path"), helper);
 

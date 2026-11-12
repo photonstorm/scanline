@@ -1,6 +1,6 @@
 # Handover: what to do next
 
-Written on 11 November 2026, first at the end of the work on the Mac and then again the same day at the end of the Windows build on the PC, for whoever carries on: a person, or an agent in a new session on either machine. A new session has none of the earlier conversation, so everything it needs is here or in a file this names.
+Written on 11 November 2026, first at the end of the work on the Mac and then again the same day at the end of the Windows build on the PC, and brought up to date on 12 November 2026 after the Scanline app was built on the Mac, for whoever carries on: a person, or an agent in a new session on either machine. A new session has none of the earlier conversation, so everything it needs is here or in a file this names.
 
 Read this first, then [DEPARTURES.md](DEPARTURES.md) (what was built and how it differs from the specification) and [BY-HAND.md](BY-HAND.md) (what only a person can check).
 
@@ -13,7 +13,7 @@ Read this first, then [DEPARTURES.md](DEPARTURES.md) (what was built and how it 
 - **On the PC the suite has not been run since the four pieces of work in section 1**, which change code both platforms share.
 - Every milestone of the build plan up to 1.0 is worked through, and from the list for after 1.0: the Babylon.js and PlayCanvas adapters, the native-capture profile, assertions for a test run, a recording as a video, and "Send to agent".
 - **Nothing has been compiled or run on Linux.**
-- **A desktop app is designed** ([APP.md](APP.md)): one window with the game in an embedded Chromium (CEF) and native panels (GPUI), the host kept as its own process. Its stage 0 prototype ([prototypes/app](../prototypes/app/README.md)) is built and passed on the Mac on 12 November 2026. **On the PC it does not build yet**: `src/mac.rs` and CEF's library loader are macOS only, so test 7 needs a Windows twin of `mac.rs` (the browser's HWND as a child of GPUI's, placed the same way) and the Windows CEF (175 MB), with cmake and ninja.
+- **The Scanline app is built on the Mac** ([app/](../app/README.md), designed in [APP.md](APP.md)): one window with the game in an embedded Chromium (CEF 156) and Scanline's panels (GPUI) beside it, the host kept as its own process. The host launches it as a session's browser with `display: "app"`. Stages 0 to 2 of the design and part of stage 3 are done: APP.md, section 12. `npm run test:app` drives it (skipped where it is not built). **On the PC it does not build yet**: section 2a.
 - The specification is not in this repository. It is in the `render-debugger/` folder of the `render-debugger-spec` branch of the `v3-gameblocks` repository, which is pushed. Read it there. Do not edit it and do not copy it here.
 
 ## How to work in this repository
@@ -98,6 +98,18 @@ It is described in `DEPARTURES.md` under "Windows". Not done:
 - **An evaluation round through Direct3D** has not been run: every round so far was on the Mac.
 - **Edge.** `find_browser` lists Edge's usual paths on Windows, and nothing has been run in it.
 
+## 2a. The Scanline app on Windows
+
+The app (`app/`) was built and tested on the Mac only. What is Mac-only in it, and what each needs on Windows:
+
+- **`app/src/mac.rs`**: two things. Chromium's `CrAppControlProtocol` on GPUI's application class has no Windows counterpart: drop it. Placing the browser's view becomes placing a child window: CEF's `window_info.set_as_child(parent_hwnd, rect)` already does Windows (`WS_CHILD`), with GPUI's HWND from `raw-window-handle` (`RawWindowHandle::Win32`); then `SetWindowPos` on `host.window_handle()` each turn, as `place` does with `setFrame`. Coordinates are from the top left already, in physical pixels (multiply GPUI's by the window's scale factor). `snapshot` can be left out.
+- **`app/src/main.rs`**: CEF's library loader and sandbox (`cef::library_loader`, `cef::sandbox`) are macOS only. On Windows `libcef.dll` sits beside the executable and is linked normally; the sandbox there needs `cef_sandbox.lib` and a `sandbox_info` passed to `execute_process` and `initialize` (`cef-dll-sys` has a `sandbox` feature for it). Start without the sandbox if need be and record it in `DEPARTURES.md`.
+- **`app/src/host.rs`** and **`app/src/launcher.rs`** use the Unix socket at `<home>/control.sock`. On Windows the host's channel is a named pipe whose name is in `<home>/runtime.json` under `"pipe"` (`crates/scanline/src/control.rs`, `place`); open it as a file (`OpenOptions::new().read(true).write(true).open(name)`), one handle for writing and a clone for the reading thread. The default home is `%LOCALAPPDATA%\Scanline`.
+- **`app/src/launcher.rs`**: `osascript` for the error dialogue becomes `MessageBoxW`. The start page and the command line are found beside the executable rather than in a bundle's `Resources`.
+- **`app/bundle.sh`** becomes a PowerShell script assembling `app\target\Scanline\`: `Scanline.exe`, `scanline-cli.exe` (file names ignore case on Windows too), CEF's DLLs, `.pak` files, `locales\` and `icudtl.dat` from the Windows CEF (175 MB, `cef_binary_156.0.26+g8ea0c73+chromium-156.0.8078.88_windows64_minimal.tar.bz2`, which the build downloads into `CEF_PATH`), and `start.html`. Chromium's helpers are the same `Scanline.exe` on Windows; no helper apps. `find_app` already looks in `%LOCALAPPDATA%\Programs\Scanline\Scanline.exe`.
+- **Building** needs cmake and ninja (for CEF's C++ wrapper) and the MSVC tools the host already builds with. GPUI on Windows draws with Direct3D 11 and compiles its shaders with `fxc`: check whether `runtime_shaders` applies there.
+- Then `npm run test:app` (it skips on anything but macOS: change its `skip` once the PC build exists), and the app checks in `BY-HAND.md`, on the PC.
+
 ## 3. The PlayCanvas adapter: built, and what it left
 
 Built on the PC on 11 November 2026, once the owner had installed PlayCanvas (`probe/src/adapters/playcanvas.ts`, `fixtures/engines/playcanvas.html`, tests in `tests/protocol.test.mjs` and `probe/test/probe.test.mjs`). `DEPARTURES.md`, "The PlayCanvas adapter", says how it works and what it found wrong in Scanline's own capture, which is fixed. Left:
@@ -125,7 +137,7 @@ Probably the nearest of the unbuilt platforms: the pipe launch is plain Unix, th
 ## 6. The rest of the list for after 1.0
 
 - **WebXR.** An immersive session draws to the headset's framebuffer on the headset's clock. Needs a device or an emulator.
-- **Single-window builds.** The game runs in the browser's own window and the control strip in a second that follows it. One window holding both means a native shell around an embedded browser: a different application.
+- **Single-window builds.** Built on the Mac as the Scanline app (section 2a for Windows).
 - **Signed installers and updates.** Need the owner's signing identity on each platform, and somewhere for releases to live. `tools/package.mjs` has the macOS steps, never run, and nothing for Windows.
 
 ## 7. Smaller things not built

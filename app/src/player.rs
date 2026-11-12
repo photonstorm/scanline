@@ -1088,7 +1088,8 @@ pub fn run(args: cef::args::Args, mut app: cef::App, options: Options) {
     Application::new().run(move |cx: &mut App| {
         let cache = options.cache.clone().unwrap_or_else(|| std::env::temp_dir().join("scanline-app-cache"));
         let settings = cef::Settings {
-            no_sandbox: 1,
+            // The helpers enter Chromium's sandbox themselves (main.rs).
+            no_sandbox: 0,
             external_message_pump: 1,
             root_cache_path: cef::CefString::from(cache.to_string_lossy().as_ref()),
             ..Default::default()

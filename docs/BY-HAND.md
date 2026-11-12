@@ -227,6 +227,21 @@ node evals/run.mjs --agent 'claude -p --mcp-config /path/to/mcp.json --allowedTo
 - [ ] One answer is written to `evals/results/<today>/b03.txt`, and the line printed says whether it was correct and in how many calls.
 - [ ] Without `--bugs`, all twenty-nine run, one after another, and `scores.json` holds the round.
 
+## The Scanline app
+
+[app/](../app/README.md), built on 12 November 2026 and checked through the host and pictures of its own window, never by a person's hands. Build it with `npm run app` (it is then `app/target/Scanline.app`), or use the one installed in `~/Applications`. Serve the fixtures (`node evals/serve.mjs 8765`) for the pages below.
+
+1. **Open it from the Finder or the Dock.** A window opens on the start page, whose ring of bars turns. The Live panel's numbers move (about 60 fps), the status bar says `ses_…`, `running at 1×`, `WebGL 2`, and the agent panel lists `you launch`.
+2. **The game's view.** The ring is drawn in the black area to the left of the panels, filling it, sharp. Resize the window: the game follows its area and nothing is drawn over the toolbar or the panels. Drag the window by the toolbar; double-click the toolbar to zoom it. Move it to another display.
+3. **The address bar.** Click it (or `⌘L`), type `127.0.0.1:8765/fixtures/engines/three.html`, press Return: three cubes, the address shown in the bar, the page in File › Open Recent. `⌘V` pastes; `⌥⌫` deletes a word; Escape gives the keyboard back to the game. Try an address on the internet: the person's navigation goes anywhere.
+4. **Keyboard to the game.** Open `fixtures/matrix/game.html`, click the game and use the arrow keys: the game gets them, and the panels' shortcuts (`⌘1`–`⌘5`) still work while it has the keyboard.
+5. **Time.** `⌘.` pauses (the button says Run, the status bar `paused`, the frame number stops); `⌘'` steps one frame; the `1×` button goes round 2×, 0.25×, 0.5×, 1×; `⌘[` and `⌘]` halve and double it.
+6. **Capture.** `⇧⌘C`: the Captures panel opens on the new capture, with the last draw chosen and its picture. Click other draws in the list; click "Open prg_… in Resources". Click a point of the picture: a "Pixel" card lists the events that changed it; click one to choose that draw. `⌘\` widens the panel. Send to agent, then `scanline wait --kinds selection` in a terminal shows what was sent.
+7. **Resources.** Pick textures, buffers, shaders and programs. A texture's ◀ ▶ step through its levels; a buffer's page through it, and "as float32" reads it as numbers; a program's shader buttons open its shaders.
+8. **Console and Agent.** A page error turns the Console button's dot red until the panel is opened. In a terminal, run `scanline request_human --instruction "Press Debug"`: the Agent panel shows the request, the toolbar shows Debug and "You have the input"; press Debug (`⇧⌘D`) and `scanline wait --request req_1` returns the capture.
+9. **More windows.** `⌘N` opens a second window with a session of its own. Closing a window (`⌘W`, or its red button) ends its session: `scanline sessions` no longer lists it. `⌘Q` likewise.
+10. **An agent's session.** `scanline launch <url> --display app` from a terminal opens a window too, and `scanline viewer --show capture --capture cap_1 --draw 2` turns its panel to that draw.
+
 ## The desktop app prototype
 
 [prototypes/app](../prototypes/app/README.md). On the Mac, already done by hand on 12 November 2026: it runs games and is fast. Still to look at:

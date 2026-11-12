@@ -263,10 +263,13 @@ fn buffer(state: &State, value: &Value, wide: bool, cx: &mut Context<Player>) ->
         .child(facts(detail, &["what", "size", "usage", "target", "element", "used", "written"]))
 }
 
-/// The other kinds: what the host says of them, with any source or log in full.
-fn other(value: &Value) -> gpui::Div {
+/// The other kinds: what the host says of them, with any source or log in full, a program's
+/// uniforms and attributes as rows, and its shaders a click away.
+fn other(value: &Value, cx: &mut Context<Player>) -> gpui::Div {
     let detail = &value["data"]["detail"];
     let mut blocks = Vec::new();
+    // Shown in their own way, or said elsewhere (the site, under the card).
+    let listed = ["uniforms", "attributes", "shaders", "id", "kind", "context", "site", "destroyedAt"];
 
     for key in ["source", "log", "translated", "infoLog", "compileLog", "linkLog", "code"] {
         if let Some(text) = detail[key].as_str().filter(|text| !text.trim().is_empty()) {
@@ -274,14 +277,55 @@ fn other(value: &Value) -> gpui::Div {
         }
     }
 
-    let keys: Vec<String> =
-        detail.as_object().map(|object| object.keys().filter(|key| !blocks.iter().any(|(block, _)| block == *key)).cloned().collect()).unwrap_or_default();
+    let keys: Vec<String> = detail
+        .as_object()
+        .map(|object| object.keys().filter(|key| !blocks.iter().any(|(block, _)| block == *key) && !listed.contains(&key.as_str())).cloned().collect())
+        .unwrap_or_default();
+
+    let shaders: Vec<String> =
+        detail["shaders"].as_array().map(|ids| ids.iter().filter_map(Value::as_u64).map(|id| format!("shd_{id}")).collect()).unwrap_or_default();
+    let named = |key: &str| -> Vec<(String, String)> {
+        detail[key]
+            .as_array()
+            .map(|entries| {
+                entries
+                    .iter()
+                    .map(|entry| {
+                        let name = format!("{} {}", entry["name"].as_str().unwrap_or("?"), entry["type"].as_str().unwrap_or(""));
+                        let value = match (&entry["value"], &entry["location"]) {
+                            (Value::Null, Value::Null) => String::new(),
+                            (Value::Null, location) => format!("location {location}"),
+                            (value, _) => value.to_string(),
+                        };
+
+                        (name, if value.len() > 140 { format!("{}…", &value[..140]) } else { value })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let uniforms = named("uniforms");
+    let attributes = named("attributes");
 
     div()
         .flex()
         .flex_col()
         .gap_2()
         .child(facts(detail, &keys.iter().map(String::as_str).collect::<Vec<_>>()))
+        .when(!shaders.is_empty(), |content| {
+            content.child(div().flex().items_center().gap_1().child(note("Shaders")).children(shaders.into_iter().map(|handle| {
+                let chosen = handle.clone();
+
+                button(format!("open-{handle}"), handle, AMBER).on_click(cx.listener(move |this, _, _, cx| {
+                    this.select_resource(chosen.clone());
+                    cx.notify();
+                }))
+            })))
+        })
+        .when(!uniforms.is_empty(), |content| {
+            content.child(note("Uniforms, with the value last set")).children(uniforms.into_iter().map(|(name, value)| row(name, value)))
+        })
+        .when(!attributes.is_empty(), |content| content.child(note("Attributes")).children(attributes.into_iter().map(|(name, value)| row(name, value))))
         .children(blocks.into_iter().map(|(name, text)| {
             div().flex().flex_col().gap_1().child(note(name)).child(
                 div().p_2().rounded_md().bg(rgb(FIELD)).border_1().border_color(tint(FAINT, 0.8)).text_xs().font_family(MONO).text_color(rgb(TEXT)).child(text),
@@ -391,7 +435,7 @@ pub fn render(player: &mut Player, _window: &mut Window, cx: &mut Context<Player
             let body = match kind_of(handle) {
                 "texture" => texture(state, value, cx),
                 "buffer" => buffer(state, value, wide, cx),
-                _ => other(value),
+                _ => other(value, cx),
             };
 
             card(handle.clone(), AMBER)

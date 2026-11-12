@@ -456,7 +456,21 @@ fn workspace(player: &mut Player, cx: &mut Context<Player>) -> gpui::Div {
                 _ => String::new(),
             };
 
-            card(format!("Draw {number}"), PURPLE).child(div().text_xs().text_color(rgb(TEXT)).child(said)).child(state_of(draw)).into_any_element()
+            let program = draw["state"]["programName"].as_str().or(draw["state"]["pipeline"].as_str()).map(str::to_string);
+
+            card(format!("Draw {number}"), PURPLE)
+                .child(div().text_xs().text_color(rgb(TEXT)).child(said))
+                .when_some(program, |card, program| {
+                    let chosen = program.clone();
+
+                    card.child(button("open-program", format!("Open {program} in Resources"), AMBER).on_click(cx.listener(move |this, _, _, cx| {
+                        this.show(crate::panels::Panel::Resources);
+                        this.select_resource(chosen.clone());
+                        cx.notify();
+                    })))
+                })
+                .child(state_of(draw))
+                .into_any_element()
         }
     };
 

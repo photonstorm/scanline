@@ -1,6 +1,6 @@
 # The Scanline app
 
-A design for Scanline as a desktop application: one window holding the game and everything Scanline knows about it, for a person working alone or beside an agent. Written 12 November 2026. Stage 0, the prototype, is built and passed on the Mac ([prototypes/app](../prototypes/app/README.md); results in [spikes/RESULTS.md](spikes/RESULTS.md), "The desktop app prototype"). Nothing else is built.
+A design for Scanline as a desktop application: one window holding the game and everything Scanline knows about it, for a person working alone or beside an agent. Written 12 November 2026. **Built on the Mac, 12 November 2026**: stage 0 (the prototype, [prototypes/app](../prototypes/app/README.md), results in [spikes/RESULTS.md](spikes/RESULTS.md)), stage 1, stage 2, and part of stage 3. The app is in [app/](../app/README.md); section 12 says what is built and what is not.
 
 ## 1. What it is for
 
@@ -157,3 +157,21 @@ The results go in `docs/spikes/RESULTS.md`. If test 1 or 2 fails beyond repair, 
 - Should an agent's `launch` use the app whenever it is running, or only when asked?
 - One session per window, or tabs?
 - Where the visual direction comes from: the owner has offered examples of applications with interfaces worth learning from.
+
+## 12. What is built (12 November 2026)
+
+On macOS, Apple silicon. Windows and Linux are not built.
+
+**Stage 1, the shell: built.** `app/` is the app: a GPUI window with the toolbar, the game in CEF 156 as a native view, and the status bar. The host launches it as its browser when a session asks for `display: "app"` (or `SCANLINE_DISPLAY=app`), over `--remote-debugging-pipe`, passing `--scanline-session` and `--scanline-home`; the protocol path chosen in stage 0, with no change to the host's protocol client. Opened from the Dock, the app asks the host (starting it if need be) for a session in itself and quits; the session's window is a new process, one per session. Closing the window ends the session: the app quits cleanly, and the host forgets a session whose app exited with status 0. The host closing a session closes its window. Chromium's helpers run in its sandbox.
+
+**Stage 2, inspection: built.** Live (frame time, CPU and GPU time, work per frame, GPU memory, objects alive), Resources (by kind and size; texture levels, small textures enlarged by the host; a buffer's bytes as hex or float32, paged; a shader's source, log and translation; a program's uniforms, attributes and shaders), Captures (the list; a capture with "Worth a look", the target after the chosen draw, the draw list, the draw's state, a click on the picture for the pixel's story, Send to agent), Console and Agent (the activity log, the agent's request with Debug, who has the input).
+
+**Stage 3, finish: in part.** Built: menus and shortcuts, Open Recent, the icon, several windows (one session each), the look after the owner's reference. Not built: a light theme, a capture file opening the app when double-clicked, embedded-browser updates, signing and notarisation (the owner's), Windows, Linux.
+
+Decided while building, beyond the sections above:
+
+- **One process per window.** A window is a session's browser, as a Chrome window is; a new window is a new session. Several windows are several processes, each with its own Dock entry.
+- **Who asked.** The app's upkeep goes to the host as the viewer (not logged) and what the person does as the person (logged as theirs). The person's calls skip the tiers and the input owner: the person runs Scanline, and the tiers bound what a client may ask. So that only the app and the viewer can say they are the person, the command line, MCP and MCP over HTTP drop `_by` from what an agent sends.
+- **`viewer` in an app session** opens nothing: it records what the agent wants shown (`show`, and a `capture`, `draw` or `handle`), status carries it as `app_show`, and the app shows it.
+- **The strip in an app session** is the toolbar: `open_strip` does nothing there, and the agent's request appears in the Agent panel with Debug.
+- **The app's executable is found** from `SCANLINE_APP`, the bundle the command line is in, `~/Applications` or `/Applications`, or `launch(browser: …)` with `display: "app"`.
