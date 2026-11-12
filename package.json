@@ -27,7 +27,8 @@
     "test:package": "node --test --test-concurrency=1 --test-timeout=120000 tests/package.test.mjs",
     "package": "node tools/package.mjs",
     "test:app": "node --test --test-concurrency=1 --test-timeout=180000 tests/app.test.mjs",
-    "app": "sh app/bundle.sh"
+    "app": "sh app/bundle.sh",
+    "package:app": "sh app/package.sh"
   },
   "devDependencies": {
     "@webgpu/types": "^0.1.74",

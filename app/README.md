@@ -23,8 +23,8 @@ Open `Scanline.app`. It asks the host for a new session in the app (starting the
 The panels:
 
 - **Live**: frame time, CPU and GPU time, the work each frame does, GPU memory and the objects alive, as the page runs.
-- **Resources**: every live object by kind, largest first. A texture opens to its levels (◀ ▶), small ones enlarged texel by texel; a buffer to its bytes, in hex or as float32, a page at a time; a shader or program to its source and logs. Each says the line of code that made it.
-- **Captures**: the session's captured frames. One opened shows "Worth a look", the target as it stood after the chosen draw, the draw list (each with the box it changed, or "changed nothing"), and the draw's state. Click the picture for a pixel's value and every event that changed it. Send to agent passes the capture, draw and pixel to the agent.
+- **Resources**: every live object by kind, largest first. A texture opens to its levels (◀ ▶), small ones enlarged texel by texel, and a click on it reads that texel exactly; a buffer to its bytes, in hex or as float32, a page at a time; a shader or program to its source and logs. Each says the line of code that made it.
+- **Captures**: the session's captured frames. One opened shows "Worth a look", the target as it stood after the chosen draw, the draw list (each with the box it changed, or "changed nothing"), and the draw's state. Click the picture for a pixel's value and every event that changed it. Send to agent passes the capture, draw, pixel and a note of yours to the agent. Record 2 s keeps every frame of two seconds of play (the flight recorder): a recording shows its contact sheet and frames, any of which becomes a capture with a click.
 - **Console**: the page's console by frame, repeats folded, filtered to warnings or errors.
 - **Agent**: every command an agent runs on the host, and what you do, newest first; and what the agent has asked of you, with Debug.
 
@@ -67,6 +67,8 @@ That is `app/bundle.sh`: it builds the app and the command line and assembles `a
 To use the build with the command line in this repository, point the host at it: `SCANLINE_APP=app/target/Scanline.app`, set where the host is started (a running host keeps its environment: `scanline stop` first). An installed app is found without it, in `/Applications` or `~/Applications`.
 
 `SCANLINE_APP_SNAPSHOTS=<folder>` makes the window save a picture of itself there every two seconds, with where Chromium's view sits beside it: a way to check the window with nobody at the screen. (A picture of one's own window leaves out what Chromium's GPU process draws, so the game area is dark in it.)
+
+`npm run package:app` (`app/package.sh`) makes a release build and packs it into `dist/Scanline-<version>-macos-arm64.dmg`, with a link to `/Applications`. It is unsigned: signing and notarising are the owner's, and come before packing.
 
 The icon is drawn by `resources/icon/draw.swift`; `resources/icon/make.sh` remakes `AppIcon.icns`.
 
