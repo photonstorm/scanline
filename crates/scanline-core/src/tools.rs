@@ -53,7 +53,7 @@ pub const TOOLS: &[Tool] = &[
             r#""level": { "type": "string", "enum": ["off", "observe"], "description": "off: hooks pass straight through. Default observe." }"#,
             r#""unmodified": { "type": "boolean", "description": "Change nothing the page can observe. Some readbacks stop working." }"#,
             r#""debug_key": { "type": "string", "description": "The key the person presses to freeze and capture. Default F9; \"none\" for no key." }"#,
-            r#""pointer_lock": { "type": "string", "enum": ["native", "shim"], "description": "shim: Scanline grants pointer lock itself and delivers relative mouse moves ({\"pointer\": \"move\", \"dx\": 12, \"dy\": -3}), for games played by mouse-look. Default native." }"#,
+            r#""pointer_lock": { "type": "string", "enum": ["native", "shim", "app"], "description": "shim: Scanline grants pointer lock itself and delivers relative mouse moves ({\"pointer\": \"move\", \"dx\": 12, \"dy\": -3}), for games played by mouse-look. app: the page's request goes to the browser first, and Scanline grants it when the browser refuses one made with a gesture (what a session shown in the Scanline app has). Default native." }"#,
             r#""strip": { "type": "boolean", "description": "Open the control strip under the game's window at once. Default: it opens when request_human is called." }"#,
         ),
         read_only: false,

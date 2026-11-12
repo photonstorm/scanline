@@ -542,6 +542,17 @@ A capture names its stages as it goes. **`progress`** (a control-API method, not
 - **`thumbnails(handles, max_edge)`**, a control-API method for the app's gallery: `screenshot(source)` for each texture, read at the mipmap level nearest the picture's size where the texture has levels.
 - **The live wireframe leaves full-screen passes filled.** It drew every triangle as lines, so on a game that draws its scene offscreen and puts it on the canvas with one full-screen quad, it showed that quad's diagonal and nothing else. The probe now draws filled a draw whose program has only ever drawn four to six vertices and which samples a texture that has been a framebuffer's colour attachment, so the scene's wireframe shows through post effects and the final composite. A quad with an ordinary texture (a floor, a sprite) is still outlined.
 
+## Sizes, sound, pointer lock and projects in the app
+
+Added on 12 November 2026 at the owner's request.
+
+- **`emulate(width, height, dpr, mobile, scale)`**, a tool, and `emulate(reset: true)`: the page's size and pixel ratio as a device or a window of that size gives them (`Emulation.setDeviceMetricsOverride` with `dontSetVisibleSize`, and touch for `mobile`), drawn at `scale` in its view. Status gives `emulated`. Sizes are bounded at 8,192 CSS pixels a side and pixel ratios at 0.25 to 4: beyond them a canvas is larger than most GPUs' largest texture. The app's sizes (app/src/device.rs) are presets of it, scaled to fit the game area.
+- **Pointer lock in the app.** CEF 156 refuses every pointer lock request in a browser it embeds in a window, Alloy style or Chrome style (`UnknownError`; its permission handler is never asked), so no first-person game could be played in the app. A session shown in the app has `pointer_lock: "app"`: the page's request goes to the browser first, and when the browser refuses one made with a gesture (or after the page let go of the lock itself) the probe grants it (pointerLockElement, pointerlockchange, the refusal kept from the page) and tells the app on the console. The app holds the cursor still and hidden (`CGAssociateMouseAndMouseCursorPosition`), so trusted mouse moves carry movementX and movementY. Esc, the menu, leaving the window or another page gives it back. `launch(pointer_lock: "app")` gives it to an ordinary session too, for testing. Not held on Windows (only hidden there), and unbuilt there.
+- **Fullscreen** fills the game area, not the screen: CEF's default for a browser in a window. Esc, or the menu, leaves it.
+- **Mute** is CEF's own (`SetAudioMuted`), the whole page as a muted Chrome tab; not a host command, since a launched Chrome's tab has no protocol method for it.
+- **Projects** (`<home>/app-projects.json`, pictures in `<home>/pictures`): every game opened in the app, newest first, 48 at most, with what is remembered for each (muted, size). The start page is written from them (`<home>/start.html`). It replaces `app-recent.json`, which is read once.
+- Found on the way: the address bar sent a typed path (`/Users/…/game.html`) as it was, which navigate refuses; it now sends a file:// address.
+
 ## Known gaps in what is built
 
 - Unlabelled WebGPU objects are not given generated labels, which the specification lists as a modification. They are named by handle in results instead.

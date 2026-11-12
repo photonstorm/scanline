@@ -26,7 +26,9 @@ export interface Config
     // The key that means "freeze and capture now", as a KeyboardEvent code or key. 'none' for no key.
     debugKey: string;
     // 'shim': the probe grants pointer lock and delivers relative moves itself.
-    pointerLock: 'native' | 'shim';
+    // 'app': in the Scanline app, whose embedded browser refuses pointer lock: the probe
+    // stands in when it is refused, and the app holds the cursor.
+    pointerLock: 'native' | 'shim' | 'app';
 
     probeVersion: string;
 }

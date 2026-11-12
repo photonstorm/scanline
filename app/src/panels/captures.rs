@@ -52,10 +52,18 @@ impl State {
     pub fn list(&mut self, data: &Value) {
         self.rows = data["captures"].as_array().cloned().unwrap_or_default();
 
-        // A capture opened before the list came (an agent showed it) gets its facts now.
+        // A capture opened before the list came (an agent showed it) gets its facts now, and
+        // one that has finished in the background its replay check and findings.
         if let Some(opened) = &self.opened {
-            if self.made.as_ref().and_then(|made| made["capture"].as_str()) != Some(opened.as_str()) {
-                self.made = self.rows.iter().find(|row| row["capture"].as_str() == Some(opened.as_str())).cloned();
+            let row = self.rows.iter().find(|row| row["capture"].as_str() == Some(opened.as_str())).cloned();
+            let stale = match (&self.made, &row) {
+                (Some(made), Some(row)) => made["capture"].as_str() != Some(opened.as_str()) || made["replay"] != row["replay"],
+                (None, Some(_)) => true,
+                _ => false,
+            };
+
+            if stale {
+                self.made = row;
             }
         }
     }
@@ -93,6 +101,12 @@ impl State {
 
         self.loading = false;
         self.events = data["events"].as_array().cloned().unwrap_or_default();
+
+        // The list again for the capture in view (once it has finished in the background):
+        // the draw chosen stays chosen.
+        if self.selected.is_some() {
+            return self.want_draw.take();
+        }
 
         self.want_draw
             .take()
@@ -323,7 +337,13 @@ fn workspace(player: &mut Player, cx: &mut Context<Player>) -> gpui::Div {
             made["frame"].as_u64().map(|frame| frame.to_string()).unwrap_or_else(|| "?".into()),
             made["api"].as_str().unwrap_or(""),
             count,
-            if made["replay_matches"] == true { " · replay identical" } else { "" }
+            if made["replay_matches"] == true {
+                " · replay identical"
+            } else if made["pending"] == true || made["replay"].as_str().is_some_and(|replay| replay.starts_with("still to come")) {
+                " · textures on their way"
+            } else {
+                ""
+            }
         )))
         .child(div().flex_1())
         .child(button("wide", if player.wide { "Narrow" } else { "Wide" }, DIM).on_click(cx.listener(|this, _, _, cx| {

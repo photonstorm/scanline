@@ -204,6 +204,9 @@ pub struct SessionOptions {
     pub debug_key: Option<String>,
     /// Whether the probe grants pointer lock itself and delivers relative moves ("shim").
     pub pointer_lock_shim: bool,
+    /// Stand in for pointer lock where the browser refuses it ("app"): what a session shown in
+    /// the Scanline app gets, whose embedded browser refuses it always.
+    pub pointer_lock_app: bool,
     pub profile: Profile,
     pub headless: bool,
     pub width: u32,
@@ -301,6 +304,9 @@ fn injectable(url: &str) -> bool {
     url.is_empty() || ["http:", "https:", "file:", "blob:", "data:", "about:"].iter().any(|scheme| url.starts_with(scheme))
 }
 
+/// How the probe's lines for the Scanline app begin (probe/src/pointerlock.ts).
+const APP_WORD: &str = "\u{1}scanline:";
+
 impl Session {
     /// Starts a long job: progress() reports it until the guard is dropped.
     pub fn begin(self: &Arc<Self>, what: &str, stage: &str) -> BusyGuard {
@@ -381,7 +387,9 @@ impl Session {
             "startPaused": options.start_paused,
             "deterministic": options.deterministic.map(|(seed, fixed_dt)| json!({ "seed": seed, "fixedDt": fixed_dt })),
             "debugKey": options.debug_key.clone().unwrap_or_else(|| "F9".to_string()),
-            "pointerLock": if options.pointer_lock_shim { "shim" } else { "native" },
+            // A page shown in the app: CEF refuses pointer lock outright, so the probe stands
+            // in when it does and the app holds the cursor (probe/src/pointerlock.ts).
+            "pointerLock": if options.pointer_lock_shim { "shim" } else if options.pointer_lock_app || options.display == "app" { "app" } else { "native" },
             "probeVersion": env!("CARGO_PKG_VERSION"),
         });
 
@@ -1434,7 +1442,11 @@ fn handle(session: &Arc<Session>, event: Event) {
                 .collect::<Vec<_>>()
                 .join(" ");
 
-            console(session, params["type"].as_str().unwrap_or("log"), text, params["timestamp"].as_f64().unwrap_or(0.0), "console");
+            // The probe's word to the Scanline app (pointer lock held or given back) is the
+            // app's, not the page's.
+            if !text.starts_with(APP_WORD) {
+                console(session, params["type"].as_str().unwrap_or("log"), text, params["timestamp"].as_f64().unwrap_or(0.0), "console");
+            }
         }
 
         "Runtime.exceptionThrown" => {

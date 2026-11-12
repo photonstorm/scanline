@@ -17,10 +17,21 @@
     kbd { font: 12px Menlo, monospace; padding: 1px 6px; border-radius: 5px; background: #1b2028; border: 1px solid #2c333f; color: #dde2e8; }
     ul { margin: 0; padding-left: 1.1rem; } li { margin: 0.15rem 0; color: #b8c0cc; }
     code { font: 13px Menlo, monospace; color: #fbbf24; }
+    h2.section { margin: 0 0 0.7rem; font-weight: 300; font-size: 1.15rem; color: #22d3ee; letter-spacing: 0.02em; }
+    .projects { display: grid; grid-template-columns: repeat(auto-fill, minmax(13rem, 1fr)); gap: 0.9rem; margin-bottom: 2rem; }
+    .project { display: flex; flex-direction: column; gap: 0.15rem; padding: 0.55rem; border-radius: 10px; background: #0d1015; border: 1px solid rgba(34, 211, 238, 0.18); color: inherit; text-decoration: none; transition: border-color 0.15s, transform 0.15s, box-shadow 0.15s; }
+    .project:hover { border-color: rgba(34, 211, 238, 0.7); transform: translateY(-2px); box-shadow: 0 6px 24px rgba(34, 211, 238, 0.12); }
+    .project img, .project .blank { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 6px; background: #000; margin-bottom: 0.35rem; }
+    .project .blank { background: repeating-linear-gradient(135deg, #0b0e12 0 10px, #10141a 10px 20px); }
+    .project .title { font-size: 0.95rem; color: #e6ebf1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .project .url { font: 11.5px Menlo, monospace; color: #6b7686; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .project .when { font-size: 0.78rem; color: #8b95a4; }
 </style>
 <main>
     <h1>Scanline</h1>
     <p class="lead">The game runs here, in Chromium. Everything Scanline knows about how it renders is in the panels on the right.</p>
+    <h2 class="section">Projects</h2>
+    <!-- projects -->
     <canvas id="scene" width="1280" height="420"></canvas>
     <div class="grid">
         <div class="card">
@@ -29,6 +40,8 @@
                 <li><kbd>⌘L</kbd> type an address, then <kbd>↩</kbd></li>
                 <li><kbd>⌘N</kbd> a new window: a new session</li>
                 <li><kbd>⌘R</kbd> reload</li>
+                <li><kbd>⇧⌘E</kbd> a size, <kbd>⇧⌘M</kbd> mute</li>
+                <li><kbd>Esc</kbd> the pointer and screen back</li>
             </ul>
         </div>
         <div class="card amber">
@@ -43,7 +56,7 @@
             <h2>Look inside</h2>
             <ul>
                 <li><kbd>⇧⌘C</kbd> capture a frame</li>
-                <li><kbd>⌘1</kbd>–<kbd>⌘5</kbd> Live, Resources, Captures, Console, Agent</li>
+                <li><kbd>⌘1</kbd>–<kbd>⌘6</kbd> Live, Resources, Captures, Experiments, Console, Agent</li>
                 <li><kbd>⌘\</kbd> a wider panel</li>
             </ul>
         </div>

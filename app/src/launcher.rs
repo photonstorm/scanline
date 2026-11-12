@@ -24,17 +24,9 @@ fn command_line(me: &Path) -> PathBuf {
     }
 }
 
-/// The page a new window opens on: the app's own start page, in the bundle's Resources on a
-/// Mac and beside the executable on Windows.
-fn start_page(me: &Path) -> String {
-    let folder = me.parent();
-    let page = if cfg!(windows) {
-        folder.map(|folder| folder.join("start.html"))
-    } else {
-        folder.and_then(Path::parent).map(|contents| contents.join("Resources/start.html"))
-    };
-
-    page.filter(|page| page.exists()).map(|page| page.display().to_string()).unwrap_or_else(|| "about:blank".to_string())
+/// The page a new window opens on: the start page, with the games opened before on it.
+fn start_page(home: &Path, me: &Path) -> String {
+    crate::projects::start_page(home, me).map(|page| page.display().to_string()).unwrap_or_else(|| "about:blank".to_string())
 }
 
 #[cfg(target_os = "macos")]
@@ -137,7 +129,7 @@ fn open(argv: &[String], files: &[PathBuf]) {
     let home = crate::channel::home();
 
     // A page given on the command line (Scanline https://…), or the start page.
-    let url = argv.iter().skip(1).find(|arg| !arg.starts_with('-')).cloned().unwrap_or_else(|| start_page(&me));
+    let url = argv.iter().skip(1).find(|arg| !arg.starts_with('-')).cloned().unwrap_or_else(|| start_page(&home, &me));
 
     // No host: the command line starts one (any command does), and it is waited for.
     if crate::channel::dial(&home).is_err() {

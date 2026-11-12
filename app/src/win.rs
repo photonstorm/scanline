@@ -103,6 +103,18 @@ pub fn frame(view: *mut c_void) -> Option<[f64; 4]> {
     Some([f64::from(rect.left), f64::from(rect.top), f64::from(rect.right - rect.left), f64::from(rect.bottom - rect.top)])
 }
 
+/// Holds the cursor for a game that has taken the pointer, or lets it go. On Windows, hidden
+/// only (Chromium's own lock there would also confine it): never run, like the rest of this file.
+pub fn hold_pointer(hold: bool) {
+    static HELD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+    if HELD.swap(hold, std::sync::atomic::Ordering::Relaxed) != hold {
+        unsafe {
+            windows_sys::Win32::UI::WindowsAndMessaging::ShowCursor(if hold { 0 } else { 1 });
+        }
+    }
+}
+
 /// Not built on Windows: pictures of the window are a macOS aid for now.
 pub fn snapshot(_view: *mut c_void, _path: &std::path::Path) -> bool {
     false

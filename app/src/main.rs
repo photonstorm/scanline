@@ -13,6 +13,7 @@
 mod browser;
 mod channel;
 mod code;
+mod device;
 mod host;
 mod launcher;
 mod panels;
@@ -21,6 +22,7 @@ mod panels;
 #[cfg_attr(windows, path = "win.rs")]
 mod platform;
 mod player;
+mod projects;
 mod theme;
 
 fn main() {

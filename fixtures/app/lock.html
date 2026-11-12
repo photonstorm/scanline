@@ -1,0 +1,63 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pointer lock and fullscreen</title>
+<style>
+    html, body { margin: 0; height: 100%; background: #101418; color: #e6ebf1; font: 15px -apple-system, sans-serif; }
+    canvas { display: block; width: 100%; height: 100%; }
+    p { position: fixed; left: 1rem; top: 1rem; margin: 0; }
+</style>
+<canvas id="scene"></canvas>
+<p id="state">Click to lock the pointer; F for fullscreen.</p>
+<script>
+// What a game that takes the pointer or the screen does: a click locks the pointer, F asks for
+// fullscreen. window.state says what the page has now, for a test to read with eval; the
+// title says it too.
+const canvas = document.getElementById('scene');
+const gl = canvas.getContext('webgl2');
+const state = { locked: false, fullscreen: false, escapes: 0, moved: 0, size: '' };
+
+window.state = state;
+
+function show ()
+{
+    state.locked = document.pointerLockElement === canvas;
+    state.fullscreen = document.fullscreenElement !== null;
+    state.size = `${innerWidth}×${innerHeight} @${devicePixelRatio}`;
+    document.title = `${state.locked ? 'locked' : 'free'}, ${state.fullscreen ? 'fullscreen' : 'windowed'}`;
+    document.getElementById('state').textContent = `${document.title}. ${state.size}. Esc pressed ${state.escapes} times.`;
+}
+
+canvas.addEventListener('click', () => canvas.requestPointerLock());
+addEventListener('keydown', (event) =>
+{
+    if (event.key === 'f')
+    {
+        canvas.requestFullscreen();
+    }
+
+    if (event.key === 'Escape')
+    {
+        state.escapes++;
+    }
+
+    show();
+});
+addEventListener('mousemove', () => state.moved++);
+document.addEventListener('pointerlockchange', show);
+document.addEventListener('fullscreenchange', show);
+addEventListener('resize', show);
+
+function frame (now)
+{
+    canvas.width = canvas.clientWidth * devicePixelRatio;
+    canvas.height = canvas.clientHeight * devicePixelRatio;
+    gl.viewport(0, 0, canvas.width, canvas.height);
+    gl.clearColor(0.1 + 0.1 * Math.sin(now / 500), state.locked ? 0.5 : 0.15, state.fullscreen ? 0.6 : 0.2, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    requestAnimationFrame(frame);
+}
+
+show();
+requestAnimationFrame(frame);
+</script>

@@ -21,6 +21,8 @@ use serde_json::{Value, json};
 use crate::host::{HostLink, Reply};
 use crate::panels::{self, Panel};
 use crate::theme::*;
+use crate::device::{self, Size};
+use crate::projects::{self, Project};
 use crate::{browser, platform};
 
 const TOOLBAR: f32 = 52.0;
@@ -54,6 +56,10 @@ actions!(
         SpeedUp,
         Screenshot,
         ToggleVideo,
+        ToggleMute,
+        ShowProjects,
+        ChooseSize,
+        LeaveFullscreen,
         OpenRecent0,
         OpenRecent1,
         OpenRecent2,
@@ -175,6 +181,10 @@ pub enum Purpose {
     /// Something the person did, by the command's name: its summary goes in the status bar.
     #[allow(dead_code)]
     Action(&'static str),
+    /// The page given a size (emulate), or its own again.
+    Sized,
+    /// A picture of the game for the projects page, by its key.
+    Picture(String),
 }
 
 impl Purpose {
@@ -194,6 +204,7 @@ impl Purpose {
             Purpose::Patches => "patches",
             Purpose::ExperimentPrograms => "experiment-programs",
             Purpose::ExperimentTextures => "experiment-textures",
+            Purpose::Picture(_) => "picture",
             _ => return None,
         })
     }
@@ -246,12 +257,31 @@ pub struct Player {
     pub busy: Value,
     shown_seq: u64,
     shown_title: String,
+    /// The games opened in the app, newest first (projects.rs), and the one in the window, by
+    /// projects::key ("" for a page of the app's own).
+    pub projects: Vec<Project>,
+    game_key: String,
+    /// The game's sound off, as the person left it for this game.
+    pub muted: bool,
+    /// The size the page is given in place of its view's own (device.rs), and whether the
+    /// chooser is open.
+    pub size: Option<Size>,
+    pub choosing_size: bool,
+    /// What the page was last given: the game area it was fitted to, and the size.
+    sized_for: Option<((f32, f32), Option<Size>)>,
+    /// When the game's picture is next taken, for the projects page.
+    picture_due: Option<Instant>,
+    /// The page has an element fullscreen (in the game's view; Esc leaves).
+    pub fullscreen: bool,
+    /// The game has the pointer (its stand-in lock): the cursor is held until Esc.
+    pub pointer_held: bool,
 }
 
 impl Player {
     fn new(options: Options, gpui_view: *mut c_void, cx: &mut Context<Self>) -> Self {
         let host = HostLink::open(&options.home);
-        let recent = load_recent(&options.home);
+        let projects = projects::load(&options.home);
+        let recent = recent_of(&projects);
         let panel_width = load_layout(&options.home);
 
         Player {
@@ -293,6 +323,15 @@ impl Player {
             busy: Value::Null,
             shown_seq: 0,
             shown_title: String::new(),
+            projects,
+            game_key: String::new(),
+            muted: false,
+            size: None,
+            choosing_size: false,
+            sized_for: None,
+            picture_due: None,
+            fullscreen: false,
+            pointer_held: false,
         }
     }
 
@@ -334,6 +373,7 @@ impl Player {
                 | Purpose::Reverted
                 | Purpose::Measure
                 | Purpose::View
+                | Purpose::Sized
         ) {
             "person"
         } else {
@@ -381,8 +421,9 @@ impl Player {
             self.ask("captures", json!({ "limit": 100 }), Purpose::Captures);
         }
 
-        // A long job's progress, while one is under way.
-        if self.pending.values().any(|purpose| matches!(purpose, Purpose::Capture | Purpose::VideoStop)) {
+        // A long job's progress, while one is under way: in the foreground, or a capture
+        // finishing in the background.
+        if self.pending.values().any(|purpose| matches!(purpose, Purpose::Capture | Purpose::VideoStop)) || self.busy["capture"].is_string() {
             if self.due("progress", Duration::from_millis(300)) {
                 self.ask("progress", json!({}), Purpose::Progress);
             }
@@ -469,6 +510,12 @@ impl Player {
                 self.say(value["summary"].as_str().unwrap_or("Captured.").lines().next().unwrap_or(""), false);
 
                 if let Some(capture) = value["data"]["capture"].as_str() {
+                    // A quick capture still bringing its textures: progress is followed until
+                    // it is done.
+                    if value["data"]["finishing"].is_object() {
+                        self.busy = json!({ "capture": capture, "stage": "Bringing the frame's textures from the page" });
+                    }
+
                     self.captures.made(&value["data"]);
                     self.open_capture(capture.to_string(), cx);
                 }
@@ -496,7 +543,27 @@ impl Player {
                     });
                 }
             }
-            (Purpose::Progress, Ok(value)) => self.busy = value["data"]["busy"].clone(),
+            (Purpose::Progress, Ok(value)) => {
+                let finishing = self.busy["capture"].as_str().map(str::to_string);
+                let busy = value["data"]["busy"].clone();
+
+                // A capture finished in the background: what it now knows (each draw's effect,
+                // the replay check) is shown.
+                if let Some(capture) = finishing.filter(|capture| busy["capture"].as_str() != Some(capture.as_str())) {
+                    if self.captures.opened.as_deref() == Some(capture.as_str()) {
+                        self.ask("draw_list", json!({ "capture": capture, "limit": 5000 }), Purpose::DrawList(capture.clone()));
+
+                        // The draw in view, with its effect now.
+                        if let Some(draw) = self.captures.selected {
+                            self.ask("draw", json!({ "capture": capture, "draw": draw }), Purpose::Draw(capture.clone(), draw));
+                        }
+                    }
+
+                    self.last.remove("captures");
+                }
+
+                self.busy = busy;
+            }
             (Purpose::Thumbnails, Ok(value)) => self.resources.got_thumbs(&value["data"]),
             (Purpose::Shot, Ok(value)) => {
                 let path = value["images"][0]["original"].as_str().or(value["images"][0]["view"].as_str()).map(PathBuf::from);
@@ -508,6 +575,35 @@ impl Player {
                     ),
                     None => self.say("The screenshot was taken but could not be copied to the desktop.", true),
                 }
+            }
+            (Purpose::Picture(key), Ok(value)) => {
+                let made = value["images"][0]["view"].as_str().or(value["images"][0]["original"].as_str()).map(PathBuf::from);
+                let folder = projects::pictures(&self.options.home);
+                let name = projects::picture_name(&key);
+
+                if let Some(made) = made {
+                    let _ = std::fs::create_dir_all(&folder);
+
+                    if std::fs::copy(&made, folder.join(&name)).is_ok() {
+                        let url = self.projects.iter().find(|project| projects::key(&project.url) == key).map(|project| project.url.clone());
+
+                        if let Some(url) = url {
+                            projects::touch(&mut self.projects, &url, false).picture = Some(name);
+                            self.projects_changed();
+                        }
+                    }
+                }
+            }
+            (Purpose::Sized, Ok(value)) => {
+                // Said once, when chosen; not again for every step of the divider.
+                if self.choosing_size {
+                    self.say(value["summary"].as_str().unwrap_or(""), false);
+                }
+            }
+            (Purpose::Sized, Err(error)) => {
+                self.sized_for = None;
+                self.size = None;
+                self.say(&error, true);
             }
             (Purpose::VideoStart, Ok(_)) => self.say("Recording a video: the last ten seconds are kept. Press Stop to save it.", false),
             (Purpose::VideoStop, Ok(value)) => match value["data"]["video"].as_str().map(PathBuf::from).as_deref().and_then(|path| to_desktop(path, "video")) {
@@ -657,7 +753,11 @@ impl Player {
             return;
         }
 
-        if !address.contains("://") && !address.starts_with("about:") && !address.starts_with('/') {
+        // A file's path, as typed or dropped, is a file:// address; anything else without a
+        // scheme is a web address.
+        if address.starts_with('/') {
+            address = projects::file_url(std::path::Path::new(&address));
+        } else if !address.contains("://") && !address.starts_with("about:") {
             address = format!("http://{address}");
         }
 
@@ -703,7 +803,9 @@ impl Player {
 
     pub fn capture(&mut self) {
         self.say("Capturing the next frame…", false);
-        self.ask("capture", json!({}), Purpose::Capture);
+        // Quick: the capture opens once its calls and state are in, and its textures follow
+        // in the background (the progress card says how far).
+        self.ask("capture", json!({ "quick": true }), Purpose::Capture);
     }
 
     /// Runs the page for `frames` frames with the flight recorder on, then freezes it: a
@@ -906,7 +1008,8 @@ impl Player {
         let Some(capture) = self.captures.opened.clone() else { return };
 
         self.captures.select(draw);
-        self.ask("draw", json!({ "capture": capture, "draw": draw }), Purpose::Draw(capture.clone(), draw));
+        // now: its state at once, while a capture finishes; its effect when it has.
+        self.ask("draw", json!({ "capture": capture, "draw": draw, "now": true }), Purpose::Draw(capture.clone(), draw));
         self.ask("screenshot", json!({ "capture": capture, "at_draw": draw }), Purpose::Target(capture, draw));
     }
 
@@ -979,16 +1082,153 @@ impl Player {
     }
 
     fn remember(&mut self, url: &str) {
-        if url.starts_with("file:") || url.starts_with("about:") || url.starts_with("data:") {
+        if !projects::worth_keeping(url) {
             return;
         }
 
-        self.recent.retain(|known| known != url);
-        self.recent.insert(0, url.to_string());
-        self.recent.truncate(10);
-        self.menus_stale = true;
+        projects::touch(&mut self.projects, url, true);
+        self.projects_changed();
+    }
 
-        let _ = std::fs::write(self.options.home.join("app-recent.json"), serde_json::to_string_pretty(&self.recent).unwrap_or_default());
+    fn projects_changed(&mut self) {
+        projects::save(&self.options.home, &self.projects);
+
+        let recent = recent_of(&self.projects);
+
+        if recent != self.recent {
+            self.recent = recent;
+            self.menus_stale = true;
+        }
+    }
+
+    /// The window shows another page: the game it is, what is remembered for it put back
+    /// (its sound, its size), and a picture of it due.
+    fn arrived(&mut self, url: &str) {
+        let key = if projects::worth_keeping(url) { projects::key(url) } else { String::new() };
+
+        if key == self.game_key {
+            return;
+        }
+
+        self.game_key = key.clone();
+
+        // A new page cannot have the pointer the last one took.
+        if self.pointer_held {
+            platform::hold_pointer(false);
+            self.pointer_held = false;
+        }
+
+        if key.is_empty() {
+            self.muted = false;
+            self.size = None;
+            self.picture_due = None;
+        } else {
+            let project = projects::touch(&mut self.projects, url, true);
+            let (muted, size) = (project.muted, project.size.as_deref().and_then(Size::from_name));
+
+            self.muted = muted;
+            self.size = size;
+            self.picture_due = Some(Instant::now() + Duration::from_secs(6));
+            self.projects_changed();
+        }
+
+        self.apply_mute();
+    }
+
+    fn apply_mute(&self) {
+        if let Some(host) = self.browser.as_ref().and_then(|browser| browser.host()) {
+            host.set_audio_muted(self.muted as i32);
+        }
+    }
+
+    /// The game's sound off or on, remembered for this game.
+    pub fn toggle_mute(&mut self) {
+        self.muted = !self.muted;
+        self.apply_mute();
+
+        if !self.game_key.is_empty() {
+            let url = self.projects.iter().find(|project| projects::key(&project.url) == self.game_key).map(|project| project.url.clone());
+
+            if let Some(url) = url {
+                projects::touch(&mut self.projects, &url, false).muted = self.muted;
+                self.projects_changed();
+            }
+        }
+
+        self.say(if self.muted { "The game is muted, and stays muted when you open it again." } else { "The game's sound is on." }, false);
+    }
+
+    /// The page given a size (or its own again), remembered for this game.
+    pub fn set_size(&mut self, size: Option<Size>) {
+        self.size = size;
+        self.choosing_size = false;
+
+        if !self.game_key.is_empty() {
+            let url = self.projects.iter().find(|project| projects::key(&project.url) == self.game_key).map(|project| project.url.clone());
+
+            if let Some(url) = url {
+                projects::touch(&mut self.projects, &url, false).size = size.map(|size| size.name());
+                self.projects_changed();
+            }
+        }
+    }
+
+    /// Gives the page its size again when the size or the game area has changed.
+    fn keep_size(&mut self) {
+        let Some(bounds) = self.game.get() else { return };
+        let area = (f32::from(bounds.size.width), f32::from(bounds.size.height));
+        let same = |(old, size): &((f32, f32), Option<Size>)| *size == self.size && (old.0 - area.0).abs() < 2.0 && (old.1 - area.1).abs() < 2.0;
+
+        if self.browser.is_none() || self.sized_for.as_ref().is_some_and(same) || (self.sized_for.is_none() && self.size.is_none()) {
+            return;
+        }
+
+        // While the divider is dragged, not every step of the way.
+        if !self.due("size", Duration::from_millis(150)) {
+            return;
+        }
+
+        self.last.insert("size", Instant::now());
+        self.sized_for = Some((area, self.size));
+
+        match self.size {
+            Some(size) => self.ask("emulate", size.emulate(area), Purpose::Sized),
+            None => {
+                self.sized_for = None;
+                self.ask("emulate", json!({ "reset": true }), Purpose::Sized);
+            }
+        }
+    }
+
+    /// The projects page: every game opened, with a picture of each.
+    pub fn show_projects(&mut self) {
+        let me = std::env::current_exe().unwrap_or_default();
+
+        match projects::start_page(&self.options.home, &me) {
+            Some(page) => {
+                self.editing = false;
+                self.address.clear();
+                self.ask("navigate", json!({ "url": projects::file_url(&page) }), Purpose::Action("navigate"));
+            }
+            None => self.say("The projects page is missing from the app: reinstall Scanline.", true),
+        }
+    }
+
+    /// A picture of the game now and then, for its card on the projects page.
+    fn keep_picture(&mut self) {
+        if self.browser.is_none() || self.game_key.is_empty() || !self.picture_due.is_some_and(|due| Instant::now() >= due) {
+            return;
+        }
+
+        self.picture_due = Some(Instant::now() + Duration::from_secs(90));
+        self.ask("screenshot", json!({ "max_edge": 640 }), Purpose::Picture(self.game_key.clone()));
+    }
+
+    /// Esc while the page has the pointer or the screen: it gets them back, as in Chrome.
+    pub fn leave_fullscreen(&mut self) {
+        if let Some(browser) = self.browser.as_ref() {
+            browser::release(browser);
+        }
     }
 
     // ── Each turn of the message pump ───────────────────────────────────────────────────
@@ -998,6 +1238,8 @@ impl Player {
         let mut created = None;
         let mut ready = false;
         let mut closed = false;
+        let mut arrived = None;
+        let mut pointer = None;
 
         browser::INBOX.with(|inbox| {
             let mut inbox = inbox.borrow_mut();
@@ -1009,6 +1251,19 @@ impl Player {
             if let Some(title) = inbox.title.take() {
                 self.title = title.into();
                 changed = true;
+            }
+
+            if let Some(held) = inbox.pointer.take() {
+                pointer = Some(held);
+            }
+
+            if let Some(fullscreen) = inbox.fullscreen.take() {
+                self.fullscreen = fullscreen;
+                changed = true;
+            }
+
+            if let Some(address) = inbox.address.clone() {
+                arrived = Some(address);
             }
 
             if let Some(address) = inbox.address.take() {
@@ -1040,6 +1295,48 @@ impl Player {
         if let Some(browser) = created {
             self.browser_view = browser.host().map(|host| host.window_handle()).unwrap_or(std::ptr::null_mut());
             self.browser = Some(browser);
+            self.apply_mute();
+            changed = true;
+        }
+
+        if let Some(url) = arrived {
+            self.arrived(&url);
+        }
+
+        // The game's title, for its card on the projects page.
+        if !self.game_key.is_empty() && !self.title.is_empty() {
+            let title = self.title.to_string();
+            let key = self.game_key.clone();
+
+            if let Some(project) = self.projects.iter_mut().find(|project| projects::key(&project.url) == key && project.title != title) {
+                project.title = title;
+                self.projects_changed();
+            }
+        }
+
+        self.keep_size();
+        self.keep_picture();
+
+        // The game took the pointer or let it go. The cursor is held only while the window is
+        // in front, and never kept from the person when it is not.
+        match pointer {
+            Some(true) if window.is_window_active() => {
+                platform::hold_pointer(true);
+                self.pointer_held = true;
+                changed = true;
+            }
+            Some(true) => self.leave_fullscreen(),
+            Some(false) => {
+                platform::hold_pointer(false);
+                self.pointer_held = false;
+                changed = true;
+            }
+            None => {}
+        }
+
+        if self.pointer_held && !window.is_window_active() {
+            self.leave_fullscreen();
+            self.pointer_held = false;
             changed = true;
         }
 
@@ -1142,6 +1439,12 @@ impl Player {
             "capture" => self.capture(),
             "screenshot" => self.screenshot(),
             "video" => self.toggle_video(),
+            "mute" => self.toggle_mute(),
+            "projects" => self.show_projects(),
+            "release" => self.leave_fullscreen(),
+            "sizes" => self.choosing_size = !self.choosing_size,
+            // size 1080p @2x, size iPhone 15 landscape, size fit
+            "size" => self.set_size(Size::from_name(rest)),
             "show" => self.show(match rest {
                 "resources" => Panel::Resources,
                 "captures" => Panel::Captures,
@@ -1330,8 +1633,9 @@ fn save_layout(home: &std::path::Path, width: Option<f32>) {
     let _ = std::fs::write(home.join("app-layout.json"), json!({ "panel": width }).to_string());
 }
 
-fn load_recent(home: &std::path::Path) -> Vec<String> {
-    std::fs::read_to_string(home.join("app-recent.json")).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default()
+/// The Open Recent menu: the last ten games.
+fn recent_of(projects: &[Project]) -> Vec<String> {
+    projects.iter().filter(|project| projects::worth_keeping(&project.url)).take(10).map(|project| project.url.clone()).collect()
 }
 
 // ── Drawing ───────────────────────────────────────────────────────────────────────────────
@@ -1384,6 +1688,7 @@ impl Render for Player {
             );
 
         let progress = self.progress_card();
+        let sizes = self.size_card(cx);
 
         div()
             .size_full()
@@ -1421,6 +1726,7 @@ impl Render for Player {
                         .flex()
                         .flex_col()
                         .bg(rgb(SIDEBAR))
+                        .children(sizes)
                         .children(progress)
                         .child(div().flex_1().min_h_0().child(panels::render(self, window, cx))),
                 ),
@@ -1430,13 +1736,92 @@ impl Render for Player {
 }
 
 impl Player {
+    /// The sizes the game can be given, open from the toolbar's size button. Chromium's view
+    /// covers the game area, so the chooser is drawn over the panels.
+    fn size_card(&self, cx: &mut Context<Self>) -> Option<gpui::Div> {
+        if !self.choosing_size {
+            return None;
+        }
+
+        let current = self.size;
+        let area = self.game.get().map(|bounds| (f32::from(bounds.size.width), f32::from(bounds.size.height))).unwrap_or((800.0, 600.0));
+        let retina = current.is_some_and(|size| size.retina);
+        let landscape = current.is_some_and(|size| size.landscape);
+        let chip = |id: String, label: String, on: bool, colour: u32| {
+            button(SharedString::from(id), label, if on { colour } else { TEXT }).when(on, |button| button.bg(tint(colour, 0.25)).border_color(tint(colour, 0.9)))
+        };
+
+        let mut card = card("Size the game is given", AMBER)
+            .child(note(
+                "The page is told this size and pixel ratio, as DevTools' device mode does, and what it draws is scaled to fit the game area. Remembered for each game.",
+            ))
+            .child(
+                div().flex().flex_wrap().gap_1().child(chip("size-fit".into(), "Its view's own".into(), current.is_none(), AMBER).on_click(cx.listener(|this, _, _, cx| {
+                    this.set_size(None);
+                    cx.notify();
+                }))),
+            );
+
+        for group in ["Desktop", "Phone", "Tablet"] {
+            let mut chips = div().flex().flex_wrap().gap_1();
+
+            for (index, preset) in device::PRESETS.iter().enumerate().filter(|(_, preset)| preset.group == group) {
+                let on = current.is_some_and(|size| size.preset == index);
+                let chosen = Size { preset: index, retina, landscape };
+                let label = if preset.mobile { preset.name.to_string() } else { format!("{} {}×{}", preset.name, preset.width, preset.height) };
+
+                chips = chips.child(chip(format!("size-{index}"), label, on, AMBER).on_click(cx.listener(move |this, _, _, cx| {
+                    this.choosing_size = true;
+                    this.set_size(Some(chosen));
+                    cx.notify();
+                })));
+            }
+
+            card = card.child(div().text_xs().text_color(rgb(DIM)).mt_1().child(group)).child(chips);
+        }
+
+        let toggles = div()
+            .flex()
+            .gap_1()
+            .mt_1()
+            .child(chip("size-retina".into(), "Retina @2x (desktop sizes)".into(), retina, CYAN).on_click(cx.listener(|this, _, _, cx| {
+                if let Some(size) = this.size.filter(|size| !size.preset().mobile) {
+                    this.set_size(Some(Size { retina: !size.retina, ..size }));
+                    this.choosing_size = true;
+                }
+
+                cx.notify();
+            })))
+            .child(chip("size-landscape".into(), "Landscape (phones, tablets)".into(), landscape, CYAN).on_click(cx.listener(|this, _, _, cx| {
+                if let Some(size) = this.size.filter(|size| size.preset().mobile) {
+                    this.set_size(Some(Size { landscape: !size.landscape, ..size }));
+                    this.choosing_size = true;
+                }
+
+                cx.notify();
+            })))
+            .child(div().flex_1())
+            .child(button("size-done", "Done", DIM).on_click(cx.listener(|this, _, _, cx| {
+                this.choosing_size = false;
+                cx.notify();
+            })));
+
+        card = card.child(toggles);
+
+        if let Some(size) = current {
+            card = card.child(row("Given now", size.detail(area)));
+        }
+
+        Some(div().p_2().child(card))
+    }
+
     /// A long job under way: what it is doing, how long it has taken, and its stages so far.
     fn progress_card(&self) -> Option<gpui::Div> {
         let capturing = self.pending.values().any(|purpose| matches!(purpose, Purpose::Capture));
         let saving = self.pending.values().any(|purpose| matches!(purpose, Purpose::VideoStop));
 
         if !capturing && !saving {
-            return None;
+            return self.finishing_card();
         }
 
         let busy = &self.busy;
@@ -1461,6 +1846,34 @@ impl Player {
                     .children(done.into_iter().filter(|(_, ms)| *ms >= 50.0).map(|(stage, ms)| row(format!("✓ {stage}"), format!("{:.1} s", ms / 1000.0))))
                     .child(note(
                         "A capture keeps every texture and buffer the frame used, and replays it to check it. A heavy scene, hundreds of megabytes, takes several seconds.",
+                    )),
+            ),
+        )
+    }
+
+    /// A capture finishing in the background: its textures on their way, then its replay.
+    fn finishing_card(&self) -> Option<gpui::Div> {
+        let busy = &self.busy;
+        let capture = busy["capture"].as_str()?;
+        let stage = busy["stage"].as_str().unwrap_or("Bringing the frame's textures from the page");
+        let detail = busy["detail"].as_str().unwrap_or("");
+        let done = busy["done"].as_array().map_or(0, Vec::len);
+        // "120 of 313 MB" while the textures come; then the replay's stages.
+        let within = detail
+            .split_once(" of ")
+            .and_then(|(have, all)| Some(have.trim().parse::<f32>().ok()? / all.trim_end_matches(" MB").trim().parse::<f32>().ok()?.max(1.0)))
+            .unwrap_or(0.0);
+        let fraction = if done == 0 { 0.6 * within } else { (0.6 + 0.1 * done as f32).min(0.97) };
+        let what = if done == 0 { "Fetching textures" } else { "Replaying and checking" };
+        let detail = if detail.is_empty() { String::new() } else { format!(" ({detail})") };
+
+        Some(
+            div().p_2().child(
+                card(format!("{what} · {capture} · {:.0} s", busy["seconds"].as_f64().unwrap_or(0.0)), CYAN)
+                    .child(meter(40, fraction, CYAN))
+                    .child(div().text_sm().text_color(rgb(TEXT)).child(format!("{stage}{detail}…")))
+                    .child(note(
+                        "The capture is open: its draws, their state, shaders and uniforms can be read now. Each draw's picture, a pixel's story and the replay check follow once the textures are in.",
                     )),
             ),
         )
@@ -1492,6 +1905,10 @@ impl Player {
                     window.start_window_move();
                 }
             })
+            .child(button("projects", "⌂", TEXT).text_base().on_click(cx.listener(|this, _, _, cx| {
+                this.show_projects();
+                cx.notify();
+            })))
             .child(button("reload", "↻", TEXT).text_base().on_click(cx.listener(|this, _, _, cx| {
                 this.reload();
                 cx.notify();
@@ -1542,6 +1959,22 @@ impl Player {
                 this.set_time_scale(next);
                 cx.notify();
             })))
+            .child(
+                button("size", format!("⤢  {}", self.size.map(|size| size.name()).unwrap_or_else(|| "Fit".into())), AMBER)
+                    .when(self.size.is_some() || self.choosing_size, |button| button.bg(tint(AMBER, 0.22)).border_color(tint(AMBER, 0.8)))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.choosing_size = !this.choosing_size;
+                        cx.notify();
+                    })),
+            )
+            .child(
+                button("mute", if self.muted { "♪  Muted" } else { "♪  Sound" }, if self.muted { RED } else { DIM })
+                    .when(self.muted, |button| button.bg(tint(RED, 0.25)).border_color(tint(RED, 0.8)))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.toggle_mute();
+                        cx.notify();
+                    })),
+            )
             .child(div().w(px(6.0)))
             .child(button("capture", "●  Capture", PURPLE).on_click(cx.listener(|this, _, _, cx| {
                 this.capture();
@@ -1630,6 +2063,12 @@ impl Player {
             .when_some(context, |bar, context| bar.child(context))
             .child(self.status["profile"].as_str().unwrap_or("").to_string())
             .child(browser)
+            .when_some(self.size.zip(self.game.get()), |bar, (size, bounds)| {
+                bar.child(div().text_color(rgb(AMBER)).child(format!("{} {}", size.name(), size.detail((f32::from(bounds.size.width), f32::from(bounds.size.height))))))
+            })
+            .when(self.muted, |bar| bar.child(div().text_color(rgb(RED)).child("muted")))
+            .when(self.fullscreen, |bar| bar.child(div().text_color(rgb(CYAN)).child("fullscreen in its view · Esc leaves")))
+            .when(self.pointer_held, |bar| bar.child(div().text_color(rgb(CYAN)).child("the game has the pointer · Esc gives it back")))
             .child(div().flex_1())
             .when_some(self.message.clone(), |bar, (text, error)| {
                 bar.child(div().max_w(px(560.0)).overflow_hidden().whitespace_nowrap().text_color(rgb(if error { RED } else { TEXT })).child(text))
@@ -1684,6 +2123,7 @@ fn menus(cx: &mut App, recent: &[String]) {
             name: "File".into(),
             items: vec![
                 MenuItem::action("New Window", NewWindow),
+                MenuItem::action("Projects", ShowProjects),
                 MenuItem::action("Open Location…", OpenLocation),
                 MenuItem::submenu(Menu { name: "Open Recent".into(), items: opened }),
                 MenuItem::separator(),
@@ -1694,6 +2134,9 @@ fn menus(cx: &mut App, recent: &[String]) {
             name: "Game".into(),
             items: vec![
                 MenuItem::action("Reload", Reload),
+                MenuItem::action("Mute or Unmute", ToggleMute),
+                MenuItem::action("Size…", ChooseSize),
+                MenuItem::action("Give Back the Pointer and Screen", LeaveFullscreen),
                 MenuItem::separator(),
                 MenuItem::action("Pause or Run", TogglePause),
                 MenuItem::action("Step One Frame", StepFrame),
@@ -1747,6 +2190,9 @@ fn bind(cx: &mut App) {
         KeyBinding::new("cmd-shift-s", Screenshot, None),
         KeyBinding::new("cmd-shift-v", ToggleVideo, None),
         KeyBinding::new("cmd-\\", ToggleWide, None),
+        KeyBinding::new("cmd-shift-m", ToggleMute, None),
+        KeyBinding::new("cmd-shift-h", ShowProjects, None),
+        KeyBinding::new("cmd-shift-e", ChooseSize, None),
     ]);
 
     cx.on_action(|_: &Quit, _| std::process::exit(0));
@@ -1780,6 +2226,10 @@ fn bind(cx: &mut App) {
     cx.on_action(|_: &ShowAgent, cx| with_current(cx, |this, _| this.show(Panel::Agent)));
     // Wide: three quarters of the window for the panels, or back to the person's own width.
     cx.on_action(|_: &ToggleWide, cx| with_current(cx, |this, _| this.toggle_wide()));
+    cx.on_action(|_: &ToggleMute, cx| with_current(cx, |this, _| this.toggle_mute()));
+    cx.on_action(|_: &ShowProjects, cx| with_current(cx, |this, _| this.show_projects()));
+    cx.on_action(|_: &ChooseSize, cx| with_current(cx, |this, _| this.choosing_size = !this.choosing_size));
+    cx.on_action(|_: &LeaveFullscreen, cx| with_current(cx, |this, _| this.leave_fullscreen()));
     cx.on_action(|_: &OpenRecent0, cx| with_current(cx, |this, _| this.open_recent(0)));
     cx.on_action(|_: &OpenRecent1, cx| with_current(cx, |this, _| this.open_recent(1)));
     cx.on_action(|_: &OpenRecent2, cx| with_current(cx, |this, _| this.open_recent(2)));

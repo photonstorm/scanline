@@ -4924,6 +4924,7 @@ dependencies = [
  "objc2",
  "objc2-foundation",
  "raw-window-handle",
+ "serde",
  "serde_json",
  "windows-sys 0.61.2",
 ]

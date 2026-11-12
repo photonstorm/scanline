@@ -2029,6 +2029,67 @@ describe('a gamepad', () =>
 
 describe('playing by rule, and by mouse-look', () =>
 {
+    // fixtures/app/lock.html: a click asks for pointer lock; window.state says what it has.
+    test('pointer_lock: app grants the lock the browser refuses, keeps the refusal from the page, and gives it back', async () =>
+    {
+        await scanline('launch', server.url('fixtures/app/lock.html'), '--headless', '--pointer_lock', 'app');
+
+        const state = async () => (await scanline('eval', 'JSON.stringify(window.state)', '--json')).json.data.value;
+        const click = () => scanline('input', '--events', '[{"pointer": "down", "x": 200, "y": 150}, {"pointer": "up", "x": 200, "y": 150}]');
+
+        // A click: headless Chrome refuses (the window has no focus), and the probe grants it.
+        // (eval runs with a gesture, so a request without one cannot be made from here.)
+        await click();
+        await scanline('step', 2);
+        assert.equal(JSON.parse(await state()).locked, true);
+        assert.equal(await scanline('eval', 'document.pointerLockElement && document.pointerLockElement.id', '--json').then((reply) => reply.json.data.value), 'scene');
+
+        // Neither the browser's refusal nor the probe's word to the app reaches the console.
+        assert.deepEqual((await scanline('console', '--json')).json.data.lines.map((line) => line.text), []);
+
+        // Given back by the app (Esc, or its menu), then taken again with a click.
+        await scanline('eval', 'dispatchEvent(new Event("scanline:release-pointer")), 1');
+        await scanline('step', 1);
+        assert.equal(JSON.parse(await state()).locked, false);
+        await click();
+        await scanline('step', 1);
+        assert.equal(JSON.parse(await state()).locked, true);
+
+        // Given back by the page itself.
+        await scanline('eval', 'document.exitPointerLock(), 1');
+        await scanline('step', 1);
+        assert.equal(JSON.parse(await state()).locked, false);
+        assert.equal(await scanline('eval', 'document.pointerLockElement', '--json').then((reply) => reply.json.data.value), null);
+        await scanline('stop');
+    });
+
+    test('emulate gives the page a device\'s size and pixel ratio, and its own again', async () =>
+    {
+        await scanline('launch', server.url('fixtures/app/lock.html'), '--headless');
+
+        const size = async () => (await scanline('eval', '`${innerWidth}×${innerHeight} @${devicePixelRatio} touch ${navigator.maxTouchPoints}`', '--json')).json.data.value;
+        const own = await size();
+        const phone = await scanline('emulate', '--width', '393', '--height', '852', '--dpr', '3', '--mobile', 'true', '--scale', '0.5', '--json');
+
+        assert.equal(phone.code, 0, phone.out);
+        assert.match(phone.json.summary, /^The page is now 393×852 CSS pixels at a pixel ratio of 3 \(1179×2556 device pixels\), as a phone or tablet: touch, and the page's viewport meta tag applies, drawn at 50% in its view\./);
+        assert.equal(await size(), '393×852 @3 touch 5');
+        assert.deepEqual((await scanline('status', '--json')).json.data.emulated, { width: 393, height: 852, dpr: 3, mobile: true, scale: 0.5 });
+
+        await scanline('emulate', '--width', '1920', '--height', '1080', '--dpr', '2');
+        assert.equal(await size(), '1920×1080 @2 touch 0');
+
+        const wrong = await scanline('emulate', '--width', '9000', '--height', '10');
+
+        assert.equal(wrong.code, 1);
+        assert.match(wrong.out, /width is a whole number of CSS pixels from 1 to 8192/);
+
+        assert.match((await scanline('emulate', '--reset', 'true')).out, /its view's own size and pixel ratio again/);
+        assert.equal(await size(), own);
+        assert.equal((await scanline('status', '--json')).json.data.emulated, null);
+        await scanline('stop');
+    });
+
     test('a policy reads the page each frame and answers with input, until it says stop', async () =>
     {
         await scanline('launch', server.url('fixtures/matrix/game.html'), '--paused', '--headless', '--deterministic');

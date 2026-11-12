@@ -19,7 +19,37 @@ pub struct Inbox {
     pub title: Option<String>,
     pub address: Option<String>,
     pub loading: Option<bool>,
+    /// The page has put an element fullscreen, or left it.
+    pub fullscreen: Option<bool>,
+    /// The game has taken the pointer (true) or given it back (false): the probe's stand-in
+    /// lock, said on the console (probe/src/pointerlock.ts).
+    pub pointer: Option<bool>,
     pub closed: bool,
+}
+
+/// Whether the page has an element fullscreen now.
+static FULLSCREEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Gives the person back the pointer and the screen, as Esc does in Chrome: the page's pointer
+/// lock released and its fullscreen element left. A game that takes the pointer must not keep
+/// it; one that asks again on its next click may.
+pub fn release(browser: &Browser) {
+    // The cursor at once, whatever the page does.
+    crate::platform::hold_pointer(false);
+    inbox(|inbox| inbox.pointer = Some(false));
+
+    if let Some(frame) = browser.main_frame() {
+        // The probe's stand-in lock is given back by its own event; a real one by exitPointerLock.
+        let script = "dispatchEvent(new Event('scanline:release-pointer')); if (document.pointerLockElement) document.exitPointerLock(); if (document.fullscreenElement) document.exitFullscreen();";
+
+        frame.execute_java_script(Some(&CefString::from(script)), Some(&CefString::from("")), 0);
+    }
+
+    if FULLSCREEN.load(Ordering::Relaxed) {
+        if let Some(host) = browser.host() {
+            host.exit_fullscreen(1);
+        }
+    }
 }
 
 thread_local! {
@@ -96,6 +126,7 @@ wrap_client! {
     pub struct ScanlineClient {
         life: LifeSpanHandler,
         display: DisplayHandler,
+        keys: KeyboardHandler,
     }
 
     impl Client {
@@ -105,6 +136,27 @@ wrap_client! {
 
         fn display_handler(&self) -> Option<DisplayHandler> {
             Some(self.display.clone())
+        }
+
+        fn keyboard_handler(&self) -> Option<KeyboardHandler> {
+            Some(self.keys.clone())
+        }
+    }
+}
+
+wrap_keyboard_handler! {
+    pub struct ScanlineKeys;
+
+    impl KeyboardHandler {
+        // Esc always gives the pointer and the screen back. The page still sees the key.
+        fn on_pre_key_event(&self, browser: Option<&mut Browser>, event: Option<&KeyEvent>, _os_event: *mut u8, _is_keyboard_shortcut: Option<&mut std::os::raw::c_int>) -> std::os::raw::c_int {
+            if let (Some(browser), Some(event)) = (browser, event) {
+                if event.windows_key_code == 0x1B && event.type_ == KeyEventType::RAWKEYDOWN {
+                    release(browser);
+                }
+            }
+
+            0
         }
     }
 }
@@ -157,9 +209,38 @@ wrap_display_handler! {
         fn on_loading_progress_change(&self, _browser: Option<&mut Browser>, progress: f64) {
             inbox(|inbox| inbox.loading = Some(progress < 1.0));
         }
+
+        // An element fullscreen fills the game's view, not the screen: the window keeps its
+        // panels, and Esc (or Game ▸ Give Back the Pointer and Screen) leaves it.
+        // The probe's word to the app, before anything else hears it: the game has taken the
+        // pointer, or let it go.
+        fn on_console_message(&self, _browser: Option<&mut Browser>, _level: LogSeverity, message: Option<&CefString>, _source: Option<&CefString>, _line: std::os::raw::c_int) -> std::os::raw::c_int {
+            let Some(message) = message.map(|message| message.to_string()) else { return 0 };
+
+            match message.strip_prefix("\u{1}scanline:pointer-lock ") {
+                // The window holds the cursor, only while it is in front (player.rs).
+                Some(word) => {
+                    let held = word.trim() == "held";
+
+                    if !held {
+                        crate::platform::hold_pointer(false);
+                    }
+
+                    inbox(|inbox| inbox.pointer = Some(held));
+
+                    1
+                }
+                None => 0,
+            }
+        }
+
+        fn on_fullscreen_mode_change(&self, _browser: Option<&mut Browser>, fullscreen: std::os::raw::c_int) {
+            FULLSCREEN.store(fullscreen != 0, Ordering::Relaxed);
+            inbox(|inbox| inbox.fullscreen = Some(fullscreen != 0));
+        }
     }
 }
 
 pub fn client() -> Client {
-    ScanlineClient::new(ScanlineLifeSpan::new(), ScanlineDisplay::new())
+    ScanlineClient::new(ScanlineLifeSpan::new(), ScanlineDisplay::new(), ScanlineKeys::new())
 }

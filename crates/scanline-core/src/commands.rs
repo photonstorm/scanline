@@ -150,12 +150,15 @@ pub async fn launch(host: &Arc<Host>, params: &Value) -> Result<Value> {
         extra_args,
         debug_key: params["debug_key"].as_str().map(str::to_string),
         pointer_lock_shim: match params["pointer_lock"].as_str() {
-            None | Some("native") => false,
+            None | Some("native") | Some("app") => false,
             Some("shim") => true,
             Some(other) => {
-                bail!("pointer_lock is native (the browser's own, the default) or shim (Scanline grants it and delivers relative moves), not \"{other}\".")
+                bail!(
+                    "pointer_lock is native (the browser's own, the default), shim (Scanline grants it and delivers relative moves) or app (Scanline grants it when the browser refuses a request made with a gesture, as in the Scanline app), not \"{other}\"."
+                )
             }
         },
+        pointer_lock_app: params["pointer_lock"] == "app",
     };
 
     let session = Session::launch(id.clone(), host.artefacts().join("sessions").join(&id), options).await?;
@@ -519,7 +522,10 @@ pub async fn emulate(session: &Arc<Session>, params: &Value) -> Result<Value> {
     session
         .page_command(
             "Emulation.setDeviceMetricsOverride",
-            json!({ "width": width, "height": height, "deviceScaleFactor": dpr, "mobile": mobile, "scale": scale, "screenWidth": width, "screenHeight": height }),
+            // dontSetVisibleSize: the view keeps its own size and the page is drawn in it at
+            // `scale`, as DevTools' device mode does. Without it the view itself is resized to
+            // the emulated size, which in the Scanline app spills over the rest of the window.
+            json!({ "width": width, "height": height, "deviceScaleFactor": dpr, "mobile": mobile, "scale": scale, "screenWidth": width, "screenHeight": height, "dontSetVisibleSize": true }),
         )
         .await?;
     // A phone is touched: the page sees touch events and maxTouchPoints.

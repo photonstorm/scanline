@@ -105,6 +105,13 @@ pub fn place(view: *mut c_void, x: f64, y: f64, width: f64, height: f64) {
             // The browser's view must not be resized by AppKit as well.
             let _: () = msg_send![view, setAutoresizingMask: 0usize];
             let _: () = msg_send![view, setFrame: frame];
+
+            // Nor draw outside the game area, whatever Chromium does inside it.
+            let responds: Bool = msg_send![view, respondsToSelector: sel!(setClipsToBounds:)];
+
+            if responds.as_bool() {
+                let _: () = msg_send![view, setClipsToBounds: Bool::YES];
+            }
         }
     }
 }
@@ -172,6 +179,36 @@ unsafe extern "C" {
 
 unsafe extern "C" {
     fn dlsym(handle: *mut c_void, symbol: *const std::ffi::c_char) -> *mut c_void;
+}
+
+#[link(name = "CoreGraphics", kind = "framework")]
+unsafe extern "C" {
+    fn CGAssociateMouseAndMouseCursorPosition(connected: u32) -> i32;
+    fn CGDisplayHideCursor(display: u32) -> i32;
+    fn CGDisplayShowCursor(display: u32) -> i32;
+    fn CGMainDisplayID() -> u32;
+}
+
+/// Whether the cursor is held for the game now, so hiding and showing stay paired.
+static HELD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Holds the cursor still and hidden for a game that has taken the pointer (pointer lock), as
+/// Chrome does; or lets it go. The mouse's moves still reach the page, as movementX and
+/// movementY, while the cursor stays where it is.
+pub fn hold_pointer(hold: bool) {
+    if HELD.swap(hold, std::sync::atomic::Ordering::Relaxed) == hold {
+        return;
+    }
+
+    unsafe {
+        CGAssociateMouseAndMouseCursorPosition(if hold { 0 } else { 1 });
+
+        if hold {
+            CGDisplayHideCursor(CGMainDisplayID());
+        } else {
+            CGDisplayShowCursor(CGMainDisplayID());
+        }
+    }
 }
 
 /// Writes a PNG of the window `view` is in. False if the system would not give one.
