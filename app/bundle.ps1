@@ -37,6 +37,8 @@ New-Item -ItemType Directory -Force -Path $out | Out-Null
 Copy-Item (Join-Path $built 'Scanline.exe') (Join-Path $out 'Scanline.exe') -Force
 Copy-Item (Join-Path $root "target\$profile\scanline.exe") (Join-Path $out 'scanline-cli.exe') -Force
 Copy-Item (Join-Path $here 'resources\start.html') (Join-Path $out 'start.html') -Force
+# The icons are compiled in; their licence (CC BY 4.0, with attribution) travels with them.
+Copy-Item (Join-Path $here 'resources\icons\LICENSE.md') (Join-Path $out 'Icons LICENSE.md') -Force
 
 # CEF's runtime: the build copies it beside the executable (cef-dll-sys, copy_cef_runtime_files).
 Get-ChildItem $built -File | Where-Object { $_.Extension -in '.dll', '.pak', '.bin', '.dat', '.json' } | ForEach-Object {

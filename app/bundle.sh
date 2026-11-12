@@ -96,6 +96,8 @@ cp "target/$profile/Scanline" "$contents/MacOS/Scanline"
 cp "$root/target/$profile/scanline" "$contents/MacOS/scanline-cli"
 plist "Scanline" "Scanline" "org.scanline.app" "" "$contents/Info.plist"
 cp resources/start.html "$contents/Resources/start.html"
+# The icons are compiled in; their licence (CC BY 4.0, with attribution) travels with them.
+cp resources/icons/LICENSE.md "$contents/Resources/Icons LICENSE.md"
 [ -f resources/AppIcon.icns ] && cp resources/AppIcon.icns "$contents/Resources/AppIcon.icns"
 
 # The framework is large and does not change between builds: copied once.

@@ -345,68 +345,121 @@ fn event_line(event: &Value) -> String {
 fn list_of_captures(player: &mut Player, cx: &mut Context<Player>) -> gpui::Div {
     let rows = player.captures.rows.clone();
     let recordings = player.captures.recordings();
+    let store = player.options.home.join("artefacts").join("captures");
+    let columns = ((player.panel_px - 40.0) / 250.0).floor().clamp(1.0, 6.0) as usize;
+
+    let mut grid = div().flex().flex_col().gap_2();
+    let mut row = div().flex().gap_2();
+    let mut in_row = 0;
+
+    for capture_row in rows.iter() {
+        let capture = capture_row["capture"].as_str().unwrap_or("").to_string();
+        let chosen = capture.clone();
+        let draws = capture_row["counts"]["draws"].as_u64().or(capture_row["draws"].as_u64()).map(|draws| format!("{draws} draws")).unwrap_or_default();
+        let frame = capture_row["frame"].as_u64().map(|frame| format!("frame {frame}")).unwrap_or_default();
+        let url = capture_row["url"].as_str().unwrap_or("").trim_end_matches('/').rsplit('/').next().unwrap_or("").to_string();
+        let api = capture_row["api"].as_str().unwrap_or("").to_string();
+        let identical = capture_row["replay_matches"] == true;
+        let waiting = capture_row["pending"] == true;
+        let picture = store.join(&capture).join("final.png");
+
+        row = row.child(
+            div()
+                .id(gpui::SharedString::from(format!("capture-{capture}")))
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .rounded(px(7.0))
+                .overflow_hidden()
+                .cursor_pointer()
+                .bg(rgb(CARD))
+                .border_1()
+                .border_color(rgb(LINE))
+                .hover(|card| card.border_color(tint(PURPLE, 0.8)).shadow(glow(PURPLE, 0.3)))
+                .child(
+                    div()
+                        .h(px(130.0))
+                        .bg(rgb(0x000000))
+                        .overflow_hidden()
+                        .when(picture.exists(), |frame| frame.child(img(picture.clone()).size_full().object_fit(ObjectFit::Cover))),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .p_2()
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .child(div().font_family(MONO).text_sm().text_color(rgb(PURPLE)).child(capture.clone()))
+                                .child(div().flex_1())
+                                .child(crate::icons::icon(
+                                    if identical { "check" } else if waiting { "timer" } else { "warning" },
+                                    12.0,
+                                    rgb(if identical { GREEN } else if waiting { CYAN } else { AMBER }),
+                                )),
+                        )
+                        .child(div().text_xs().text_color(rgb(TEXT)).child(format!("{frame} · {api} · {draws}")))
+                        .child(div().text_xs().text_color(rgb(DIM)).overflow_hidden().whitespace_nowrap().child(url)),
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.open_capture(chosen.clone(), cx);
+                    cx.notify();
+                })),
+        );
+        in_row += 1;
+
+        if in_row == columns {
+            grid = grid.child(row);
+            row = div().flex().gap_2();
+            in_row = 0;
+        }
+    }
+
+    if in_row > 0 {
+        for _ in in_row..columns {
+            row = row.child(div().flex_1());
+        }
+
+        grid = grid.child(row);
+    }
 
     div()
         .flex()
         .flex_col()
-        .gap_2()
+        .gap_3()
         .child(
             div()
                 .flex()
                 .items_center()
                 .gap_2()
-                .child(button("capture-now", "●  Capture the next frame", PURPLE).on_click(cx.listener(|this, _, _, cx| {
+                .child(icon_label("capture-now", "capture", "Capture the next frame", PURPLE).on_click(cx.listener(|this, _, _, cx| {
                     this.capture();
                     cx.notify();
                 })))
-                .child(button("record", "◎  Record 2 s", ORANGE).on_click(cx.listener(|this, _, _, cx| {
+                .child(icon_label("record", "video", "Record 2 s", ORANGE).on_click(cx.listener(|this, _, _, cx| {
                     this.record(120);
                     cx.notify();
                 })))
                 .child(note("⇧⌘C from anywhere")),
         )
         .when(!recordings.is_empty(), |list| {
-            list.child(note("Recordings: every frame of a stretch of play, kept by the flight recorder")).child(div().flex().flex_wrap().gap_1().children(
-                recordings.into_iter().map(|recording| {
-                    let chosen = recording.clone();
+            list.child(section("Recordings")).child(div().flex().flex_wrap().gap_1().children(recordings.into_iter().map(|recording| {
+                let chosen = recording.clone();
 
-                    button(format!("open-{recording}"), recording, ORANGE).on_click(cx.listener(move |this, _, _, cx| {
-                        this.open_recording(chosen.clone());
-                        cx.notify();
-                    }))
-                }),
-            ))
-        })
-        .when(!rows.is_empty(), |list| list.child(note("Captures, newest first")))
-        .when(rows.is_empty(), |list| list.child(note("No captures yet. A capture keeps one whole frame: every draw, its state and its target.")))
-        .children(rows.into_iter().map(|row| {
-            let capture = row["capture"].as_str().unwrap_or("").to_string();
-            let chosen = capture.clone();
-            let draws = row["counts"]["draws"].as_u64().or(row["draws"].as_u64()).map(|draws| format!("{draws} draws")).unwrap_or_default();
-            let frame = row["frame"].as_u64().map(|frame| format!("frame {frame}")).unwrap_or_default();
-            let url = row["url"].as_str().unwrap_or("").rsplit('/').next().unwrap_or("").to_string();
-            let api = row["api"].as_str().unwrap_or("").to_string();
-
-            div()
-                .id(gpui::SharedString::from(format!("capture-{capture}")))
-                .flex()
-                .items_center()
-                .gap_3()
-                .p_2()
-                .rounded_md()
-                .cursor_pointer()
-                .bg(rgb(CARD))
-                .border_1()
-                .border_color(tint(PURPLE, 0.3))
-                .hover(|row| row.bg(tint(PURPLE, 0.1)))
-                .child(div().font_family(MONO).text_sm().text_color(rgb(PURPLE)).child(capture))
-                .child(div().text_xs().text_color(rgb(TEXT)).child(format!("{frame} · {api} · {draws}")))
-                .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_xs().text_color(rgb(DIM)).child(url))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.open_capture(chosen.clone(), cx);
+                icon_label(format!("open-{recording}"), "video", recording, ORANGE).on_click(cx.listener(move |this, _, _, cx| {
+                    this.open_recording(chosen.clone());
                     cx.notify();
                 }))
-        }))
+            })))
+        })
+        .when(!rows.is_empty(), |list| list.child(section(format!("{} captures, newest first", rows.len()))))
+        .when(rows.is_empty(), |list| list.child(note("No captures yet. A capture keeps one whole frame: every draw, its state and its target.")))
+        .child(grid)
 }
 
 fn state_of(draw: &Value) -> gpui::Div {

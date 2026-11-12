@@ -553,6 +553,15 @@ Added on 12 November 2026 at the owner's request.
 - **Projects** (`<home>/app-projects.json`, pictures in `<home>/pictures`): every game opened in the app, newest first, 48 at most, with what is remembered for each (muted, size). The start page is written from them (`<home>/start.html`). It replaces `app-recent.json`, which is read once.
 - Found on the way: the address bar sent a typed path (`/Users/…/game.html`) as it was, which navigate refuses; it now sends a file:// address.
 
+## The capture view after Metal's and Nsight's
+
+Added on 12 November 2026 at the owner's request, with the app's new look.
+
+- **`attachments(capture, draw)`**, a tool: every attachment of the target an event drew to, as it stood after it, as pictures named by attachment point (Color 0, Color 1, Depth) and the texture or renderbuffer each holds, with its size and format. Colour is read back by replay, a renderbuffer through its framebuffer; depth by the depth view. One replay for each attachment.
+- **`profile` gives every draw's time** in its data (`every`), whatever `top` lists, for the app's frame timeline.
+- **The depth view, fixed on the way:** a framebuffer with depth alone (a shadow map's) was read at the canvas's size and came back empty; it is read at its attachment's size. A framebuffer asked for by name (`target: "fbo_2"`) whose colour is a texture matched no event, since events are listed under the texture; it now matches the events drawn through it.
+- **Not yet:** stepping through a shader for one pixel, as Nsight and Metal do. WebGL has no shader debugger; the way to it is to rewrite the shader so that it writes a chosen value at the clicked pixel, a value at a time. Nor a timeline of the page's CPU and GPU over many frames: `trace` records the browser's own, which the app does not yet show.
+
 ## Known gaps in what is built
 
 - Unlabelled WebGPU objects are not given generated labels, which the specification lists as a modification. They are named by handle in results instead.
