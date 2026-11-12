@@ -81,10 +81,35 @@ impl State {
     /// buffer's bytes.
     pub fn request(&self, handle: &str) -> Value {
         match kind_of(handle) {
-            "texture" => json!({ "handle": handle, "preview": { "max_edge": 640, "level": self.level } }),
+            "texture" => {
+                // A small texture is enlarged by the host, texel by texel, rather than blurred here.
+                let size = self.size_of(handle);
+                let zoom = size.map(|(width, height)| (256 / width.max(height).max(1)).clamp(1, 32)).unwrap_or(1);
+
+                json!({ "handle": handle, "preview": { "max_edge": 640, "level": self.level, "zoom": zoom } })
+            }
             "buffer" => json!({ "handle": handle, "offset": self.offset, "length": PAGE }),
             _ => json!({ "handle": handle, "detail": "full" }),
         }
+    }
+
+    /// A texture's size at the level shown, from what is known of it so far.
+    fn size_of(&self, handle: &str) -> Option<(u64, u64)> {
+        let from_detail = self.detail.as_ref().filter(|value| value["data"]["handle"].as_str() == Some(handle)).and_then(|value| {
+            let detail = &value["data"]["detail"];
+
+            Some((detail["width"].as_u64()?, detail["height"].as_u64()?))
+        });
+        let from_list = || {
+            let row = self.list.iter().find(|row| row["handle"].as_str() == Some(handle))?;
+            let what = row["what"].as_str()?;
+            let (width, rest) = what.split_once('×')?;
+            let height: String = rest.chars().take_while(char::is_ascii_digit).collect();
+
+            Some((width.trim().parse().ok()?, height.parse().ok()?))
+        };
+
+        from_detail.or_else(from_list).map(|(width, height): (u64, u64)| ((width >> self.level).max(1), (height >> self.level).max(1)))
     }
 
     pub fn detail(&mut self, handle: &str, value: &Value) {

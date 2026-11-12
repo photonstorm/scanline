@@ -10,6 +10,7 @@ import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { request as httpRequest } from 'node:http';
+import { createConnection } from 'node:net';
 import { after, before, describe, test } from 'node:test';
 import { repoRoot, serve } from '../spikes/lib/serve.mjs';
 
@@ -279,6 +280,79 @@ describe('tiers: the defaults', () =>
         assert.match(help.out, /control \(time, input, hand-off, replaying a run\): on/);
         assert.match(help.out, /on for pages served from this machine, off for others/);
         assert.match(help.out, /navigate keeps to the origin the session was launched on/);
+    });
+});
+
+describe('who asked: the person and the agent', () =>
+{
+    const usual = host();
+
+    after(() => usual.end());
+
+    // One call on the control channel, as the Scanline app makes it.
+    const direct = (method, params) => new Promise((resolve, reject) =>
+    {
+        const runtime = JSON.parse(readFileSync(join(usual.home, 'runtime.json'), 'utf8'));
+        // A socket's path on macOS and Linux; on Windows the pipe's whole name.
+        const place = runtime.socket ?? runtime.pipe;
+        const socket = createConnection(place);
+        let text = '';
+
+        socket.on('error', reject);
+        socket.on('data', (chunk) =>
+        {
+            text += chunk;
+
+            if (text.includes('\n'))
+            {
+                socket.end();
+                resolve(JSON.parse(text.split('\n')[0]));
+            }
+        });
+        socket.write(JSON.stringify({ id: 1, method, params }) + '\n');
+    });
+
+    test('the person, through the app, goes where they like; an agent cannot say it is the person', async () =>
+    {
+        const page = server.url('fixtures/matrix/webgl2.html');
+        const elsewhere = page.replace('127.0.0.1', 'localhost');
+
+        assert.equal((await usual.scanline('launch', page, '--headless')).code, 0);
+
+        // The command line is how an agent with a shell asks: what it says of who it is, is dropped.
+        const claimed = await usual.scanline('navigate', elsewhere, '--_by', 'person');
+
+        assert.notEqual(claimed.code, 0);
+        assert.match(claimed.out, /navigate keeps to the origin/);
+
+        // The app is the person's: its navigation is theirs, and logged as theirs.
+        const theirs = await direct('navigate', { session: 'ses_1', url: elsewhere, _by: 'person' });
+
+        assert.ok(theirs.result, JSON.stringify(theirs.error));
+
+        const log = await usual.scanline('activity', '--json');
+        const last = log.json.data.activity.at(-1);
+
+        assert.equal(last.command, 'navigate');
+        assert.equal(last.by, 'person');
+        assert.equal(last.ok, true);
+        assert.ok(log.json.data.activity.filter((row) => row.command === 'navigate').some((row) => row.by === 'agent' && row.ok === false));
+
+        await usual.scanline('close');
+    });
+
+    test('display is window, app or headless, and the app must be there to be asked for', async () =>
+    {
+        const page = server.url('fixtures/matrix/webgl2.html');
+        const unknown = await usual.scanline('launch', page, '--display', 'tv');
+
+        assert.notEqual(unknown.code, 0);
+        assert.match(unknown.out, /display is "window" \(a browser window\), "app" \(the Scanline app\) or "headless", not "tv"/);
+
+        const missing = await usual.scanline('launch', page, '--display', 'app', '--browser', join(scratch, 'no-such-app'));
+
+        assert.notEqual(missing.code, 0);
+        assert.match(missing.out, /No browser at/);
     });
 });
 

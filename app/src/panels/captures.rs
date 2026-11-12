@@ -1,9 +1,11 @@
 //! Captures: the session's captured frames; one opened to its draws, the target as it stood
 //! after the chosen one, and that draw's state; "Worth a look" first; Send to agent.
 
+use std::cell::Cell;
 use std::path::PathBuf;
+use std::rc::Rc;
 
-use gpui::{AnyElement, Context, ObjectFit, Window, div, img, prelude::*, px, rgb, uniform_list};
+use gpui::{AnyElement, Bounds, Context, MouseButton, MouseDownEvent, ObjectFit, Pixels, Window, canvas, div, img, prelude::*, px, rgb, uniform_list};
 use serde_json::Value;
 
 use crate::player::Player;
@@ -21,6 +23,11 @@ pub struct State {
     pub error: Option<String>,
     pub want_draw: Option<i64>,
     pub loading: bool,
+    /// The picture's place on screen, for turning a click into a pixel.
+    pub picture: Rc<Cell<Option<Bounds<Pixels>>>>,
+    /// The pixel clicked, and what pixel_source said of it.
+    pub pixel: Option<(u32, u32)>,
+    pub story: Option<Value>,
 }
 
 impl State {
@@ -46,6 +53,8 @@ impl State {
             self.selected = None;
             self.draw = None;
             self.target = None;
+            self.pixel = None;
+            self.story = None;
 
             if self.made.as_ref().and_then(|made| made["capture"].as_str()) != Some(capture) {
                 self.made = self.rows.iter().find(|row| row["capture"].as_str() == Some(capture)).cloned();
@@ -91,6 +100,40 @@ impl State {
                 .and_then(|images| images.first())
                 .and_then(|image| image["view"].as_str().or(image["original"].as_str()))
                 .map(PathBuf::from);
+        }
+    }
+
+    /// The size of the picture shown: the selected draw's target, else the capture's canvas.
+    fn target_size(&self) -> Option<(f32, f32)> {
+        let size = &self.draw.as_ref()?["state"]["targetSize"];
+
+        match (size[0].as_f64(), size[1].as_f64()) {
+            (Some(width), Some(height)) => Some((width as f32, height as f32)),
+            _ => {
+                let made = self.made.as_ref()?;
+
+                Some((made["width"].as_f64()? as f32, made["height"].as_f64()? as f32))
+            }
+        }
+    }
+
+    /// The pixel under a click on the picture, which is fitted inside its box.
+    pub fn pixel_at(&self, event: &MouseDownEvent) -> Option<(u32, u32)> {
+        let bounds = self.picture.get()?;
+        let (width, height) = self.target_size()?;
+        let (box_w, box_h) = (f32::from(bounds.size.width), f32::from(bounds.size.height));
+        let scale = (box_w / width).min(box_h / height);
+        let left = f32::from(bounds.origin.x) + (box_w - width * scale) / 2.0;
+        let top = f32::from(bounds.origin.y) + (box_h - height * scale) / 2.0;
+        let x = (f32::from(event.position.x) - left) / scale;
+        let y = (f32::from(event.position.y) - top) / scale;
+
+        (x >= 0.0 && y >= 0.0 && x < width && y < height).then_some((x as u32, y as u32))
+    }
+
+    pub fn story(&mut self, capture: &str, pixel: (u32, u32), value: &Value) {
+        if self.opened.as_deref() == Some(capture) && self.pixel == Some(pixel) {
+            self.story = Some(value["data"].clone());
         }
     }
 
@@ -264,7 +307,22 @@ fn workspace(player: &mut Player, cx: &mut Context<Player>) -> gpui::Div {
         }))
     });
 
+    let place = state.picture.clone();
     let picture = div()
+        .id("picture")
+        .relative()
+        .cursor_crosshair()
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                if let Some(pixel) = this.captures.pixel_at(event) {
+                    this.pick_pixel(pixel);
+                }
+
+                cx.notify();
+            }),
+        )
+        .child(canvas(move |bounds, _, _| place.set(Some(bounds)), |_, _, _, _| {}).absolute().size_full())
         .w_full()
         .h(px(if player.wide { 360.0 } else { 240.0 }))
         .rounded_md()
@@ -338,6 +396,54 @@ fn workspace(player: &mut Player, cx: &mut Context<Player>) -> gpui::Div {
     )
     .h(px(if player.wide { 300.0 } else { 220.0 }));
 
+    // What a click on the picture found: the pixel's value and every event that changed it.
+    let story = state.pixel.map(|(x, y)| {
+        let found = card(format!("Pixel ({x}, {y})"), CYAN);
+
+        match &state.story {
+            None => found.child(note("Asking which draws touched it…")),
+            Some(story) => {
+                let swatch = |rgba: &Value| -> gpui::Div {
+                    let channel = |index: usize| rgba[index].as_u64().unwrap_or(0) as u32;
+                    let colour = (channel(0) << 16) | (channel(1) << 8) | channel(2);
+
+                    div().size(px(14.0)).rounded_sm().border_1().border_color(tint(FAINT, 1.0)).bg(rgb(colour))
+                };
+                let finished = story["final"].clone();
+
+                found
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .text_xs()
+                            .child(swatch(&finished))
+                            .child(div().font_family(MONO).child(format!("final {finished}"))),
+                    )
+                    .children(story["changes"].as_array().cloned().unwrap_or_default().into_iter().map(|change| {
+                        let draw = change["draw"].as_i64().unwrap_or(0);
+
+                        div()
+                            .id(("change", draw as usize))
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .text_xs()
+                            .cursor_pointer()
+                            .hover(|line| line.bg(tint(CYAN, 0.1)))
+                            .child(div().w(px(70.0)).font_family(MONO).text_color(rgb(CYAN)).child(format!("event {draw}")))
+                            .child(swatch(&change["after"]))
+                            .child(div().font_family(MONO).text_color(rgb(TEXT)).child(change["after"].to_string()))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.select_draw(draw, cx);
+                                cx.notify();
+                            }))
+                    }))
+            }
+        }
+    });
+
     let detail = match (&state.draw, selected) {
         (_, None) => note("Pick a draw.").into_any_element(),
         (None, Some(draw)) => note(format!("Reading draw {draw}…")).into_any_element(),
@@ -368,7 +474,7 @@ fn workspace(player: &mut Player, cx: &mut Context<Player>) -> gpui::Div {
                     .child(picture)
                     .child(div().rounded_md().border_1().border_color(tint(FAINT, 0.8)).p_1().child(list)),
             )
-            .child(div().w(px(380.0)).flex_none().flex().flex_col().gap_2().children(worth).child(detail))
+            .child(div().w(px(380.0)).flex_none().flex().flex_col().gap_2().children(worth).children(story).child(detail))
     } else {
         div()
             .flex()
@@ -376,6 +482,7 @@ fn workspace(player: &mut Player, cx: &mut Context<Player>) -> gpui::Div {
             .gap_2()
             .children(worth)
             .child(picture)
+            .children(story)
             .child(div().rounded_md().border_1().border_color(tint(FAINT, 0.8)).p_1().child(list))
             .child(detail)
     };

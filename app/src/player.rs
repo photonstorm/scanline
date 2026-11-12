@@ -48,9 +48,35 @@ actions!(
         ShowAgent,
         ToggleWide,
         SlowDown,
-        SpeedUp
+        SpeedUp,
+        OpenRecent0,
+        OpenRecent1,
+        OpenRecent2,
+        OpenRecent3,
+        OpenRecent4,
+        OpenRecent5,
+        OpenRecent6,
+        OpenRecent7,
+        OpenRecent8,
+        OpenRecent9
     ]
 );
+
+/// The menu items for recent pages, in order.
+fn recent_action(index: usize) -> Box<dyn gpui::Action> {
+    match index {
+        0 => Box::new(OpenRecent0),
+        1 => Box::new(OpenRecent1),
+        2 => Box::new(OpenRecent2),
+        3 => Box::new(OpenRecent3),
+        4 => Box::new(OpenRecent4),
+        5 => Box::new(OpenRecent5),
+        6 => Box::new(OpenRecent6),
+        7 => Box::new(OpenRecent7),
+        8 => Box::new(OpenRecent8),
+        _ => Box::new(OpenRecent9),
+    }
+}
 
 /// What the host started this window with: Chrome's switches and Scanline's own.
 #[derive(Clone, Debug)]
@@ -103,6 +129,7 @@ pub enum Purpose {
     DrawList(String),
     Draw(String, i64),
     Target(String, i64),
+    PixelSource(String, (u32, u32)),
     /// Something the person did, by the command's name: its summary goes in the status bar.
     #[allow(dead_code)]
     Action(&'static str),
@@ -148,6 +175,7 @@ pub struct Player {
     pub message: Option<(String, bool)>,
     message_at: Instant,
     pub recent: Vec<String>,
+    menus_stale: bool,
 
     pub status: Value,
     pub panel: Panel,
@@ -185,6 +213,7 @@ impl Player {
             message: None,
             message_at: Instant::now(),
             recent,
+            menus_stale: true,
             status: Value::Null,
             panel: Panel::Live,
             wide: false,
@@ -318,6 +347,7 @@ impl Player {
             }
             (Purpose::Draw(capture, draw), Ok(value)) => self.captures.draw(&capture, draw, &value["data"]),
             (Purpose::Target(capture, draw), Ok(value)) => self.captures.target(&capture, draw, &value),
+            (Purpose::PixelSource(capture, pixel), Ok(value)) => self.captures.story(&capture, pixel, &value),
             (Purpose::Draw(capture, draw), Err(error)) | (Purpose::Target(capture, draw), Err(error)) => self.captures.failed(&capture, draw, error),
             (Purpose::Action(_), Ok(value)) => {
                 let summary = value["summary"].as_str().unwrap_or("Done.").lines().next().unwrap_or("").to_string();
@@ -464,12 +494,25 @@ impl Player {
         self.ask("screenshot", json!({ "capture": capture, "at_draw": draw }), Purpose::Target(capture, draw));
     }
 
+    /// A pixel of the capture's target clicked: what made it, event by event.
+    pub fn pick_pixel(&mut self, pixel: (u32, u32)) {
+        let Some(capture) = self.captures.opened.clone() else { return };
+
+        self.captures.pixel = Some(pixel);
+        self.captures.story = None;
+        self.ask("pixel_source", json!({ "capture": capture, "x": pixel.0, "y": pixel.1 }), Purpose::PixelSource(capture, pixel));
+    }
+
     pub fn send_to_agent(&mut self) {
         let Some(capture) = self.captures.opened.clone() else { return };
         let mut chosen = json!({ "capture": capture });
 
         if let Some(draw) = self.captures.selected {
             chosen["draw"] = json!(draw);
+        }
+
+        if let Some((x, y)) = self.captures.pixel {
+            chosen["pixel"] = json!({ "x": x, "y": y });
         }
 
         self.ask("send_to_agent", chosen, Purpose::Action("send_to_agent"));
@@ -507,7 +550,8 @@ impl Player {
 
         self.recent.retain(|known| known != url);
         self.recent.insert(0, url.to_string());
-        self.recent.truncate(15);
+        self.recent.truncate(10);
+        self.menus_stale = true;
 
         let _ = std::fs::write(self.options.home.join("app-recent.json"), serde_json::to_string_pretty(&self.recent).unwrap_or_default());
     }
@@ -609,8 +653,21 @@ impl Player {
 
         window.set_window_title(&title);
 
+        if self.menus_stale {
+            self.menus_stale = false;
+            menus(cx, &self.recent);
+        }
+
         if changed {
             cx.notify();
+        }
+    }
+
+    /// Opens a page from the recent list.
+    pub fn open_recent(&mut self, index: usize) {
+        if let Some(url) = self.recent.get(index).cloned() {
+            self.address = url;
+            self.go();
         }
     }
 
@@ -908,7 +965,18 @@ pub fn with_current(cx: &mut App, f: impl FnOnce(&mut Player, &mut Context<Playe
     });
 }
 
-fn menus(cx: &mut App) {
+fn menus(cx: &mut App, recent: &[String]) {
+    let mut opened: Vec<MenuItem> = recent
+        .iter()
+        .take(10)
+        .enumerate()
+        .map(|(index, url)| MenuItem::Action { name: url.clone().into(), action: recent_action(index), os_action: None })
+        .collect();
+
+    if opened.is_empty() {
+        opened.push(MenuItem::action("No pages yet", OpenRecent9));
+    }
+
     cx.set_menus(vec![
         Menu {
             name: "Scanline".into(),
@@ -919,6 +987,7 @@ fn menus(cx: &mut App) {
             items: vec![
                 MenuItem::action("New Window", NewWindow),
                 MenuItem::action("Open Location…", OpenLocation),
+                MenuItem::submenu(Menu { name: "Open Recent".into(), items: opened }),
                 MenuItem::separator(),
                 MenuItem::action("Close Window", CloseWindow),
             ],
@@ -950,7 +1019,7 @@ fn menus(cx: &mut App) {
                 MenuItem::action("Wide Panel", ToggleWide),
             ],
         },
-        Menu { name: "Window".into(), items: vec![MenuItem::os_submenu("Window", SystemMenuType::Services)] },
+        Menu { name: "Window".into(), items: vec![MenuItem::action("New Window", NewWindow), MenuItem::action("Close Window", CloseWindow)] },
     ]);
 }
 
@@ -1003,6 +1072,16 @@ fn bind(cx: &mut App) {
     cx.on_action(|_: &ShowConsole, cx| with_current(cx, |this, _| this.show(Panel::Console)));
     cx.on_action(|_: &ShowAgent, cx| with_current(cx, |this, _| this.show(Panel::Agent)));
     cx.on_action(|_: &ToggleWide, cx| with_current(cx, |this, _| this.wide = !this.wide));
+    cx.on_action(|_: &OpenRecent0, cx| with_current(cx, |this, _| this.open_recent(0)));
+    cx.on_action(|_: &OpenRecent1, cx| with_current(cx, |this, _| this.open_recent(1)));
+    cx.on_action(|_: &OpenRecent2, cx| with_current(cx, |this, _| this.open_recent(2)));
+    cx.on_action(|_: &OpenRecent3, cx| with_current(cx, |this, _| this.open_recent(3)));
+    cx.on_action(|_: &OpenRecent4, cx| with_current(cx, |this, _| this.open_recent(4)));
+    cx.on_action(|_: &OpenRecent5, cx| with_current(cx, |this, _| this.open_recent(5)));
+    cx.on_action(|_: &OpenRecent6, cx| with_current(cx, |this, _| this.open_recent(6)));
+    cx.on_action(|_: &OpenRecent7, cx| with_current(cx, |this, _| this.open_recent(7)));
+    cx.on_action(|_: &OpenRecent8, cx| with_current(cx, |this, _| this.open_recent(8)));
+    cx.on_action(|_: &OpenRecent9, cx| with_current(cx, |this, _| this.open_recent(9)));
 }
 
 pub fn run(args: cef::args::Args, mut app: cef::App, options: Options) {
@@ -1017,7 +1096,6 @@ pub fn run(args: cef::args::Args, mut app: cef::App, options: Options) {
 
         assert_eq!(cef::initialize(Some(args.as_main_args()), Some(&settings), Some(&mut app), std::ptr::null_mut()), 1, "CEF did not start");
 
-        menus(cx);
         bind(cx);
 
         // The game at the size the host asked for, with the bars and the panel around it,
