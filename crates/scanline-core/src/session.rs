@@ -101,6 +101,8 @@ pub struct Busy {
     pub stage_started: std::time::Instant,
     /// Each stage finished so far, with its milliseconds.
     pub stages: Vec<(String, u128)>,
+    /// The capture being finished in the background, where that is the job.
+    pub capture: Option<String>,
 }
 
 /// Ends the job when dropped, however it ends.
@@ -116,6 +118,8 @@ impl Drop for BusyGuard {
 pub struct State {
     /// A long job under way, for progress().
     pub busy: Option<Busy>,
+    /// The size the page is given by emulate, where it has been.
+    pub emulated: Option<Value>,
     /// What the agent last asked the Scanline app to show (viewer(show: …) in an app
     /// session), with a number that rises each time so the app can tell a new request.
     pub app_show: Option<Value>,
@@ -300,10 +304,15 @@ fn injectable(url: &str) -> bool {
 impl Session {
     /// Starts a long job: progress() reports it until the guard is dropped.
     pub fn begin(self: &Arc<Self>, what: &str, stage: &str) -> BusyGuard {
+        self.begin_for(what, stage, None)
+    }
+
+    /// The same, for finishing a capture in the background.
+    pub fn begin_for(self: &Arc<Self>, what: &str, stage: &str, capture: Option<String>) -> BusyGuard {
         let now = std::time::Instant::now();
 
         self.state.lock().unwrap().busy =
-            Some(Busy { what: what.to_string(), stage: stage.to_string(), detail: String::new(), started: now, stage_started: now, stages: Vec::new() });
+            Some(Busy { what: what.to_string(), stage: stage.to_string(), detail: String::new(), started: now, stage_started: now, stages: Vec::new(), capture });
 
         BusyGuard(self.clone())
     }

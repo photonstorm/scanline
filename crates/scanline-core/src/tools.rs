@@ -292,7 +292,8 @@ pub const TOOLS: &[Tool] = &[
             r#""when": { "type": "object", "description": "Capture when something happens, not now: {error: true}, {frame_ms_over: 20}, {mark: \"name\"} or {expr: \"…\"}. The page runs until then; the frame that met it is captured, with the frames before it as a recording." }"#,
             r#""flight_frames": { "type": "integer", "description": "With when: how many frames before it to keep. Default 30." }"#,
             r#""timeout_s": { "type": "number", "description": "With when: how long to wait, in real seconds. Default 30, at most 45." }"#,
-            r#""max_edge": { "type": "integer", "description": "Longest edge of the thumbnail returned. Default 512." }"#
+            r#""max_edge": { "type": "integer", "description": "Longest edge of the thumbnail returned. Default 512." }"#,
+            r#""quick": { "type": "boolean", "description": "Return once the frame's calls, state and small blobs are in, in about a second on a heavy scene, and bring its textures and large buffers from the page in the background, then replay and check it. draw_list and the capture's tables answer at once; pixel_source, draw, screenshots at a draw and export wait for the rest, a few seconds more. Default false: the capture returns replayed and checked." }"#
         ),
         read_only: false,
     },
@@ -541,6 +542,21 @@ pub const TOOLS: &[Tool] = &[
             r#""w": { "type": "number" }"#,
             r#""h": { "type": "number" }"#,
             r#""note": { "type": "string" }"#,
+        ),
+        read_only: false,
+    },
+    Tool {
+        name: "emulate",
+        description: "Give the page the size and pixel ratio of a device or a window, as DevTools' device mode does: it sees that innerWidth, innerHeight and devicePixelRatio, and draws its canvas to match. scale draws the view smaller (or larger) so a large size fits where it is shown. mobile: true makes it a phone or tablet: touch events, and its viewport meta tag applies. reset: true gives it its view's own size again.",
+        schema: schema!(
+            "[]",
+            session!(),
+            r#""width": { "type": "integer", "description": "CSS pixels, 1 to 8192." }"#,
+            r#""height": { "type": "integer", "description": "CSS pixels, 1 to 8192." }"#,
+            r#""dpr": { "type": "number", "description": "Device pixel ratio, 0.25 to 4. Default 1; 2 for a Retina display." }"#,
+            r#""mobile": { "type": "boolean" }"#,
+            r#""scale": { "type": "number", "description": "What the view is drawn at, 0.05 to 4. Default 1." }"#,
+            r#""reset": { "type": "boolean" }"#
         ),
         read_only: false,
     },

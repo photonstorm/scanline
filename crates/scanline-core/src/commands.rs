@@ -412,6 +412,7 @@ pub async fn status(session: &Arc<Session>) -> Result<Value> {
         "display": session.display,
         "app_show": session.state.lock().unwrap().app_show.clone(),
         "video_seconds": session.state.lock().unwrap().video.map(|started| started.elapsed().as_secs_f64()),
+        "emulated": session.state.lock().unwrap().emulated.clone(),
         "owner": session.state.lock().unwrap().owner.clone(),
         "request": session.state.lock().unwrap().request.as_ref().map(|request| json!({ "id": request.id, "instruction": request.instruction })),
         "paused": top["paused"],
@@ -478,6 +479,66 @@ pub(crate) fn primary(results: &[(Instance, Value)]) -> Result<&Value> {
         .or(results.first())
         .map(|(_, value)| value)
         .ok_or_else(|| anyhow!("No probe answered. The page may have navigated or crashed; call status."))
+}
+
+/// The largest size `emulate` gives a page, each way: a canvas this size at a ratio of 4 is
+/// already larger than most GPUs' largest texture.
+const EMULATE_MAX: u64 = 8192;
+
+/// The page's size and pixel ratio as a device or a window of that size would give them, and
+/// the scale its view is drawn at, so that a large size fits the view it is shown in. The
+/// page sees the size (innerWidth, devicePixelRatio, matchMedia); nothing else changes size.
+pub async fn emulate(session: &Arc<Session>, params: &Value) -> Result<Value> {
+    if params["reset"] == true || params["width"].is_null() {
+        session.page_command("Emulation.clearDeviceMetricsOverride", json!({})).await?;
+        session.page_command("Emulation.setTouchEmulationEnabled", json!({ "enabled": false })).await?;
+        session.state.lock().unwrap().emulated = None;
+
+        return Ok(result("The page has its view's own size and pixel ratio again.", json!({ "emulated": null })));
+    }
+
+    let side = |name: &str| -> Result<u64> {
+        match params[name].as_u64() {
+            Some(value) if (1..=EMULATE_MAX).contains(&value) => Ok(value),
+            _ => bail!("{name} is a whole number of CSS pixels from 1 to {EMULATE_MAX}."),
+        }
+    };
+    let (width, height) = (side("width")?, side("height")?);
+    let dpr = params["dpr"].as_f64().unwrap_or(1.0);
+    let scale = params["scale"].as_f64().unwrap_or(1.0);
+    let mobile = params["mobile"].as_bool().unwrap_or(false);
+
+    if !(0.25..=4.0).contains(&dpr) {
+        bail!("dpr is the device pixel ratio, from 0.25 to 4; {dpr} is outside it.");
+    }
+
+    if !(0.05..=4.0).contains(&scale) {
+        bail!("scale is what the view is drawn at, from 0.05 to 4; {scale} is outside it.");
+    }
+
+    session
+        .page_command(
+            "Emulation.setDeviceMetricsOverride",
+            json!({ "width": width, "height": height, "deviceScaleFactor": dpr, "mobile": mobile, "scale": scale, "screenWidth": width, "screenHeight": height }),
+        )
+        .await?;
+    // A phone is touched: the page sees touch events and maxTouchPoints.
+    session.page_command("Emulation.setTouchEmulationEnabled", json!({ "enabled": mobile, "maxTouchPoints": if mobile { 5 } else { 1 } })).await?;
+
+    let emulated = json!({ "width": width, "height": height, "dpr": dpr, "mobile": mobile, "scale": scale });
+
+    session.state.lock().unwrap().emulated = Some(emulated.clone());
+
+    Ok(result(
+        format!(
+            "The page is now {width}×{height} CSS pixels at a pixel ratio of {dpr} ({}×{} device pixels){}, drawn at {:.0}% in its view.",
+            (width as f64 * dpr).round(),
+            (height as f64 * dpr).round(),
+            if mobile { ", as a phone or tablet: touch, and the page's viewport meta tag applies" } else { "" },
+            scale * 100.0
+        ),
+        json!({ "emulated": emulated }),
+    ))
 }
 
 pub async fn pause(session: &Arc<Session>) -> Result<Value> {

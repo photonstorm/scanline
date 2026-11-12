@@ -221,7 +221,7 @@ pub(crate) fn refusal(tiers: &Tiers, method: &str, params: &Value, page: Option<
     }
 
     match method {
-        "pause" | "resume" | "step" | "run_until" | "input" | "request_human" | "take_control" | "debug" | "strip" | "replay_run" | "live_view" | "video"
+        "pause" | "resume" | "step" | "run_until" | "input" | "request_human" | "take_control" | "debug" | "strip" | "replay_run" | "live_view" | "video" | "emulate"
             if !tiers.control =>
         {
             Some(format!(

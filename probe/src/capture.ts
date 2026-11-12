@@ -1678,10 +1678,12 @@ export function installCapture (): void
         };
     });
 
-    // Blobs in order, several to a call, up to about `budget` bytes of them.
+    // Blobs in order, several to a call, up to about `budget` bytes of them: every blob, or
+    // those `indexes` names, `from` and `next` then being places in that list. The host
+    // brings a capture's small blobs first and its textures after, in the background.
     // raw: base64 alone. Textures and render targets rarely shrink under gzip, and gzip at
     // this size costs more time than the bytes it saves.
-    expose('capture.blobs', async (args: { capture: number; from: number; budget?: number; raw?: boolean }) =>
+    expose('capture.blobs', async (args: { capture: number; from: number; budget?: number; raw?: boolean; indexes?: number[] }) =>
     {
         const capture = captures.get(args.capture);
 
@@ -1692,18 +1694,31 @@ export function installCapture (): void
 
         const budget = args.budget ?? 8 * 1024 * 1024;
         const out: string[] = [];
+        const list = args.indexes;
+        const length = list ? list.length : capture.blobs.length;
+        const blob = (place: number): Uint8Array =>
+        {
+            const found = capture.blobs[list ? list[place] : place];
+
+            if (!found)
+            {
+                throw new Error(`Capture ${args.capture} has no blob ${list ? list[place] : place}.`);
+            }
+
+            return found;
+        };
 
         let size = 0;
-        let index = args.from;
+        let place = args.from;
 
-        while (index < capture.blobs.length && (out.length === 0 || size + capture.blobs[index].length <= budget))
+        while (place < length && (out.length === 0 || size + blob(place).length <= budget))
         {
-            size += capture.blobs[index].length;
-            out.push(args.raw ? base64(capture.blobs[index]) : base64(await gzip(capture.blobs[index])));
-            index++;
+            size += blob(place).length;
+            out.push(args.raw ? base64(blob(place)) : base64(await gzip(blob(place))));
+            place++;
         }
 
-        return { from: args.from, next: index, done: index >= capture.blobs.length, encoding: args.raw ? 'base64' : 'gzip+base64', blobs: out };
+        return { from: args.from, next: place, done: place >= length, encoding: args.raw ? 'base64' : 'gzip+base64', blobs: out };
     });
 
     expose('capture.release', (args: { capture: number }) =>

@@ -1372,14 +1372,31 @@ fn tables(body: &Value, tag: u64, errors: &HashMap<i64, String>, effects: &HashM
 
 /// Gives a session's replay page a capture from the store.
 pub(crate) async fn load_into(host: &Arc<Host>, session: &Arc<Session>, handle: &str) -> Result<Value> {
+    // A capture taken with quick: true may still be bringing its textures from the page.
+    host.ready(handle).await?;
+
     let stream = host.store.stream(handle)?;
-    let hashes: Vec<String> = stream["blob_hashes"].as_array().into_iter().flatten().filter_map(|hash| hash.as_str().map(str::to_string)).collect();
+    let hashes: Vec<Option<String>> = stream["blob_hashes"].as_array().into_iter().flatten().map(|hash| hash.as_str().map(str::to_string)).collect();
     let store = &host.store;
 
-    session.replay_load(handle, &stream, &|index| store.get_blob(hashes.get(index).ok_or_else(|| anyhow!("The capture names no blob {index}."))?)).await?;
+    session
+        .replay_load(handle, &stream, &|index| match hashes.get(index) {
+            Some(Some(hash)) => store.get_blob(hash),
+            Some(None) => bail!("{handle} cannot be replayed: its textures never arrived from the page ({}).", missing_reason(host, handle)),
+            None => bail!("The capture names no blob {index}."),
+        })
+        .await?;
 
     Ok(stream)
 }
+
+/// Why a capture taken with quick: true has no textures, as its meta says.
+fn missing_reason(host: &Host, handle: &str) -> String {
+    host.store.meta(handle).ok().and_then(|meta| meta["replay"].as_str().map(str::to_string)).unwrap_or_else(|| "the page went away first".into())
+}
+
+/// Blobs larger than this wait for the background in a quick capture: the textures.
+const QUICK_BLOB: u64 = 256 * 1024;
 
 pub(crate) fn replay_image(reply: &Value) -> Result<Image> {
     Image::new(reply["width"].as_u64().unwrap_or(0) as u32, reply["height"].as_u64().unwrap_or(0) as u32, unpack(reply["data"].as_str().unwrap_or(""))?)
@@ -1427,6 +1444,10 @@ pub(crate) fn about(host: &Host, params: &Value, handle: &str, meta: &Value) -> 
 
 pub async fn capture(host: &Arc<Host>, session: &Arc<Session>, params: &Value) -> Result<Value> {
     let context = choose_context(session, params).await?;
+    let quick = params["quick"].as_bool().unwrap_or(false);
+
+    // One capture at a time is finished on a session: they share its replay page.
+    host.settled(&session.id).await;
 
     let top = session.top()?;
     let was_running = session.probe(&top, "status", json!({}), SHORT).await?["paused"] == false;
@@ -1458,7 +1479,13 @@ pub async fn capture(host: &Arc<Host>, session: &Arc<Session>, params: &Value) -
 
     session.stage("Bringing the frame's data from the page");
 
-    let body = fetch(host, session, &context.instance, &id, &taken).await?;
+    // Quick: everything but the large blobs now, and those (the textures) in the background.
+    let mut body = described(&taken)?;
+    let sizes: Vec<u64> = body["blobs"].as_array().into_iter().flatten().map(|size| size.as_u64().unwrap_or(0)).collect();
+    let (now, later): (Vec<usize>, Vec<usize>) = (0..sizes.len()).partition(|index| !quick || sizes[*index] <= QUICK_BLOB);
+    let mut hashes = vec![Value::Null; sizes.len()];
+
+    bring(host, session, &context.instance, &id, &now, &sizes, &mut hashes).await?;
 
     session.stage("Reading the frame's picture");
 
@@ -1469,43 +1496,98 @@ pub async fn capture(host: &Arc<Host>, session: &Arc<Session>, params: &Value) -
         session.probe_all("resume", json!({}), SHORT).await;
     }
 
-    build(
-        host,
-        session,
-        body,
-        Source { context: context.handle.clone(), tag: context.instance.tag as u64, original: Some(original), recording: None, url: None },
-        params,
-    )
-    .await
+    body["blob_hashes"] = json!(hashes);
+    body["blob_bytes"] = taken["blobBytes"].clone();
+
+    let source = Source { context: context.handle.clone(), tag: context.instance.tag as u64, original: Some(original), recording: None, url: None };
+
+    if later.is_empty() {
+        let _ = session.probe(&context.instance, "capture.release", json!({ "capture": id }), SHORT).await;
+
+        return build(host, session, body, source, params).await;
+    }
+
+    // The capture as far as it goes without its textures, written and returned now; the rest
+    // is done in the background, and anything that needs it waits for it.
+    let handle = host.store.reserve_handle()?;
+    let waiting: u64 = later.iter().map(|index| sizes[*index]).sum();
+    let value = provisional(host, session, &handle, &body, &source, params, later.len(), waiting)?;
+    let done = host.finishing(&handle, &session.id);
+    let (host, session, instance, params) = (host.clone(), session.clone(), context.instance.clone(), params.clone());
+
+    tokio::spawn(async move {
+        let _busy = session.begin_for("capture", "Bringing the frame's textures from the page", Some(handle.clone()));
+        let brought = bring(&host, &session, &instance, &id, &later, &sizes, &mut hashes).await;
+        let _ = session.probe(&instance, "capture.release", json!({ "capture": id }), SHORT).await;
+
+        // What a capture that cannot be finished is written again with, saying why.
+        let kept = Source { context: source.context.clone(), tag: source.tag, original: None, recording: source.recording.clone(), url: source.url.clone() };
+
+        body["blob_hashes"] = json!(hashes);
+
+        let outcome = match brought {
+            Ok(()) => finish(&host, &session, &handle, body.clone(), source, &params).await.map(|_| ()).map_err(|error| format!("it could not be replayed ({error})")),
+            Err(error) => Err(format!("the page went away before its textures were brought ({error})")),
+        };
+
+        if let Err(why) = &outcome {
+            let _ = unfinished(&host, &session, &handle, &body, &kept, why);
+        }
+
+        let _ = done.send(Some(outcome));
+        host.finished(&handle);
+    });
+
+    Ok(value)
+}
+
+/// The description of the frame the page recorded, without its blobs.
+fn described(taken: &Value) -> Result<Value> {
+    serde_json::from_slice(&unpack(taken["body"].as_str().unwrap_or(""))?).context("reading the capture the page sent")
+}
+
+/// Brings the blobs `indexes` names from the page into the store, setting their hashes.
+async fn bring(host: &Arc<Host>, session: &Arc<Session>, instance: &crate::session::Instance, id: &Value, indexes: &[usize], sizes: &[u64], hashes: &mut [Value]) -> Result<()> {
+    let total: u64 = indexes.iter().map(|index| sizes[*index]).sum();
+    let mut from = 0usize;
+    let mut brought = 0usize;
+
+    while from < indexes.len() {
+        session.stage_detail(format!("{} of {} MB", brought / 1_048_576, (total as f64 / 1_048_576.0).round()));
+
+        let part = session.probe(instance, "capture.blobs", json!({ "capture": id, "from": from, "raw": true, "indexes": indexes }), LONG).await?;
+        // A probe from before raw blobs sends them gzipped, and says so.
+        let raw = part["encoding"] == "base64";
+
+        for (offset, blob) in part["blobs"].as_array().into_iter().flatten().enumerate() {
+            let text = blob.as_str().unwrap_or("");
+            let bytes = if raw { unbase64(text)? } else { unpack(text)? };
+
+            brought += bytes.len();
+            hashes[indexes[from + offset]] = json!(host.store.put_blob(&bytes)?);
+        }
+
+        let next = part["next"].as_u64().unwrap_or(indexes.len() as u64) as usize;
+
+        if next <= from {
+            bail!("The page sent no blobs from {from}.");
+        }
+
+        from = next;
+    }
+
+    Ok(())
 }
 
 /// Fetches from the page what it recorded: the description, and the blobs, which are stored
 /// by content, so a texture this capture shares with an earlier one costs nothing.
 pub(crate) async fn fetch(host: &Arc<Host>, session: &Arc<Session>, instance: &crate::session::Instance, id: &Value, taken: &Value) -> Result<Value> {
-    let mut body: Value = serde_json::from_slice(&unpack(taken["body"].as_str().unwrap_or(""))?).context("reading the capture the page sent")?;
-    let count = taken["blobs"].as_u64().unwrap_or(0);
-    let total = taken["blobBytes"].as_f64().unwrap_or(0.0);
-    let mut hashes = Vec::with_capacity(count as usize);
-    let mut from = 0u64;
-    let mut brought = 0usize;
+    let mut body = described(taken)?;
+    let sizes: Vec<u64> = body["blobs"].as_array().into_iter().flatten().map(|size| size.as_u64().unwrap_or(0)).collect();
+    let every: Vec<usize> = (0..sizes.len()).collect();
+    let mut hashes = vec![Value::Null; sizes.len()];
 
-    while from < count {
-        session.stage_detail(format!("{} of {} MB", brought / 1_048_576, (total / 1_048_576.0).round()));
-
-        let part = session.probe(instance, "capture.blobs", json!({ "capture": id, "from": from, "raw": true }), LONG).await?;
-        // A probe from before raw blobs sends them gzipped, and says so.
-        let raw = part["encoding"] == "base64";
-
-        for blob in part["blobs"].as_array().into_iter().flatten() {
-            let text = blob.as_str().unwrap_or("");
-            let bytes = if raw { unbase64(text)? } else { unpack(text)? };
-
-            brought += bytes.len();
-            hashes.push(host.store.put_blob(&bytes)?);
-        }
-
-        from = part["next"].as_u64().unwrap_or(count);
-    }
+    bring(host, session, instance, id, &every, &sizes, &mut hashes).await?;
 
     let _ = session.probe(instance, "capture.release", json!({ "capture": id }), SHORT).await;
 
@@ -1556,6 +1638,93 @@ pub(crate) struct Source {
 /// Makes a capture of a frame's stream: replays it, measures it, builds its tables and writes it.
 pub(crate) async fn build(host: &Arc<Host>, session: &Arc<Session>, body: Value, source: Source, params: &Value) -> Result<Value> {
     let handle = host.store.reserve_handle()?;
+
+    finish(host, session, &handle, body, source, params).await
+}
+
+/// The capture written before its textures are in: its tables, without what each draw changed
+/// and without a replay check, which follow. Returns what capture returns.
+#[allow(clippy::too_many_arguments)]
+fn provisional(host: &Arc<Host>, session: &Arc<Session>, handle: &str, body: &Value, source: &Source, params: &Value, count: usize, bytes: u64) -> Result<Value> {
+    let waiting = format!(
+        "still to come: {} ({}) {} being brought from the page in the background",
+        if count == 1 { "one texture or large buffer".to_string() } else { format!("{count} textures and large buffers") },
+        size(bytes as f64),
+        if count == 1 { "is" } else { "are" }
+    );
+    let meta = unfinished(host, session, handle, body, source, &waiting)?;
+    let original = source.original.as_ref().ok_or_else(|| anyhow!("A quick capture needs the page's own picture of the frame."))?;
+    let final_path = host.store.capture_dir(handle).join("final.png");
+
+    std::fs::write(&final_path, original.to_png()?).with_context(|| format!("writing {}", final_path.display()))?;
+
+    let mut value = describe_capture(host, handle, &meta)?;
+    let (view, factor) = original.opaque().fit(params["max_edge"].as_u64().unwrap_or(512).clamp(16, 4096) as u32);
+    let view_path = if factor == 1 { final_path.clone() } else { save(session, &format!("{handle}-final-view"), &view)? };
+
+    value["images"] =
+        json!([{ "view": view_path, "original": final_path, "width": view.width, "height": view.height, "scale": 1.0 / factor as f64, "space": "canvas_px" }]);
+    value["data"]["stages"] = session.stage_times();
+    value["data"]["finishing"] = json!({ "blobs": count, "bytes": bytes });
+    value["summary"] = json!(format!(
+        "{}\nNext: draw_list(capture: \"{handle}\") answers now; pixel_source, draw and screenshots at a draw wait for the textures, a few seconds more.",
+        value["summary"].as_str().unwrap_or("")
+    ));
+
+    Ok(value)
+}
+
+/// Writes a capture with its tables and no replay: while its textures are on their way, or
+/// when they or its replay failed. `replay` says which. Returns its meta.
+fn unfinished(host: &Arc<Host>, session: &Arc<Session>, handle: &str, body: &Value, source: &Source, replay: &str) -> Result<Value> {
+    let none = HashMap::new();
+    let blob_base = body["header"]["blobBase"].as_u64().unwrap_or(0);
+    let call_data = |index: u64| -> Option<Vec<u8>> {
+        let place = index.checked_sub(blob_base)? as usize;
+
+        if body["blobs"][place].as_u64().is_none_or(|size| size > 1 << 20) {
+            return None;
+        }
+
+        host.store.get_blob(body["blob_hashes"][place].as_str()?).ok()
+    };
+    let (capture_tables, mut counts) = tables(body, source.tag, &HashMap::new(), &none, &call_data);
+
+    counts["gl_errors"] = json!(0);
+
+    let header = &body["header"];
+    let pending = replay.starts_with("still to come");
+    let meta = json!({
+        "capture": handle,
+        "session": session.id,
+        "url": source.url.clone().unwrap_or_else(|| session.url()),
+        "context": source.context,
+        "instance_tag": source.tag,
+        "api": header["api"],
+        "width": header["width"],
+        "height": header["height"],
+        "frame": header["frame"],
+        "profile": session.profile.name(),
+        "browser": session.browser_version,
+        "replay": replay,
+        "replay_matches": false,
+        "pending": pending,
+        "recording": source.recording.as_ref().map(|recording| recording.0.clone()),
+        "notes": [],
+        "findings": findings(body, source.tag, &HashMap::new(), &none),
+        "counts": counts,
+        "blob_bytes": body["blob_bytes"],
+    });
+
+    host.store.write_capture(handle, body, &meta, capture_tables)?;
+
+    Ok(meta)
+}
+
+/// Replays a capture whose blobs are all in the store, measures it, builds its tables and
+/// writes it under `handle`.
+pub(crate) async fn finish(host: &Arc<Host>, session: &Arc<Session>, handle: &str, body: Value, source: Source, params: &Value) -> Result<Value> {
+    let handle = handle.to_string();
     let tag = source.tag;
     let hashes: Vec<String> = body["blob_hashes"].as_array().into_iter().flatten().filter_map(|hash| hash.as_str().map(str::to_string)).collect();
 
@@ -1882,7 +2051,12 @@ pub(crate) fn describe_capture(host: &Host, handle: &str, meta: &Value) -> Resul
         lines.extend(found.iter().map(|finding| format!("  • {finding}")));
     }
 
-    lines.push(if meta["replay"] == "not compared" {
+    lines.push(if meta["pending"] == true {
+        format!(
+            "Replay check: {}. When they are in, the frame is replayed and checked, and draw_list says what each draw changed. pixel_source, draw and screenshots at a draw wait for them.",
+            meta["replay"].as_str().unwrap_or("still to come")
+        )
+    } else if meta["replay"] == "not compared" {
         format!(
             "Replay check: this frame was taken from recording {}, which kept no image of it to compare with. The recording's last frame, the one the page was frozen on, {}.",
             meta["recording"].as_str().unwrap_or("?"),
@@ -1948,8 +2122,13 @@ pub fn captures(host: &Arc<Host>, params: &Value) -> Result<Value> {
 /// another kind (a shell profile, a script) and fill it with a page's text.
 const EXPORT_SUFFIX: &str = ".scanline";
 
-pub fn export(host: &Arc<Host>, params: &Value) -> Result<Value> {
-    let (handle, meta) = the_capture(host, params)?;
+pub async fn export(host: &Arc<Host>, params: &Value) -> Result<Value> {
+    let (handle, _) = the_capture(host, params)?;
+
+    // A quick capture's textures may still be on their way.
+    host.ready(&handle).await?;
+
+    let meta = host.store.meta(&handle)?;
     let path = match params["path"].as_str() {
         Some(path) => crate::tiers::file(host, path, "The file")?,
         None => host.artefacts().join("exports").join(format!("{handle}{EXPORT_SUFFIX}")),
@@ -2401,7 +2580,7 @@ pub async fn draw(host: &Arc<Host>, params: &Value) -> Result<Value> {
     } else if webgpu && (kind == "draw" || kind == "dispatch") {
         lines.extend(gpu_draw_lines(host, &handle, &state, tag));
 
-        if !state["bindGroups"].as_array().is_none_or(Vec::is_empty) {
+        if !state["bindGroups"].as_array().is_none_or(Vec::is_empty) && !(params["now"] == true && host.is_finishing(&handle)) {
             let (named, reply) = gpu_uniform_lines(host, params, &handle, index, tag).await;
 
             lines.extend(named);
@@ -2592,8 +2771,14 @@ pub async fn draw(host: &Arc<Host>, params: &Value) -> Result<Value> {
         value["data"]["bindings"] = json!({ "named": bindings["bindings"], "buffers": bindings["buffers"], "provenance": "gpu-measured" });
     }
 
+    // now: true (the app's) answers at once while the capture is still being finished, and
+    // leaves out what needs its textures.
+    let later = params["now"] == true && host.is_finishing(&handle);
+
     // What the event did to its target, measured by running the frame to just before and just after it.
-    if let Ok(session) = host.replayer(params) {
+    if later {
+        lines.push("  Its effect, and on WebGPU its uniform values by name, are measured by replay once the capture's textures are in.".into());
+    } else if let Ok(session) = host.replayer(params) {
         match effect(host, &session, &handle, index, params).await {
             Ok((line, data, images)) => {
                 lines.push(line);
@@ -2616,7 +2801,7 @@ pub async fn draw(host: &Arc<Host>, params: &Value) -> Result<Value> {
         }
     }
 
-    if meta["replay_matches"] != true {
+    if meta["replay_matches"] != true && !later {
         lines.push("  Warning: this capture's replay did not match the original frame, so the measured effect may be wrong.".into());
     }
 

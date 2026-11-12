@@ -1,0 +1,78 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>A frame that samples one large texture</title>
+<style>body { margin: 0; background: #111; } canvas { display: block; }</style>
+<canvas id="scene" width="160" height="120"></canvas>
+<script type="module">
+// One 2048×2048 RGBA8 texture (16 MB): its left half red, its right half green, drawn over the
+// whole canvas by a quad. For quick captures, which bring a texture this size from the page
+// after the capture returns: pixel (40, 60) is red and (120, 60) green. Raw WebGL 2.
+const gl = document.getElementById('scene').getContext('webgl2', { antialias: false, alpha: false });
+const SIZE = 2048;
+
+function program (vertex, fragment)
+{
+    const made = gl.createProgram();
+
+    for (const [type, source] of [[gl.VERTEX_SHADER, vertex], [gl.FRAGMENT_SHADER, fragment]])
+    {
+        const shader = gl.createShader(type);
+
+        gl.shaderSource(shader, source);
+        gl.compileShader(shader);
+        gl.attachShader(made, shader);
+    }
+
+    gl.linkProgram(made);
+
+    return made;
+}
+
+const show = program(`#version 300 es
+    out vec2 uv;
+    void main ()
+    {
+        uv = vec2(float(gl_VertexID % 2), float(gl_VertexID / 2));
+        gl_Position = vec4(uv * 2.0 - 1.0, 0.0, 1.0);
+    }`, `#version 300 es
+    precision highp float;
+    uniform sampler2D picture;
+    in vec2 uv;
+    out vec4 result;
+    void main () { result = vec4(texture(picture, uv).rgb, 1.0); }`);
+
+const texels = new Uint8Array(SIZE * SIZE * 4);
+
+for (let y = 0; y < SIZE; y++)
+{
+    for (let x = 0; x < SIZE; x++)
+    {
+        const at = (y * SIZE + x) * 4;
+
+        texels[at] = x < SIZE / 2 ? 255 : 0;
+        texels[at + 1] = x < SIZE / 2 ? 0 : 255;
+        texels[at + 3] = 255;
+    }
+}
+
+const texture = gl.createTexture();
+
+gl.bindTexture(gl.TEXTURE_2D, texture);
+gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, SIZE, SIZE, 0, gl.RGBA, gl.UNSIGNED_BYTE, texels);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+
+function frame ()
+{
+    gl.viewport(0, 0, 160, 120);
+    gl.clearColor(0, 0, 0, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.useProgram(show);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+    window.fixture = { name: 'large', frames: (window.fixture?.frames ?? 0) + 1 };
+    requestAnimationFrame(frame);
+}
+
+requestAnimationFrame(frame);
+</script>

@@ -49,7 +49,13 @@ pub struct Host {
     /// Every command run, newest last: what the person follows the agent by.
     activity: Mutex<std::collections::VecDeque<Value>>,
     next_activity: std::sync::atomic::AtomicU64,
+    /// Captures still being finished in the background (capture(quick: true)), by handle: the
+    /// session finishing each, and what it ends with (an error's text, or nothing).
+    finishing: Mutex<std::collections::HashMap<String, (String, Finished)>>,
 }
+
+/// How a capture's background work ended, once it has: Ok, or why not.
+type Finished = tokio::sync::watch::Receiver<Option<std::result::Result<(), String>>>;
 
 /// How many commands the activity log remembers.
 const ACTIVITY: usize = 400;
@@ -88,7 +94,7 @@ fn progress(session: &session::Session) -> Value {
 
             result(
                 format!("{}: {} for {seconds:.0} s. Now: {}{detail}.", session.id, busy.what, busy.stage),
-                json!({ "busy": { "what": busy.what, "stage": busy.stage, "detail": busy.detail, "seconds": seconds, "stage_seconds": busy.stage_started.elapsed().as_secs_f64(), "done": busy.stages.iter().map(|(stage, ms)| json!({ "stage": stage, "ms": ms })).collect::<Vec<_>>() } }),
+                json!({ "busy": { "what": busy.what, "capture": busy.capture, "stage": busy.stage, "detail": busy.detail, "seconds": seconds, "stage_seconds": busy.stage_started.elapsed().as_secs_f64(), "done": busy.stages.iter().map(|(stage, ms)| json!({ "stage": stage, "ms": ms })).collect::<Vec<_>>() } }),
             )
         }
     }
@@ -115,7 +121,55 @@ impl Host {
             next_session: AtomicU32::new(1),
             activity: Mutex::new(std::collections::VecDeque::new()),
             next_activity: std::sync::atomic::AtomicU64::new(1),
+            finishing: Mutex::new(std::collections::HashMap::new()),
         }))
+    }
+
+    /// Notes that a capture is being finished in the background by a session; the sender is
+    /// told how it ends.
+    pub(crate) fn finishing(&self, handle: &str, session: &str) -> tokio::sync::watch::Sender<Option<std::result::Result<(), String>>> {
+        let (send, receive) = tokio::sync::watch::channel(None);
+
+        self.finishing.lock().unwrap().insert(handle.to_string(), (session.to_string(), receive));
+
+        send
+    }
+
+    /// The capture's background work is over (its outcome is in the capture itself).
+    pub(crate) fn finished(&self, handle: &str) {
+        self.finishing.lock().unwrap().remove(handle);
+    }
+
+    /// Whether a capture is still being finished in the background.
+    pub fn is_finishing(&self, handle: &str) -> bool {
+        self.finishing.lock().unwrap().contains_key(handle)
+    }
+
+    /// Waits until a capture's textures are in and it has been replayed, where it was taken
+    /// with quick: true and that is still under way. Anything that replays a capture or reads
+    /// its blobs waits here first.
+    pub(crate) async fn ready(&self, handle: &str) -> Result<()> {
+        let waiting = self.finishing.lock().unwrap().get(handle).map(|(_, receiver)| receiver.clone());
+
+        if let Some(mut receiver) = waiting {
+            let outcome = receiver.wait_for(Option::is_some).await.map(|outcome| outcome.clone()).ok().flatten();
+
+            if let Some(Err(error)) = outcome {
+                bail!("{handle} could not be finished: {error}");
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Waits for every capture a session is still finishing: a session finishes one at a time.
+    pub(crate) async fn settled(&self, session: &str) {
+        let waiting: Vec<(String, Finished)> =
+            self.finishing.lock().unwrap().iter().filter(|(_, (owner, _))| owner == session).map(|(handle, (_, receiver))| (handle.clone(), receiver.clone())).collect();
+
+        for (_, mut receiver) in waiting {
+            let _ = receiver.wait_for(Option::is_some).await;
+        }
     }
 
     /// A session whose browser can replay a capture: the one named, or any that is open.
@@ -282,6 +336,7 @@ impl Host {
             "navigate" => commands::navigate(&live()?, &params).await,
             "close" => self.close(&params).await,
             "pause" => commands::pause(&live()?).await,
+            "emulate" => commands::emulate(&live()?, &params).await,
             "resume" => commands::resume(&live()?, &params).await,
             "step" => commands::step(&live()?, &params).await,
             "run_until" => commands::run_until(&live()?, &params).await,
@@ -311,7 +366,7 @@ impl Host {
             "save_run" => runs::save_run(self, &live()?).await,
             "replay_run" => runs::replay_run(self, &live()?, &params).await,
             "captures" => capture::captures(self, &params),
-            "export" => capture::export(self, &params),
+            "export" => capture::export(self, &params).await,
             "import" => capture::import(self, &params),
             "pass_tree" => capture::pass_tree(self, &params),
             "draw_list" => capture::draw_list(self, &params),

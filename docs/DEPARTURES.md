@@ -526,6 +526,14 @@ What has not been checked on Windows is in `docs/BY-HAND.md` under "On Windows":
 - **The replay page keeps blobs by their hash**, so a later capture of the same scene sends only what changed; a reused blob is copied, since a replay may write into what it is given.
 - Left: the page still sends every texture each time, unchanged or not. Asking the page to name a texture that has not changed since the last capture, rather than send it, would take most of what remains on a scene like this one.
 
+**`capture(quick: true)`**, added the same day at the owner's suggestion. Holding the frame and reading it in the page takes under a second; what takes the rest is moving the textures and replaying. On spider, 20 blobs over 256 KB (its textures) are 313 of its 322 MB. A quick capture brings the rest (the calls, the state at each draw, shaders, small buffers), writes the capture with its tables and returns: in 0.9 s on spider (was 11 to 13 s) and 2 s on adventure.sixfingerpunch.com (1,500 draws, 574 MB; was 17 to 18 s), on the Mac's release build. The large blobs follow in the background straight away, and then the replay check, what each draw changed and the findings that depend on them; the capture is written again with them, 10 to 12 s later on spider and 16 to 17 s on adventure.
+
+- The textures are brought at once, not when first wanted: they exist only in the page, read back at the moment of capture, and a reload or a closed tab would lose them; and the replay that checks the capture needs them.
+- Anything that replays a capture or reads its blobs (`pixel_source`, `draw`'s effect, screenshots at a draw, `pixels`, `export`) waits for them. `draw_list`, `query` and the tables answer at once. `draw(now: true)`, a control-API parameter the app uses, answers at once without the effect.
+- Until then the capture's `replay` says "still to come: …" and `pending` is true, and its summary says so in place of the replay check. `progress(session)` reports the background work, naming the capture (`busy.capture`).
+- A session finishes one capture at a time: a second capture waits for the first. If the page goes away first, the capture keeps its tables and says why it cannot be replayed.
+- Not the default for agents: a capture's first answer is meant to carry its replay check (spec 05, the capture tool). The app passes it.
+
 A capture names its stages as it goes. **`progress`** (a control-API method, not a tool: an agent's own call is waiting on the capture) reads them from the host without asking the page, and a capture's result gives each stage's time (`stages`).
 
 ## Added for the app on 12 November 2026

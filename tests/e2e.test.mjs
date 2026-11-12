@@ -841,6 +841,49 @@ describe('what was set up long before the frame', () =>
     });
 });
 
+describe('a quick capture', () =>
+{
+    // fixtures/history/large.html: one 16 MB texture, its left half red and its right half green.
+    test('returns before its textures are in, answers from its tables at once, and is replayed and checked after', async () =>
+    {
+        await scanline('launch', server.url('fixtures/history/large.html'), '--headless', '--paused');
+        await scanline('step', 2);
+
+        const taken = await scanline('capture', '--quick', '--json');
+        const capture = taken.json.data.capture;
+
+        assert.equal(taken.code, 0, taken.out);
+        assert.equal(taken.json.data.finishing.blobs, 1, taken.json.summary);
+        assert.ok(taken.json.data.finishing.bytes >= 16 * 1024 * 1024, taken.json.summary);
+        assert.match(taken.json.summary, /Replay check: still to come: one texture or large buffer \(16(\.\d)? MB\) is being brought from the page in the background/);
+        assert.match(taken.json.summary, /draw_list\(capture: "cap_\d+"\) answers now/);
+
+        // The tables answer without waiting.
+        assert.match((await scanline('draw_list', '--capture', capture)).out, /TRIANGLE_STRIP ×4/);
+
+        // Reading a pixel replays the frame, so it waits for the texture.
+        assert.deepEqual((await scanline('pixels', 40, 60, '--capture', capture, '--json')).json.data.rgba8, [255, 0, 0, 255]);
+        assert.deepEqual((await scanline('pixels', 120, 60, '--capture', capture, '--json')).json.data.rgba8, [0, 255, 0, 255]);
+
+        // The capture is now as one taken all at once: replayed, checked and measured.
+        const listed = (await scanline('captures', '--json')).json.data.captures.find((row) => row.capture === capture);
+
+        assert.equal(listed.replay, 'identical');
+        assert.notEqual(listed.pending, true);
+        assert.match((await scanline('draw_list', '--capture', capture)).out, /⇒ 19200 px/);
+        assert.match((await scanline('export', '--capture', capture)).out, /^Exported cap_\d+/);
+
+        // Without quick, the same frame comes back replayed and checked.
+        await scanline('step', 1);
+
+        const whole = await scanline('capture', '--json');
+
+        assert.equal(whole.json.data.replay, 'identical', whole.json.summary);
+        assert.equal(whole.json.data.finishing, undefined);
+        await scanline('stop');
+    });
+});
+
 describe('working with the person', () =>
 {
     test('ask, play, Debug: the frames before the press are kept and the flicker is found', async () =>
