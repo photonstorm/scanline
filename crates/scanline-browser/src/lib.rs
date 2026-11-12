@@ -149,7 +149,7 @@ pub fn find_app() -> Result<PathBuf> {
     // The command line inside the app's bundle (Scanline.app/Contents/MacOS/scanline-cli) uses its own app.
     if let Ok(me) = std::env::current_exe() {
         if let Some(folder) = me.parent() {
-            candidates.push(folder.join("Scanline"));
+            candidates.push(folder.join(if cfg!(windows) { "Scanline.exe" } else { "Scanline" }));
         }
     }
 
@@ -276,9 +276,21 @@ impl Browser {
 
     /// Resolves when the browser process has exited, with its exit code if it had one.
     pub async fn wait_exit(&self) -> Option<i32> {
-        let mut child = self.child.lock().await;
+        // Asked a few times a second rather than waited on, so that close() can always take
+        // the child: a watcher holding it would keep close waiting for an exit it asks for.
+        loop {
+            {
+                let mut child = self.child.lock().await;
 
-        child.wait().await.ok().and_then(|status| status.code())
+                match child.try_wait() {
+                    Ok(Some(status)) => return status.code(),
+                    Ok(None) => {}
+                    Err(_) => return None,
+                }
+            }
+
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
     }
 
     /// Closes the browser and deletes its profile directory.

@@ -16,8 +16,10 @@ import { repoRoot, serve } from '../spikes/lib/serve.mjs';
 
 import { binary, hostRunning } from './host.mjs';
 
-const app = join(repoRoot, 'app', 'target', 'Scanline.app');
-const skip = process.platform !== 'darwin' || !existsSync(join(app, 'Contents', 'MacOS', 'Scanline')) ? 'the app is not built (app/bundle.sh)' : false;
+// The bundle on a Mac; on Windows the folder app/bundle.ps1 makes, and its executable.
+const app = process.platform === 'win32' ? join(repoRoot, 'app', 'target', 'Scanline', 'Scanline.exe') : join(repoRoot, 'app', 'target', 'Scanline.app');
+const executable = process.platform === 'win32' ? app : join(app, 'Contents', 'MacOS', 'Scanline');
+const skip = !['darwin', 'win32'].includes(process.platform) || !existsSync(executable) ? 'the app is not built (app/bundle.sh, or app/bundle.ps1 on Windows)' : false;
 
 const home = mkdtempSync(join(tmpdir(), 'scanline-app-'));
 const env = { ...process.env, SCANLINE_HOME: home, SCANLINE_APP: app };

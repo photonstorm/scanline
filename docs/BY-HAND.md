@@ -240,7 +240,8 @@ node evals/run.mjs --agent 'claude -p --mcp-config /path/to/mcp.json --allowedTo
 7. **Resources.** Pick textures, buffers, shaders and programs. A texture's ◀ ▶ step through its levels; a buffer's page through it, and "as float32" reads it as numbers; a program's shader buttons open its shaders.
 8. **Console and Agent.** A page error turns the Console button's dot red until the panel is opened. In a terminal, run `scanline request_human --instruction "Press Debug"`: the Agent panel shows the request, the toolbar shows Debug and "You have the input"; press Debug (`⇧⌘D`) and `scanline wait --request req_1` returns the capture.
 9. **More windows.** `⌘N` opens a second window with a session of its own. Closing a window (`⌘W`, or its red button) ends its session: `scanline sessions` no longer lists it. `⌘Q` likewise.
-10. **An agent's session.** `scanline launch <url> --display app` from a terminal opens a window too, and `scanline viewer --show capture --capture cap_1 --draw 2` turns its panel to that draw.
+10. **A capture file.** `scanline export --capture cap_1 --path ~/Desktop/frame.scanline`, then double-click the file in the Finder: a window opens on its Captures panel with that capture. With a window already open, double-click it again: that window imports it and shows it.
+11. **An agent's session.** `scanline launch <url> --display app` from a terminal opens a window too, and `scanline viewer --show capture --capture cap_1 --draw 2` turns its panel to that draw.
 
 ## The desktop app prototype
 

@@ -11,10 +11,14 @@
 //!   in the app, which starts a player, and leaves.
 
 mod browser;
+mod channel;
 mod host;
 mod launcher;
-mod mac;
 mod panels;
+// Where CEF and GPUI meet in the platform's windows: AppKit, or on Windows Win32.
+#[cfg_attr(target_os = "macos", path = "mac.rs")]
+#[cfg_attr(windows, path = "win.rs")]
+mod platform;
 mod player;
 mod theme;
 
@@ -31,7 +35,9 @@ fn main() {
     let args = cef::args::Args::new();
 
     // Chromium's helpers run in its sandbox, as Chrome's do: it is entered before anything
-    // else is loaded, and lasts as long as the process.
+    // else is loaded, and lasts as long as the process. (On Windows the sandbox needs CEF's
+    // sandbox library linked in, which is not done yet: docs/HANDOVER.md, section 2a.)
+    #[cfg(target_os = "macos")]
     let _sandbox = helper.then(|| {
         let mut sandbox = cef::sandbox::Sandbox::new();
 
@@ -39,10 +45,15 @@ fn main() {
         sandbox
     });
 
-    // CEF's framework is loaded at run time on macOS, from inside the bundle.
-    let loader = cef::library_loader::LibraryLoader::new(&std::env::current_exe().expect("own path"), helper);
+    // CEF's framework is loaded at run time on macOS, from inside the bundle. On Windows
+    // libcef.dll beside the executable is linked as usual.
+    #[cfg(target_os = "macos")]
+    let loader = {
+        let loader = cef::library_loader::LibraryLoader::new(&std::env::current_exe().expect("own path"), helper);
 
-    assert!(loader.load(), "could not load the Chromium Embedded Framework from the app bundle");
+        assert!(loader.load(), "could not load the Chromium Embedded Framework from the app bundle");
+        loader
+    };
 
     let _ = cef::api_hash(cef::sys::CEF_API_VERSION_LAST, 0);
 
@@ -53,8 +64,9 @@ fn main() {
         std::process::exit(code);
     }
 
-    mac::make_application_chromium_compatible();
+    platform::make_application_chromium_compatible();
     player::run(args, app, player::Options::from(&argv));
 
+    #[cfg(target_os = "macos")]
     drop(loader);
 }

@@ -299,6 +299,34 @@ fn workspace(player: &mut Player, cx: &mut Context<Player>) -> gpui::Div {
             cx.notify();
         })));
 
+    // A note of the person's own, sent with the capture, draw and pixel.
+    let noting = player.noting;
+    let shown =
+        if player.note.is_empty() && !noting { "A note for the agent (optional), then Return or Send to agent".to_string() } else { player.note.clone() };
+    let note_field = div()
+        .id("note")
+        .track_focus(&player.note_focus)
+        .px_2()
+        .py(px(4.0))
+        .rounded_md()
+        .text_xs()
+        .bg(rgb(FIELD))
+        .border_1()
+        .border_color(tint(if noting { BLUE } else { FAINT }, 0.8))
+        .text_color(if player.note.is_empty() && !noting { rgb(DIM) } else { rgb(TEXT) })
+        .overflow_hidden()
+        .whitespace_nowrap()
+        .cursor_text()
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|this, _, window, cx| {
+                cx.stop_propagation();
+                this.start_noting(window, cx);
+            }),
+        )
+        .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| this.type_note(event, cx)))
+        .child(format!("{shown}{}", if noting { "▏" } else { "" }));
+
     let worth = (!findings.is_empty()).then(|| {
         card("Worth a look", RED).children(findings.into_iter().take(8).map(|finding| {
             let text = finding["text"].as_str().or(finding["summary"].as_str()).map(str::to_string).unwrap_or_else(|| finding.to_string());
@@ -501,7 +529,7 @@ fn workspace(player: &mut Player, cx: &mut Context<Player>) -> gpui::Div {
             .child(detail)
     };
 
-    div().flex().flex_col().gap_2().child(header).when(state.loading, |content| content.child(note("Reading the capture…"))).child(body)
+    div().flex().flex_col().gap_2().child(header).child(note_field).when(state.loading, |content| content.child(note("Reading the capture…"))).child(body)
 }
 
 pub fn render(player: &mut Player, _window: &mut Window, cx: &mut Context<Player>) -> AnyElement {

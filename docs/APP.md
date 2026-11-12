@@ -166,7 +166,7 @@ On macOS, Apple silicon. Windows and Linux are not built.
 
 **Stage 2, inspection: built.** Live (frame time, CPU and GPU time, work per frame, GPU memory, objects alive), Resources (by kind and size; texture levels, small textures enlarged by the host; a buffer's bytes as hex or float32, paged; a shader's source, log and translation; a program's uniforms, attributes and shaders), Captures (the list; a capture with "Worth a look", the target after the chosen draw, the draw list, the draw's state, a click on the picture for the pixel's story, Send to agent), Console and Agent (the activity log, the agent's request with Debug, who has the input).
 
-**Stage 3, finish: in part.** Built: menus and shortcuts, Open Recent, the icon, several windows (one session each), the look after the owner's reference. Not built: a light theme, a capture file opening the app when double-clicked, embedded-browser updates, signing and notarisation (the owner's), Windows, Linux.
+**Stage 3, finish: in part.** Built: menus and shortcuts, Open Recent, the icon, several windows (one session each), the look after the owner's reference, and a capture file (`.scanline`, from `export`) opening in the app when double-clicked: imported into the host and shown in a new window's Captures panel, or in the window already open. Written but never compiled: the Windows side (`app/src/win.rs`, `app/bundle.ps1`; HANDOVER.md, section 2a). Not built: a light theme, embedded-browser updates, signing and notarisation (the owner's), Linux.
 
 Decided while building, beyond the sections above:
 

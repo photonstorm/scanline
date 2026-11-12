@@ -17,8 +17,20 @@ pub struct State {
 }
 
 impl State {
-    pub fn receive(&mut self, data: &Value) {
-        let session_rows = data["activity"].as_array().cloned().unwrap_or_default();
+    /// The host's log covers every session: what names another session is left out.
+    pub fn receive(&mut self, data: &Value, session: Option<&str>) {
+        let mine = |row: &Value| {
+            let named = row["arguments"]
+                .as_str()
+                .and_then(|text| serde_json::from_str::<Value>(text).ok())
+                .and_then(|arguments| arguments["session"].as_str().map(str::to_string));
+
+            match (named, session) {
+                (Some(named), Some(session)) => named == session,
+                _ => true,
+            }
+        };
+        let session_rows: Vec<Value> = data["activity"].as_array().cloned().unwrap_or_default().into_iter().filter(mine).collect();
 
         self.rows.extend(session_rows);
 

@@ -28,6 +28,8 @@ The panels:
 - **Console**: the page's console by frame, repeats folded, filtered to warnings or errors.
 - **Agent**: every command an agent runs on the host, and what you do, newest first; and what the agent has asked of you, with Debug.
 
+A capture file (`.scanline`, written by `export`) opens in the app when double-clicked: it is imported into the host and shown in Captures, in a new window or the one already open.
+
 ## Agents
 
 An agent shows its session in the app with `launch(url, display: "app")`, or for every launch with `SCANLINE_DISPLAY=app` in the host's environment. `viewer(show: "capture", capture: "cap_2", draw: 14)` points the app's panels at something; `show` is `live`, `resources` (with `handle`), `capture`, `console` or `activity`.

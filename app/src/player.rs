@@ -21,7 +21,7 @@ use serde_json::{Value, json};
 use crate::host::{HostLink, Reply};
 use crate::panels::{self, Panel};
 use crate::theme::*;
-use crate::{browser, mac};
+use crate::{browser, platform};
 
 const TOOLBAR: f32 = 52.0;
 const STATUS: f32 = 28.0;
@@ -130,6 +130,8 @@ pub enum Purpose {
     Draw(String, i64),
     Target(String, i64),
     PixelSource(String, (u32, u32)),
+    /// A capture file opened from the Finder while this window was open.
+    Import,
     /// Something the person did, by the command's name: its summary goes in the status bar.
     #[allow(dead_code)]
     Action(&'static str),
@@ -154,6 +156,10 @@ impl Purpose {
 
 pub struct Player {
     pub focus: FocusHandle,
+    /// The note sent with Send to agent, and whether it has the keyboard.
+    pub note_focus: FocusHandle,
+    pub note: String,
+    pub noting: bool,
     gpui_view: *mut c_void,
     content_view: *mut c_void,
     game: Rc<Cell<Option<Bounds<Pixels>>>>,
@@ -195,8 +201,11 @@ impl Player {
 
         Player {
             focus: cx.focus_handle(),
+            note_focus: cx.focus_handle(),
+            note: String::new(),
+            noting: false,
             gpui_view,
-            content_view: mac::content_view(gpui_view),
+            content_view: platform::content_view(gpui_view),
             game: Rc::new(Cell::new(None)),
             address: if options.url == "about:blank" { String::new() } else { options.url.clone() },
             options,
@@ -252,7 +261,7 @@ impl Player {
             params["session"] = json!(session);
         }
 
-        let by = if matches!(purpose, Purpose::Action(_) | Purpose::Capture) { "person" } else { "viewer" };
+        let by = if matches!(purpose, Purpose::Action(_) | Purpose::Capture | Purpose::Import) { "person" } else { "viewer" };
         let id = self.host.call(method, params, by);
 
         self.pending.insert(id, purpose);
@@ -324,7 +333,11 @@ impl Player {
             (Purpose::Stats, Ok(value)) => self.live.stats(&value["data"]),
             (Purpose::Memory, Ok(value)) => self.live.memory(&value),
             (Purpose::Console, Ok(value)) => self.console.receive(&value["data"]),
-            (Purpose::Activity, Ok(value)) => self.agent.receive(&value["data"]),
+            (Purpose::Activity, Ok(value)) => {
+                let session = self.options.session.clone();
+
+                self.agent.receive(&value["data"], session.as_deref());
+            }
             (Purpose::Captures, Ok(value)) => self.captures.list(&value["data"]),
             (Purpose::ResourceCounts, Ok(value)) => self.resources.counts(&value["data"]),
             (Purpose::Resources(kind), Ok(value)) => self.resources.rows(&kind, &value["data"]),
@@ -348,6 +361,13 @@ impl Player {
             (Purpose::Draw(capture, draw), Ok(value)) => self.captures.draw(&capture, draw, &value["data"]),
             (Purpose::Target(capture, draw), Ok(value)) => self.captures.target(&capture, draw, &value),
             (Purpose::PixelSource(capture, pixel), Ok(value)) => self.captures.story(&capture, pixel, &value),
+            (Purpose::Import, Ok(value)) => {
+                self.say(value["summary"].as_str().unwrap_or("Opened.").lines().next().unwrap_or(""), false);
+
+                if let Some(capture) = value["data"]["capture"].as_str() {
+                    self.open_capture(capture.to_string(), cx);
+                }
+            }
             (Purpose::Draw(capture, draw), Err(error)) | (Purpose::Target(capture, draw), Err(error)) => self.captures.failed(&capture, draw, error),
             (Purpose::Action(_), Ok(value)) => {
                 let summary = value["summary"].as_str().unwrap_or("Done.").lines().next().unwrap_or("").to_string();
@@ -356,7 +376,7 @@ impl Player {
             }
             // Upkeep that fails (the host still registering the session, say) is tried again
             // on the next turn; only what the person did is worth telling them about.
-            (Purpose::Action(_) | Purpose::Capture | Purpose::DrawList(_), Err(error)) => self.say(&error, true),
+            (Purpose::Action(_) | Purpose::Capture | Purpose::DrawList(_) | Purpose::Import, Err(error)) => self.say(&error, true),
             (_, Err(_)) => {}
         }
 
@@ -421,7 +441,7 @@ impl Player {
         self.address = address.clone();
         self.remember(&address);
         self.ask("navigate", json!({ "url": address }), Purpose::Action("navigate"));
-        mac::focus(self.browser_view);
+        platform::focus(self.browser_view);
     }
 
     pub fn reload(&mut self) {
@@ -514,6 +534,13 @@ impl Player {
         if let Some((x, y)) = self.captures.pixel {
             chosen["pixel"] = json!({ "x": x, "y": y });
         }
+
+        if !self.note.trim().is_empty() {
+            chosen["note"] = json!(self.note.trim());
+        }
+
+        self.note.clear();
+        self.noting = false;
 
         self.ask("send_to_agent", chosen, Purpose::Action("send_to_agent"));
     }
@@ -609,7 +636,22 @@ impl Player {
         }
 
         if let Some(bounds) = self.game.get() {
-            mac::place(self.browser_view, f64::from(bounds.origin.x), f64::from(bounds.origin.y), f64::from(bounds.size.width), f64::from(bounds.size.height));
+            platform::place(
+                self.browser_view,
+                f64::from(bounds.origin.x),
+                f64::from(bounds.origin.y),
+                f64::from(bounds.size.width),
+                f64::from(bounds.size.height),
+            );
+        }
+
+        // Capture files opened from the Finder while this window was open.
+        let opened: Vec<String> = OPENED.lock().map(|mut opened| opened.drain(..).collect()).unwrap_or_default();
+
+        for url in opened {
+            if let Some(path) = crate::launcher::file_path(&url) {
+                self.ask("import", json!({ "path": path.display().to_string() }), Purpose::Import);
+            }
         }
 
         for (id, reply) in self.host.drain() {
@@ -634,12 +676,12 @@ impl Player {
 
                 let name = self.options.session.as_deref().unwrap_or("window").to_string();
 
-                mac::snapshot(self.gpui_view, &folder.join(format!("{name}.png")));
+                platform::snapshot(self.gpui_view, &folder.join(format!("{name}.png")));
 
                 // Where Chromium's view is, against where the game should be: a picture of
                 // one's own window leaves out what the GPU process draws.
                 let game = self.game.get().map(|b| [f32::from(b.origin.x), f32::from(b.origin.y), f32::from(b.size.width), f32::from(b.size.height)]);
-                let placed = json!({ "game": game, "browser_view": mac::frame(self.browser_view), "content": mac::frame(self.content_view), "panel": format!("{:?}", self.panel) });
+                let placed = json!({ "game": game, "browser_view": platform::frame(self.browser_view), "content": platform::frame(self.content_view), "panel": format!("{:?}", self.panel) });
 
                 let _ = std::fs::write(folder.join(format!("{name}.json")), placed.to_string());
             }
@@ -692,6 +734,52 @@ impl Player {
         );
     }
 
+    /// Typing into the note sent with Send to agent.
+    pub fn type_note(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
+        let keystroke = &event.keystroke;
+
+        if keystroke.modifiers.platform {
+            match keystroke.key.as_str() {
+                "v" => {
+                    if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+                        self.note.push_str(text.trim());
+                    }
+                }
+                "a" | "backspace" => self.note.clear(),
+                _ => return,
+            }
+        } else {
+            match keystroke.key.as_str() {
+                "enter" => self.send_to_agent(),
+                "escape" => {
+                    self.noting = false;
+                    platform::focus(self.browser_view);
+                }
+                "backspace" => {
+                    self.note.pop();
+                }
+                _ => {
+                    if let Some(text) = &keystroke.key_char {
+                        if self.note.chars().count() < 400 {
+                            self.note.push_str(text);
+                        }
+                    }
+                }
+            }
+        }
+
+        cx.stop_propagation();
+        cx.notify();
+    }
+
+    pub fn start_noting(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.noting = true;
+        self.editing = false;
+        platform::focus(self.gpui_view);
+        window.focus(&self.note_focus);
+        cx.notify();
+    }
+
     fn type_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
         let keystroke = &event.keystroke;
 
@@ -714,7 +802,7 @@ impl Player {
                 "enter" => self.go(),
                 "escape" => {
                     self.editing = false;
-                    mac::focus(self.browser_view);
+                    platform::focus(self.browser_view);
                 }
                 "backspace" => {
                     self.address.pop();
@@ -737,7 +825,7 @@ impl Player {
             self.address.clear();
         }
 
-        mac::focus(self.gpui_view);
+        platform::focus(self.gpui_view);
         window.focus(&self.focus);
         cx.notify();
     }
@@ -800,8 +888,8 @@ impl Player {
             .items_center()
             .gap_2()
             .h(px(TOOLBAR))
-            // Room for the window's buttons, which sit over the bar.
-            .pl(px(84.0))
+            // Room for the window's buttons, which sit over the bar on a Mac.
+            .pl(px(if cfg!(target_os = "macos") { 84.0 } else { 12.0 }))
             .pr_3()
             .border_b_1()
             .border_color(tint(FAINT, 0.6))
@@ -950,6 +1038,9 @@ pub fn trim(value: f64) -> String {
 
 // ── Start ─────────────────────────────────────────────────────────────────────────────────
 
+/// Files the system asked this process to open, for the window to take on its next turn.
+static OPENED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
 /// The one window this process has, for the menu bar's actions.
 struct Current(WindowHandle<Player>);
 
@@ -1085,11 +1176,15 @@ fn bind(cx: &mut App) {
 }
 
 pub fn run(args: cef::args::Args, mut app: cef::App, options: Options) {
-    Application::new().run(move |cx: &mut App| {
+    let application = Application::new();
+
+    application.on_open_urls(|urls| OPENED.lock().unwrap().extend(urls));
+    application.run(move |cx: &mut App| {
         let cache = options.cache.clone().unwrap_or_else(|| std::env::temp_dir().join("scanline-app-cache"));
         let settings = cef::Settings {
-            // The helpers enter Chromium's sandbox themselves (main.rs).
-            no_sandbox: 0,
+            // On macOS the helpers enter Chromium's sandbox themselves (main.rs). On Windows the
+            // sandbox library is not linked yet.
+            no_sandbox: if cfg!(windows) { 1 } else { 0 },
             external_message_pump: 1,
             root_cache_path: cef::CefString::from(cache.to_string_lossy().as_ref()),
             ..Default::default()
@@ -1111,9 +1206,11 @@ pub fn run(args: cef::args::Args, mut app: cef::App, options: Options) {
             .open_window(
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    // On a Mac the bar is the toolbar, with the window's buttons over it. Windows
+                    // keeps its own title bar, with its own buttons.
                     titlebar: Some(TitlebarOptions {
                         title: Some("Scanline".into()),
-                        appears_transparent: true,
+                        appears_transparent: cfg!(target_os = "macos"),
                         traffic_light_position: Some(point(px(16.0), px(18.0))),
                     }),
                     window_min_size: Some(size(px(900.0), px(520.0))),
@@ -1122,7 +1219,8 @@ pub fn run(args: cef::args::Args, mut app: cef::App, options: Options) {
                 move |window, cx| {
                     let view = match window.window_handle().map(|handle| handle.as_raw()) {
                         Ok(RawWindowHandle::AppKit(handle)) => handle.ns_view.as_ptr(),
-                        _ => panic!("expected an AppKit window"),
+                        Ok(RawWindowHandle::Win32(handle)) => handle.hwnd.get() as *mut std::ffi::c_void,
+                        _ => panic!("expected an AppKit or a Win32 window"),
                     };
 
                     cx.new(|cx| Player::new(options, view, cx))

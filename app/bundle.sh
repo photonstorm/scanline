@@ -60,6 +60,28 @@ plist () {
     <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
     <key>LSEnvironment</key><dict><key>MallocNanoZone</key><string>0</string></dict>
 $( [ -n "$4" ] && echo "    <key>LSUIElement</key><string>1</string>" )
+$( [ -z "$4" ] && cat <<'TYPES'
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key><string>Scanline capture</string>
+            <key>CFBundleTypeRole</key><string>Viewer</string>
+            <key>LSHandlerRank</key><string>Owner</string>
+            <key>LSItemContentTypes</key><array><string>org.scanline.capture</string></array>
+        </dict>
+    </array>
+    <key>UTExportedTypeDeclarations</key>
+    <array>
+        <dict>
+            <key>UTTypeIdentifier</key><string>org.scanline.capture</string>
+            <key>UTTypeDescription</key><string>Scanline capture</string>
+            <key>UTTypeConformsTo</key><array><string>public.data</string></array>
+            <key>UTTypeTagSpecification</key>
+            <dict><key>public.filename-extension</key><array><string>scanline</string></array></dict>
+        </dict>
+    </array>
+TYPES
+)
 </dict>
 </plist>
 PLIST

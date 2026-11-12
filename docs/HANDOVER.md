@@ -100,7 +100,7 @@ It is described in `DEPARTURES.md` under "Windows". Not done:
 
 ## 2a. The Scanline app on Windows
 
-The app (`app/`) was built and tested on the Mac only. What is Mac-only in it, and what each needs on Windows:
+The app (`app/`) was built and tested on the Mac only. **The Windows side has since been written on the Mac and never compiled**: `app/src/win.rs` (the browser's child window placed with `SetWindowPos`), `app/src/channel.rs` (the named pipe, one connection per request), the launcher's `MessageBoxW`, the platform switches in `main.rs` and `player.rs`, and `app/bundle.ps1`. Expect it not to build at the first try. What was Mac-only, and what each part does on Windows:
 
 - **`app/src/mac.rs`**: two things. Chromium's `CrAppControlProtocol` on GPUI's application class has no Windows counterpart: drop it. Placing the browser's view becomes placing a child window: CEF's `window_info.set_as_child(parent_hwnd, rect)` already does Windows (`WS_CHILD`), with GPUI's HWND from `raw-window-handle` (`RawWindowHandle::Win32`); then `SetWindowPos` on `host.window_handle()` each turn, as `place` does with `setFrame`. Coordinates are from the top left already, in physical pixels (multiply GPUI's by the window's scale factor). `snapshot` can be left out.
 - **`app/src/main.rs`**: CEF's library loader and sandbox (`cef::library_loader`, `cef::sandbox`) are macOS only. On Windows `libcef.dll` sits beside the executable and is linked normally; the sandbox there needs `cef_sandbox.lib` and a `sandbox_info` passed to `execute_process` and `initialize` (`cef-dll-sys` has a `sandbox` feature for it). Start without the sandbox if need be and record it in `DEPARTURES.md`.
@@ -108,7 +108,7 @@ The app (`app/`) was built and tested on the Mac only. What is Mac-only in it, a
 - **`app/src/launcher.rs`**: `osascript` for the error dialogue becomes `MessageBoxW`. The start page and the command line are found beside the executable rather than in a bundle's `Resources`.
 - **`app/bundle.sh`** becomes a PowerShell script assembling `app\target\Scanline\`: `Scanline.exe`, `scanline-cli.exe` (file names ignore case on Windows too), CEF's DLLs, `.pak` files, `locales\` and `icudtl.dat` from the Windows CEF (175 MB, `cef_binary_156.0.26+g8ea0c73+chromium-156.0.8078.88_windows64_minimal.tar.bz2`, which the build downloads into `CEF_PATH`), and `start.html`. Chromium's helpers are the same `Scanline.exe` on Windows; no helper apps. `find_app` already looks in `%LOCALAPPDATA%\Programs\Scanline\Scanline.exe`.
 - **Building** needs cmake and ninja (for CEF's C++ wrapper) and the MSVC tools the host already builds with. GPUI on Windows draws with Direct3D 11 and compiles its shaders with `fxc`: check whether `runtime_shaders` applies there.
-- Then `npm run test:app` (it skips on anything but macOS: change its `skip` once the PC build exists), and the app checks in `BY-HAND.md`, on the PC.
+- Then `npm run test:app`, which looks for `app\target\Scanline\Scanline.exe` on Windows and runs once it is there, and the app checks in `BY-HAND.md`, on the PC.
 
 ## 3. The PlayCanvas adapter: built, and what it left
 
