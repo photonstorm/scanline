@@ -194,6 +194,7 @@ pub struct Player {
     pub console: panels::console::State,
     pub agent: panels::agent::State,
     shown_seq: u64,
+    shown_title: String,
 }
 
 impl Player {
@@ -234,6 +235,7 @@ impl Player {
             console: Default::default(),
             agent: Default::default(),
             shown_seq: 0,
+            shown_title: String::new(),
         }
     }
 
@@ -753,7 +755,10 @@ impl Player {
             (None, _) => "Scanline".to_string(),
         };
 
-        window.set_window_title(&title);
+        if title != self.shown_title {
+            window.set_window_title(&title);
+            self.shown_title = title;
+        }
 
         if self.menus_stale {
             self.menus_stale = false;
@@ -1290,12 +1295,19 @@ pub fn run(args: cef::args::Args, mut app: cef::App, options: Options) {
 
         cx.set_global(Current(window));
 
-        // The message pump: CEF's work, then the window's. CEF asks for work through
-        // OnScheduleMessagePumpWork; a steady 4 ms turn serves as well and keeps input prompt.
+        // The message pump: CEF's work when it asks for it (OnScheduleMessagePumpWork), and at
+        // least every 20 ms; then the window's own turn.
         cx.spawn(async move |cx| {
+            let mut worked = Instant::now();
+
             loop {
                 cx.background_executor().timer(Duration::from_millis(4)).await;
-                cef::do_message_loop_work();
+
+                if browser::work_due(worked, Duration::from_millis(20)) {
+                    browser::work_done();
+                    cef::do_message_loop_work();
+                    worked = Instant::now();
+                }
 
                 let turned = window.update(cx, |this, window, cx| this.tick(window, cx));
 

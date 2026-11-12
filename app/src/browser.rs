@@ -6,6 +6,8 @@
 //! side only creates the browser and reports what it sees for the window's title and bar.
 
 use std::cell::RefCell;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use cef::*;
 
@@ -24,6 +26,27 @@ thread_local! {
     pub static INBOX: RefCell<Inbox> = RefCell::new(Inbox::default());
 }
 
+/// When CEF next wants its work done, in microseconds from START (0: as soon as possible).
+/// CEF says so from any thread, through OnScheduleMessagePumpWork.
+static WORK_DUE: AtomicU64 = AtomicU64::new(0);
+static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+
+fn now() -> u64 {
+    START.get_or_init(Instant::now).elapsed().as_micros() as u64
+}
+
+/// Whether CEF's work is due: asked for and its time come, or `fallback` since it was last done.
+pub fn work_due(last: Instant, fallback: Duration) -> bool {
+    let due = WORK_DUE.load(Ordering::Relaxed);
+
+    (due != u64::MAX && now() >= due) || last.elapsed() >= fallback
+}
+
+/// CEF's work done: nothing more is due until it asks again.
+pub fn work_done() {
+    WORK_DUE.store(u64::MAX, Ordering::Relaxed);
+}
+
 fn inbox(f: impl FnOnce(&mut Inbox)) {
     INBOX.with(|inbox| f(&mut inbox.borrow_mut()));
 }
@@ -34,6 +57,13 @@ wrap_browser_process_handler! {
     impl BrowserProcessHandler {
         fn on_context_initialized(&self) {
             inbox(|inbox| inbox.context_ready = true);
+        }
+
+        fn on_schedule_message_pump_work(&self, delay_ms: i64) {
+            let at = now() + (delay_ms.max(0) as u64) * 1000;
+
+            // The soonest request wins.
+            let _ = WORK_DUE.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |due| Some(due.min(at)));
         }
     }
 }
