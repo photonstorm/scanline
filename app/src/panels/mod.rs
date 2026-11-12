@@ -3,6 +3,7 @@
 pub mod agent;
 pub mod captures;
 pub mod console;
+pub mod experiments;
 pub mod live;
 pub mod resources;
 
@@ -16,18 +17,20 @@ pub enum Panel {
     Live,
     Resources,
     Captures,
+    Experiments,
     Console,
     Agent,
 }
 
 impl Panel {
-    const ALL: [Panel; 5] = [Panel::Live, Panel::Resources, Panel::Captures, Panel::Console, Panel::Agent];
+    const ALL: [Panel; 6] = [Panel::Live, Panel::Resources, Panel::Captures, Panel::Experiments, Panel::Console, Panel::Agent];
 
     fn glyph(self) -> &'static str {
         match self {
             Panel::Live => "∿",
             Panel::Resources => "▦",
             Panel::Captures => "◉",
+            Panel::Experiments => "⚗",
             Panel::Console => "≡",
             Panel::Agent => "✦",
         }
@@ -38,6 +41,7 @@ impl Panel {
             Panel::Live => "Live",
             Panel::Resources => "Resources",
             Panel::Captures => "Captures",
+            Panel::Experiments => "Experiment",
             Panel::Console => "Console",
             Panel::Agent => "Agent",
         }
@@ -48,6 +52,7 @@ impl Panel {
             Panel::Live => GREEN,
             Panel::Resources => AMBER,
             Panel::Captures => PURPLE,
+            Panel::Experiments => ORANGE,
             Panel::Console => CYAN,
             Panel::Agent => BLUE,
         }
@@ -59,9 +64,10 @@ pub fn rail(player: &mut Player, cx: &mut Context<Player>) -> impl IntoElement {
     let current = player.panel;
     let errors = player.console.errors_unseen;
     let asked = player.status["request"].is_object();
+    let changed = !player.experiments.patches.is_empty();
 
     div()
-        .w(px(62.0))
+        .w(px(66.0))
         .flex_none()
         .flex()
         .flex_col()
@@ -78,13 +84,14 @@ pub fn rail(player: &mut Player, cx: &mut Context<Player>) -> impl IntoElement {
             let badge = match panel {
                 Panel::Console if errors > 0 => Some(RED),
                 Panel::Agent if asked => Some(AMBER),
+                Panel::Experiments if changed => Some(ORANGE),
                 _ => None,
             };
 
             div()
                 .id(panel.name())
                 .relative()
-                .w(px(54.0))
+                .w(px(60.0))
                 .py_1p5()
                 .flex()
                 .flex_col()
@@ -110,6 +117,7 @@ pub fn render(player: &mut Player, window: &mut Window, cx: &mut Context<Player>
         Panel::Live => live::render(player, window, cx),
         Panel::Resources => resources::render(player, window, cx),
         Panel::Captures => captures::render(player, window, cx),
+        Panel::Experiments => experiments::render(player, window, cx),
         Panel::Console => console::render(player, window, cx),
         Panel::Agent => agent::render(player, window, cx),
     }

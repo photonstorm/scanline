@@ -34,6 +34,9 @@ export interface Rec extends Counters
 
     // The tracker for the context this record belongs to (gl/tracker.ts), once it has one.
     x: unknown;
+
+    // The vertices the last draw drew (count × instances), or -1 where it did not say.
+    lastVertices: number;
 }
 
 export interface Hub
@@ -72,7 +75,7 @@ export function lastCalls (record: Rec): string[]
 
 export function newRecord (): Rec
 {
-    const record: any = { rec: null, gate: null, after: null, before: null, keptAtCalls: -1, x: null, tail: new Int16Array(16).fill(-1) };
+    const record: any = { rec: null, gate: null, after: null, before: null, keptAtCalls: -1, x: null, lastVertices: -1, tail: new Int16Array(16).fill(-1) };
 
     for (const name of COUNTERS)
     {
@@ -137,6 +140,7 @@ export const hub: Hub = {
 
         record.draws++;
         record.instances += copies;
+        record.lastVertices = count > 0 ? count * copies : -1;
 
         if (count > 0)
         {

@@ -63,7 +63,7 @@ wrap_browser_process_handler! {
             let at = now() + (delay_ms.max(0) as u64) * 1000;
 
             // The soonest request wins.
-            let _ = WORK_DUE.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |due| Some(due.min(at)));
+            let _ = WORK_DUE.try_update(Ordering::Relaxed, Ordering::Relaxed, |due| Some(due.min(at)));
         }
     }
 }

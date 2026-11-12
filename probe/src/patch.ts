@@ -105,6 +105,13 @@ interface Patched
     clears: number;         // the context's counts of clears and blits as the frame began
     blits: number;
     restores: Array<() => void>;
+    // For the wireframe view: the program of the last draw, and which programs have drawn more
+    // than a full-screen quad. A program that never has is a pass over the whole target (a
+    // post effect, the final composite), and is drawn filled, so that what earlier passes drew
+    // as outlines shows through it.
+    previous?: number;
+    large?: Set<number>;
+    small?: Set<number>;
 }
 
 const patched = new G.Map() as Map<number, Patched>;
@@ -310,6 +317,23 @@ function gate (c: Rec, gl: unknown): boolean
     const program = t.program ? entryOf(t.program)?.id : undefined;
     const n = t.info.natives;
 
+    // What the last draw drew, now that it is known, for the wireframe view.
+    if (state.previous !== undefined)
+    {
+        const vertices = (c as Rec & { lastVertices: number }).lastVertices;
+
+        if (vertices > 6)
+        {
+            (state.large ??= new G.Set()).add(state.previous);
+        }
+        else if (vertices > 0)
+        {
+            (state.small ??= new G.Set()).add(state.previous);
+        }
+    }
+
+    state.previous = program;
+
     // Whether it is drawn at all comes first: nothing is changed for a draw that is dropped.
     let isolating = false;
     let isolated = false;
@@ -349,6 +373,18 @@ function gate (c: Rec, gl: unknown): boolean
     const restores = state.restores;
 
     restores.length = 0;
+
+    // A full-screen pass under the wireframe view is drawn filled.
+    if (program !== undefined && state.small?.has(program) && !state.large?.has(program) && state.patches.some((patch) => patch.view === 'wireframe'))
+    {
+        const mode = n.getExtension.call(gl, 'WEBGL_polygon_mode');
+
+        if (mode)
+        {
+            mode.polygonModeWEBGL(0x0408, 0x1B02);
+            restores.push(() => mode.polygonModeWEBGL(0x0408, 0x1B01));
+        }
+    }
 
     for (const patch of state.patches)
     {
@@ -514,7 +550,8 @@ function onUniform (slot: UniformSlot): void
 
 function wire (state: Patched): void
 {
-    const drawn = state.patches.some((patch) => patch.kind !== 'uniform' && patch.view !== 'wireframe');
+    // The wireframe view needs the gate too, to leave full-screen passes filled.
+    const drawn = state.patches.some((patch) => patch.kind !== 'uniform');
 
     state.info.record.gate = drawn ? gate : null;
 

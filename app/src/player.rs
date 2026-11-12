@@ -26,7 +26,9 @@ use crate::{browser, platform};
 const TOOLBAR: f32 = 52.0;
 const STATUS: f32 = 28.0;
 pub const PANEL: f32 = 470.0;
-const RAIL: f32 = 62.0;
+const RAIL: f32 = 66.0;
+/// The bar between the game and the panels, dragged to share the window between them.
+const DIVIDER: f32 = 6.0;
 
 actions!(
     scanline,
@@ -44,11 +46,14 @@ actions!(
         ShowLive,
         ShowResources,
         ShowCaptures,
+        ShowExperiments,
         ShowConsole,
         ShowAgent,
         ToggleWide,
         SlowDown,
         SpeedUp,
+        Screenshot,
+        ToggleVideo,
         OpenRecent0,
         OpenRecent1,
         OpenRecent2,
@@ -108,9 +113,19 @@ impl From<&Vec<String>> for Options {
 }
 
 fn default_home() -> PathBuf {
-    std::env::var_os("SCANLINE_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join("Library/Application Support/Scanline"))
+    crate::channel::home()
+}
+
+/// A copy of a file the host wrote, on the person's desktop, named for when it was made.
+fn to_desktop(source: &std::path::Path, what: &str) -> Option<PathBuf> {
+    let desktop = PathBuf::from(std::env::var_os("HOME")?).join("Desktop");
+    let extension = source.extension()?.to_string_lossy().to_string();
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
+    let target = desktop.join(format!("Scanline {what} {stamp}.{extension}"));
+
+    std::fs::copy(source, &target).ok()?;
+
+    Some(target)
 }
 
 /// What a reply from the host is for.
@@ -134,6 +149,22 @@ pub enum Purpose {
     Import,
     Recording(String),
     Texel(String, (u32, u32)),
+    /// How far a long job (a capture, a video) has got.
+    Progress,
+    Thumbnails,
+    Shot,
+    VideoStart,
+    VideoStop,
+    /// A switch the person turned on, by its key, and one turned off.
+    Patched(String),
+    Reverted,
+    Patches,
+    ExperimentPrograms,
+    ExperimentTextures,
+    Measure,
+    View,
+    /// A shader's source, to edit in the person's own editor.
+    EditSource(String, String),
     /// Something the person did, by the command's name: its summary goes in the status bar.
     #[allow(dead_code)]
     Action(&'static str),
@@ -151,6 +182,11 @@ impl Purpose {
             Purpose::Captures => "captures",
             Purpose::ResourceCounts => "resource-counts",
             Purpose::Resources(_) => "resources",
+            Purpose::Progress => "progress",
+            Purpose::Thumbnails => "thumbnails",
+            Purpose::Patches => "patches",
+            Purpose::ExperimentPrograms => "experiment-programs",
+            Purpose::ExperimentTextures => "experiment-textures",
             _ => return None,
         })
     }
@@ -193,6 +229,14 @@ pub struct Player {
     pub captures: panels::captures::State,
     pub console: panels::console::State,
     pub agent: panels::agent::State,
+    pub experiments: panels::experiments::State,
+    /// The panel's width: as the person dragged it, or half the window. panel_px is what it
+    /// was drawn at, for the panels to lay themselves out by.
+    pub panel_width: Option<f32>,
+    pub panel_px: f32,
+    dragging: bool,
+    /// A long job under way (a capture, a video), as progress() describes it.
+    pub busy: Value,
     shown_seq: u64,
     shown_title: String,
 }
@@ -201,6 +245,7 @@ impl Player {
     fn new(options: Options, gpui_view: *mut c_void, cx: &mut Context<Self>) -> Self {
         let host = HostLink::open(&options.home);
         let recent = load_recent(&options.home);
+        let panel_width = load_layout(&options.home);
 
         Player {
             focus: cx.focus_handle(),
@@ -234,6 +279,11 @@ impl Player {
             captures: Default::default(),
             console: Default::default(),
             agent: Default::default(),
+            experiments: Default::default(),
+            panel_width,
+            panel_px: PANEL,
+            dragging: false,
+            busy: Value::Null,
             shown_seq: 0,
             shown_title: String::new(),
         }
@@ -265,7 +315,23 @@ impl Player {
             params["session"] = json!(session);
         }
 
-        let by = if matches!(purpose, Purpose::Action(_) | Purpose::Capture | Purpose::Import) { "person" } else { "viewer" };
+        let by = if matches!(
+            purpose,
+            Purpose::Action(_)
+                | Purpose::Capture
+                | Purpose::Import
+                | Purpose::Shot
+                | Purpose::VideoStart
+                | Purpose::VideoStop
+                | Purpose::Patched(_)
+                | Purpose::Reverted
+                | Purpose::Measure
+                | Purpose::View
+        ) {
+            "person"
+        } else {
+            "viewer"
+        };
         let id = self.host.call(method, params, by);
 
         self.pending.insert(id, purpose);
@@ -307,6 +373,51 @@ impl Player {
         if self.panel == Panel::Captures && self.due("captures", Duration::from_millis(2000)) {
             self.ask("captures", json!({ "limit": 100 }), Purpose::Captures);
         }
+
+        // A long job's progress, while one is under way.
+        if self.pending.values().any(|purpose| matches!(purpose, Purpose::Capture | Purpose::VideoStop)) {
+            if self.due("progress", Duration::from_millis(300)) {
+                self.ask("progress", json!({}), Purpose::Progress);
+            }
+        } else if !self.busy.is_null() {
+            self.busy = Value::Null;
+        }
+
+        if self.panel == Panel::Experiments {
+            if self.due("patches", Duration::from_millis(1500)) {
+                self.ask("patches", json!({}), Purpose::Patches);
+            }
+
+            if self.due("experiment-programs", Duration::from_millis(4000)) {
+                let kind = if self.status["contexts"].as_array().and_then(|contexts| contexts.first()).is_some_and(|context| context["api"] == "webgpu") {
+                    "pipeline"
+                } else {
+                    "program"
+                };
+
+                self.ask("resources", json!({ "kind": kind, "sort": "last_used", "limit": 200 }), Purpose::ExperimentPrograms);
+            }
+
+            if self.due("experiment-textures", Duration::from_millis(4000)) {
+                self.ask("resources", json!({ "kind": "texture", "sort": "bytes", "limit": 200 }), Purpose::ExperimentTextures);
+            }
+        }
+
+        // The gallery's pictures, a few at a time, so they arrive as they are made.
+        if matches!(self.panel, Panel::Resources | Panel::Experiments) && !self.polling.contains("thumbnails") {
+            if self.panel == Panel::Experiments && self.resources.list.is_empty() {
+                self.resources.list = self.experiments.textures.clone();
+            }
+
+            let wanted = self.resources.wanted_thumbs(4);
+
+            if !wanted.is_empty() {
+                self.ask("thumbnails", json!({ "handles": wanted, "max_edge": 256 }), Purpose::Thumbnails);
+            }
+        }
+
+        // A shader open in the person's editor: each save is tried in the game.
+        self.watch_shader_edit();
 
         if self.panel == Panel::Resources {
             if self.due("resource-counts", Duration::from_millis(2500)) {
@@ -378,6 +489,70 @@ impl Player {
                     });
                 }
             }
+            (Purpose::Progress, Ok(value)) => self.busy = value["data"]["busy"].clone(),
+            (Purpose::Thumbnails, Ok(value)) => self.resources.got_thumbs(&value["data"]),
+            (Purpose::Shot, Ok(value)) => {
+                let path = value["images"][0]["original"].as_str().or(value["images"][0]["view"].as_str()).map(PathBuf::from);
+
+                match path.as_deref().and_then(|path| to_desktop(path, "screenshot")) {
+                    Some(saved) => self.say(
+                        &format!("Screenshot saved to the desktop: {}", saved.file_name().map(|name| name.to_string_lossy().to_string()).unwrap_or_default()),
+                        false,
+                    ),
+                    None => self.say("The screenshot was taken but could not be copied to the desktop.", true),
+                }
+            }
+            (Purpose::VideoStart, Ok(_)) => self.say("Recording a video: the last ten seconds are kept. Press Stop to save it.", false),
+            (Purpose::VideoStop, Ok(value)) => match value["data"]["video"].as_str().map(PathBuf::from).as_deref().and_then(|path| to_desktop(path, "video")) {
+                Some(saved) => self.say(
+                    &format!("Video saved to the desktop: {}", saved.file_name().map(|name| name.to_string_lossy().to_string()).unwrap_or_default()),
+                    false,
+                ),
+                None => self.say(value["summary"].as_str().unwrap_or("No video was made.").lines().next().unwrap_or(""), true),
+            },
+            (Purpose::Patched(key), Ok(value)) => {
+                self.experiments.waiting.remove(&key);
+
+                if let Some(patch) = value["data"]["patch"].as_str() {
+                    self.experiments.active.insert(key, patch.to_string());
+                }
+
+                self.say(value["summary"].as_str().unwrap_or("").lines().next().unwrap_or(""), false);
+                self.last.remove("patches");
+            }
+            (Purpose::Patched(key), Err(error)) => {
+                self.experiments.waiting.remove(&key);
+                self.say(&error, true);
+            }
+            (Purpose::Reverted, Ok(_)) => {
+                self.last.remove("patches");
+            }
+            (Purpose::View, Ok(value)) => {
+                self.experiments.waiting.remove("view");
+
+                match value["data"]["patch"].as_str() {
+                    Some(patch) if !self.experiments.view.is_empty() => {
+                        self.experiments.active.insert("view".to_string(), patch.to_string());
+                    }
+                    _ => {
+                        self.experiments.active.remove("view");
+                    }
+                }
+
+                self.last.remove("patches");
+            }
+            (Purpose::Patches, Ok(value)) => self.experiments.listed(&value["data"]),
+            (Purpose::ExperimentPrograms, Ok(value)) => self.experiments.programs = value["data"]["rows"].as_array().cloned().unwrap_or_default(),
+            (Purpose::ExperimentTextures, Ok(value)) => self.experiments.textures = value["data"]["rows"].as_array().cloned().unwrap_or_default(),
+            (Purpose::Measure, Ok(value)) => {
+                self.experiments.measuring = None;
+                self.experiments.measured = Some(value);
+            }
+            (Purpose::Measure, Err(error)) => {
+                self.experiments.measuring = None;
+                self.say(&error, true);
+            }
+            (Purpose::EditSource(program, shader), Ok(value)) => self.open_shader_in_editor(program, shader, &value),
             (Purpose::Recording(recording), Ok(value)) => {
                 if self.captures.recording.as_deref() == Some(recording.as_str()) {
                     self.captures.frames = Some(value);
@@ -398,7 +573,23 @@ impl Player {
             }
             // Upkeep that fails (the host still registering the session, say) is tried again
             // on the next turn; only what the person did is worth telling them about.
-            (Purpose::Action(_) | Purpose::Capture | Purpose::DrawList(_) | Purpose::Import, Err(error)) => self.say(&error, true),
+            (
+                Purpose::Action(_)
+                | Purpose::Capture
+                | Purpose::DrawList(_)
+                | Purpose::Import
+                | Purpose::Shot
+                | Purpose::VideoStart
+                | Purpose::VideoStop
+                | Purpose::Reverted
+                | Purpose::EditSource(_, _),
+                Err(error),
+            ) => self.say(&error, true),
+            (Purpose::View, Err(error)) => {
+                self.experiments.waiting.remove("view");
+                self.experiments.view.clear();
+                self.say(&error, true);
+            }
             (_, Err(_)) => {}
         }
 
@@ -534,6 +725,154 @@ impl Player {
 
     pub fn debug(&mut self) {
         self.ask("debug", json!({}), Purpose::Action("debug"));
+    }
+
+    /// As much of the window for the panels as leaves the game usable, or back to the
+    /// person's own width.
+    pub fn toggle_wide(&mut self) {
+        self.wide = !self.wide;
+        self.panel_width = if self.wide { Some(f32::MAX) } else { load_layout(&self.options.home) };
+    }
+
+    /// A picture of the canvas as the GPU drew it, saved to the desktop.
+    pub fn screenshot(&mut self) {
+        self.ask("screenshot", json!({ "max_edge": 4096 }), Purpose::Shot);
+    }
+
+    pub fn video_running(&self) -> bool {
+        self.status["video_seconds"].is_number()
+    }
+
+    /// Starts a video, or stops one and saves it to the desktop.
+    pub fn toggle_video(&mut self) {
+        if self.video_running() {
+            self.say("Saving the video: replaying its frames and encoding them…", false);
+            self.ask("video", json!({ "action": "stop" }), Purpose::VideoStop);
+            self.status["video_seconds"] = Value::Null;
+        } else {
+            self.ask("video", json!({ "action": "start" }), Purpose::VideoStart);
+            self.status["video_seconds"] = json!(0.0);
+        }
+    }
+
+    // ── Experiments ─────────────────────────────────────────────────────────────────────
+
+    /// A switch: makes the patch (method, params) if it is off, undoes it if it is on.
+    pub fn toggle_patch(&mut self, key: String, method: &'static str, params: Value) {
+        if let Some(patch) = self.experiments.active.remove(&key) {
+            self.ask("patches", json!({ "revert": patch }), Purpose::Reverted);
+        } else if self.experiments.waiting.insert(key.clone()) {
+            self.ask(method, params, Purpose::Patched(key));
+        }
+    }
+
+    pub fn revert_patch(&mut self, patch: String) {
+        if patch == "all" {
+            self.experiments.active.clear();
+            self.experiments.view.clear();
+        } else {
+            self.experiments.active.retain(|_, made| *made != patch);
+        }
+
+        self.ask("patches", json!({ "revert": patch }), Purpose::Reverted);
+    }
+
+    /// The frame drawn another way: "" for the page's own.
+    pub fn set_view(&mut self, view: &str) {
+        // The view in force comes off first: one view at a time.
+        if let Some(patch) = self.experiments.active.remove("view") {
+            self.ask("patches", json!({ "revert": patch }), Purpose::Reverted);
+        }
+
+        self.experiments.view = view.to_string();
+
+        if !view.is_empty() {
+            self.experiments.waiting.insert("view".to_string());
+            self.ask("live_view", json!({ "view": view }), Purpose::View);
+        }
+    }
+
+    pub fn measure(&mut self, kind: &str) {
+        if self.experiments.measuring.is_some() {
+            return;
+        }
+
+        self.experiments.measuring = Some(kind.to_string());
+        self.ask("experiment", json!({ "kind": kind, "frames": 30 }), Purpose::Measure);
+    }
+
+    /// Opens a program's shader in the person's own editor; each save is tried in the game.
+    pub fn edit_shader(&mut self, program: String, shader: String) {
+        self.ask("resource", json!({ "handle": shader, "detail": "full" }), Purpose::EditSource(program, shader));
+    }
+
+    fn open_shader_in_editor(&mut self, program: String, shader: String, value: &Value) {
+        let source = value["data"]["detail"]["source"].as_str().unwrap_or("").to_string();
+        let kind = value["data"]["detail"]["type"].as_str().unwrap_or("glsl");
+        let folder = self.options.home.join("shader-edits");
+        let path = folder.join(format!(
+            "{program}-{shader}.{}",
+            if kind == "vertex" {
+                "vert"
+            } else if kind == "fragment" {
+                "frag"
+            } else {
+                "wgsl"
+            }
+        ));
+
+        if std::fs::create_dir_all(&folder).is_err() || std::fs::write(&path, &source).is_err() {
+            self.say(&format!("Could not write {} to edit.", path.display()), true);
+            return;
+        }
+
+        let written = std::fs::metadata(&path).and_then(|meta| meta.modified()).ok();
+
+        // The person's own text editor, as the system knows it.
+        let _ =
+            std::process::Command::new(if cfg!(windows) { "notepad" } else { "open" }).args(if cfg!(windows) { vec![] } else { vec!["-t"] }).arg(&path).spawn();
+
+        self.experiments.editing = Some(panels::experiments::Edit { program, shader: shader.clone(), path, written });
+        self.show(Panel::Experiments);
+        self.say(&format!("{shader} is open in your editor. Save it to try it in the game."), false);
+    }
+
+    fn watch_shader_edit(&mut self) {
+        if self.last.get("shader-edit").is_some_and(|at| at.elapsed() < Duration::from_millis(600)) {
+            return;
+        }
+
+        self.last.insert("shader-edit", Instant::now());
+
+        let Some(edit) = self.experiments.editing.clone() else { return };
+        let written = std::fs::metadata(&edit.path).and_then(|meta| meta.modified()).ok();
+
+        if written == edit.written || written.is_none() {
+            return;
+        }
+
+        if let Some(editing) = self.experiments.editing.as_mut() {
+            editing.written = written;
+        }
+
+        let Ok(source) = std::fs::read_to_string(&edit.path) else { return };
+        let key = format!("edit:{}:{}", edit.program, edit.shader);
+
+        // The last version comes off before the new one goes on.
+        if let Some(patch) = self.experiments.active.remove(&key) {
+            self.ask("patches", json!({ "revert": patch }), Purpose::Reverted);
+        }
+
+        self.experiments.waiting.insert(key.clone());
+        self.ask("patch_shader", json!({ "handle": edit.program, "shader": edit.shader, "source": source }), Purpose::Patched(key));
+    }
+
+    pub fn stop_editing_shader(&mut self) {
+        if let Some(edit) = self.experiments.editing.take() {
+            if let Some(patch) = self.experiments.active.remove(&format!("edit:{}:{}", edit.program, edit.shader)) {
+                self.ask("patches", json!({ "revert": patch }), Purpose::Reverted);
+            }
+        }
     }
 
     pub fn take_input(&mut self, release: bool) {
@@ -746,6 +1085,19 @@ impl Player {
                 let placed = json!({ "game": game, "browser_view": platform::frame(self.browser_view), "content": platform::frame(self.content_view), "panel": format!("{:?}", self.panel) });
 
                 let _ = std::fs::write(folder.join(format!("{name}.json")), placed.to_string());
+
+                // And what to do, as the person would, one line each: <name>.do, read and removed.
+                let script = folder.join(format!("{name}.do"));
+
+                if let Ok(text) = std::fs::read_to_string(&script) {
+                    let _ = std::fs::remove_file(&script);
+
+                    for line in text.lines() {
+                        self.act(line.trim(), window, cx);
+                    }
+
+                    changed = true;
+                }
             }
         }
 
@@ -768,6 +1120,70 @@ impl Player {
         if changed {
             cx.notify();
         }
+    }
+
+    /// One thing the person could do, for checking the window without anyone at it
+    /// (SCANLINE_APP_SNAPSHOTS): capture, screenshot, video, show <panel>, select <handle>,
+    /// patch <key> <method> <json>, view <name>, measure <kind>, width <points>, kind <kind>,
+    /// draw <n>, pixel <x> <y>.
+    fn act(&mut self, line: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let mut words = line.splitn(2, ' ');
+        let verb = words.next().unwrap_or("");
+        let rest = words.next().unwrap_or("").trim();
+
+        match verb {
+            "capture" => self.capture(),
+            "screenshot" => self.screenshot(),
+            "video" => self.toggle_video(),
+            "show" => self.show(match rest {
+                "resources" => Panel::Resources,
+                "captures" => Panel::Captures,
+                "experiments" => Panel::Experiments,
+                "console" => Panel::Console,
+                "agent" => Panel::Agent,
+                _ => Panel::Live,
+            }),
+            "select" => self.select_resource(rest.to_string()),
+            "kind" => self.show_kind(rest.to_string()),
+            "back" => {
+                self.resources.selected = None;
+                self.resources.detail = None;
+            }
+            "patch" => {
+                let mut parts = rest.splitn(3, ' ');
+                let (key, method, params) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""), parts.next().unwrap_or("{}"));
+                let method: &'static str = match method {
+                    "patch_draws" => "patch_draws",
+                    "patch_state" => "patch_state",
+                    "patch_texture" => "patch_texture",
+                    _ => "patch_shader",
+                };
+
+                self.toggle_patch(key.to_string(), method, serde_json::from_str(params).unwrap_or(json!({})));
+            }
+            "view" => self.set_view(if rest == "normal" { "" } else { rest }),
+            "measure" => self.measure(rest),
+            "width" => self.panel_width = rest.parse().ok(),
+            "draw" => {
+                if let Ok(draw) = rest.parse() {
+                    self.select_draw(draw, cx);
+                }
+            }
+            "pixel" => {
+                let numbers: Vec<u32> = rest.split_whitespace().filter_map(|word| word.parse().ok()).collect();
+
+                if numbers.len() == 2 {
+                    self.pick_pixel((numbers[0], numbers[1]));
+                }
+            }
+            "address" => {
+                self.address = rest.to_string();
+                self.go();
+            }
+            _ => {}
+        }
+
+        let _ = window;
     }
 
     /// Opens a page from the recent list.
@@ -896,6 +1312,17 @@ impl Player {
     }
 }
 
+/// The panel's width as the person last dragged it.
+fn load_layout(home: &std::path::Path) -> Option<f32> {
+    let text = std::fs::read_to_string(home.join("app-layout.json")).ok()?;
+
+    serde_json::from_str::<Value>(&text).ok()?["panel"].as_f64().map(|width| width as f32)
+}
+
+fn save_layout(home: &std::path::Path, width: Option<f32>) {
+    let _ = std::fs::write(home.join("app-layout.json"), json!({ "panel": width }).to_string());
+}
+
 fn load_recent(home: &std::path::Path) -> Vec<String> {
     std::fs::read_to_string(home.join("app-recent.json")).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default()
 }
@@ -905,7 +1332,13 @@ fn load_recent(home: &std::path::Path) -> Vec<String> {
 impl Render for Player {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let game = self.game.clone();
-        let panel_width = if self.wide { (f32::from(window.viewport_size().width) * 0.62).max(PANEL) } else { PANEL };
+        let window_width = f32::from(window.viewport_size().width);
+        // Half the window by default: the numbers matter as much as the game. Dragged, as the
+        // person left it, within what leaves both usable.
+        let most = (window_width - RAIL - DIVIDER - 240.0).max(PANEL);
+        let panel_width = self.panel_width.unwrap_or(((window_width - RAIL) * 0.5).max(PANEL)).clamp(360.0, most);
+
+        self.panel_px = panel_width;
 
         // Where the game goes. Chromium's view is placed over this rectangle; nothing is drawn
         // here but a backdrop for the moment before the page paints.
@@ -917,6 +1350,34 @@ impl Render for Player {
             .child(canvas(move |bounds, _, _| game.set(Some(bounds)), |_, _, _, _| {}).absolute().size_full())
             .when(self.browser.is_none(), |stage| stage.child(div().size_full().flex().items_center().justify_center().child(note("Starting Chromium…"))));
 
+        // The bar between the game and the panels: dragged to share the window between them,
+        // double-clicked to go back to half and half.
+        let dragging = self.dragging;
+        let divider = div()
+            .id("divider")
+            .w(px(DIVIDER))
+            .h_full()
+            .flex_none()
+            .cursor_col_resize()
+            .bg(if dragging { tint(BLUE, 0.6) } else { tint(FAINT, 0.5) })
+            .hover(|bar| bar.bg(tint(BLUE, 0.45)))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
+                    if event.click_count == 2 {
+                        this.panel_width = None;
+                        save_layout(&this.options.home, None);
+                    } else {
+                        this.dragging = true;
+                    }
+
+                    cx.stop_propagation();
+                    cx.notify();
+                }),
+            );
+
+        let progress = self.progress_card();
+
         div()
             .size_full()
             .flex()
@@ -924,21 +1385,80 @@ impl Render for Player {
             .bg(rgb(WINDOW))
             .text_color(rgb(TEXT))
             .on_action(cx.listener(|this, _: &OpenLocation, window, cx| this.start_editing(window, cx)))
+            .on_mouse_move(cx.listener(move |this, event: &gpui::MouseMoveEvent, window, cx| {
+                if this.dragging {
+                    let width = f32::from(window.viewport_size().width) - f32::from(event.position.x) - RAIL - DIVIDER / 2.0;
+
+                    this.panel_width = Some(width.max(360.0));
+                    cx.notify();
+                }
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    if this.dragging {
+                        this.dragging = false;
+                        save_layout(&this.options.home, this.panel_width);
+                        cx.notify();
+                    }
+                }),
+            )
             .child(self.toolbar(cx))
             .child(
-                div()
-                    .flex_1()
-                    .flex()
-                    .min_h_0()
-                    .child(stage)
-                    .child(panels::rail(self, cx))
-                    .child(div().w(px(panel_width)).flex_none().h_full().min_h_0().bg(rgb(SIDEBAR)).child(panels::render(self, window, cx))),
+                div().flex_1().flex().min_h_0().child(stage).child(divider).child(panels::rail(self, cx)).child(
+                    div()
+                        .w(px(panel_width))
+                        .flex_none()
+                        .h_full()
+                        .min_h_0()
+                        .flex()
+                        .flex_col()
+                        .bg(rgb(SIDEBAR))
+                        .children(progress)
+                        .child(div().flex_1().min_h_0().child(panels::render(self, window, cx))),
+                ),
             )
             .child(self.status_bar())
     }
 }
 
 impl Player {
+    /// A long job under way: what it is doing, how long it has taken, and its stages so far.
+    fn progress_card(&self) -> Option<gpui::Div> {
+        let capturing = self.pending.values().any(|purpose| matches!(purpose, Purpose::Capture));
+        let saving = self.pending.values().any(|purpose| matches!(purpose, Purpose::VideoStop));
+
+        if !capturing && !saving {
+            return None;
+        }
+
+        let busy = &self.busy;
+        let seconds = busy["seconds"].as_f64().unwrap_or(0.0);
+        let stage = busy["stage"].as_str().unwrap_or(if saving { "Saving the video" } else { "Starting" }).to_string();
+        let detail = busy["detail"].as_str().filter(|detail| !detail.is_empty()).map(|detail| format!(" ({detail})")).unwrap_or_default();
+        let done: Vec<(String, f64)> = busy["done"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|stage| (stage["stage"].as_str().unwrap_or("").to_string(), stage["ms"].as_f64().unwrap_or(0.0)))
+            .collect();
+        // Eight stages make a capture; the bar moves as each is done.
+        let fraction = ((done.len() as f32 + 0.5) / 8.0).min(0.97);
+        let title = if saving { "Saving the video" } else { "Capturing a frame" };
+
+        Some(
+            div().p_2().child(
+                card(format!("{title} · {seconds:.0} s"), PURPLE)
+                    .child(meter(40, fraction, PURPLE))
+                    .child(div().text_sm().text_color(rgb(TEXT)).child(format!("{stage}{detail}…")))
+                    .children(done.into_iter().filter(|(_, ms)| *ms >= 50.0).map(|(stage, ms)| row(format!("✓ {stage}"), format!("{:.1} s", ms / 1000.0))))
+                    .child(note(
+                        "A capture keeps every texture and buffer the frame used, and replays it to check it. A heavy scene, hundreds of megabytes, takes several seconds.",
+                    )),
+            ),
+        )
+    }
+
     fn toolbar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let paused = self.paused();
         let scale = self.time_scale();
@@ -1020,6 +1540,21 @@ impl Player {
                 this.capture();
                 cx.notify();
             })))
+            .child(button("shot", "Screenshot", BLUE).on_click(cx.listener(|this, _, _, cx| {
+                this.screenshot();
+                cx.notify();
+            })))
+            .child({
+                let running = self.video_running();
+                let seconds = self.status["video_seconds"].as_f64().unwrap_or(0.0);
+
+                button("video", if running { format!("■  Stop {:.0}:{:02.0}", (seconds / 60.0).floor(), seconds % 60.0) } else { "◉  Video".to_string() }, RED)
+                    .when(running, |button| button.bg(tint(RED, 0.35)).border_color(tint(RED, 0.9)).shadow(glow(RED, 0.6)))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.toggle_video();
+                        cx.notify();
+                    }))
+            })
             .when_some(request, |bar, _| {
                 bar.child(button("debug", "⚑  Debug", RED).on_click(cx.listener(|this, _, _, cx| {
                     this.debug();
@@ -1160,6 +1695,8 @@ fn menus(cx: &mut App, recent: &[String]) {
                 MenuItem::action("Faster", SpeedUp),
                 MenuItem::separator(),
                 MenuItem::action("Capture Frame", Capture),
+                MenuItem::action("Screenshot to the Desktop", Screenshot),
+                MenuItem::action("Start or Stop a Video", ToggleVideo),
                 MenuItem::action("Debug (answer the agent)", Debug),
             ],
         },
@@ -1169,6 +1706,7 @@ fn menus(cx: &mut App, recent: &[String]) {
                 MenuItem::action("Live", ShowLive),
                 MenuItem::action("Resources", ShowResources),
                 MenuItem::action("Captures", ShowCaptures),
+                MenuItem::action("Experiments", ShowExperiments),
                 MenuItem::action("Console", ShowConsole),
                 MenuItem::action("Agent", ShowAgent),
                 MenuItem::separator(),
@@ -1196,8 +1734,11 @@ fn bind(cx: &mut App) {
         KeyBinding::new("cmd-1", ShowLive, None),
         KeyBinding::new("cmd-2", ShowResources, None),
         KeyBinding::new("cmd-3", ShowCaptures, None),
-        KeyBinding::new("cmd-4", ShowConsole, None),
-        KeyBinding::new("cmd-5", ShowAgent, None),
+        KeyBinding::new("cmd-4", ShowExperiments, None),
+        KeyBinding::new("cmd-5", ShowConsole, None),
+        KeyBinding::new("cmd-6", ShowAgent, None),
+        KeyBinding::new("cmd-shift-s", Screenshot, None),
+        KeyBinding::new("cmd-shift-v", ToggleVideo, None),
         KeyBinding::new("cmd-\\", ToggleWide, None),
     ]);
 
@@ -1225,9 +1766,13 @@ fn bind(cx: &mut App) {
     cx.on_action(|_: &ShowLive, cx| with_current(cx, |this, _| this.show(Panel::Live)));
     cx.on_action(|_: &ShowResources, cx| with_current(cx, |this, _| this.show(Panel::Resources)));
     cx.on_action(|_: &ShowCaptures, cx| with_current(cx, |this, _| this.show(Panel::Captures)));
+    cx.on_action(|_: &ShowExperiments, cx| with_current(cx, |this, _| this.show(Panel::Experiments)));
+    cx.on_action(|_: &Screenshot, cx| with_current(cx, |this, _| this.screenshot()));
+    cx.on_action(|_: &ToggleVideo, cx| with_current(cx, |this, _| this.toggle_video()));
     cx.on_action(|_: &ShowConsole, cx| with_current(cx, |this, _| this.show(Panel::Console)));
     cx.on_action(|_: &ShowAgent, cx| with_current(cx, |this, _| this.show(Panel::Agent)));
-    cx.on_action(|_: &ToggleWide, cx| with_current(cx, |this, _| this.wide = !this.wide));
+    // Wide: three quarters of the window for the panels, or back to the person's own width.
+    cx.on_action(|_: &ToggleWide, cx| with_current(cx, |this, _| this.toggle_wide()));
     cx.on_action(|_: &OpenRecent0, cx| with_current(cx, |this, _| this.open_recent(0)));
     cx.on_action(|_: &OpenRecent1, cx| with_current(cx, |this, _| this.open_recent(1)));
     cx.on_action(|_: &OpenRecent2, cx| with_current(cx, |this, _| this.open_recent(2)));

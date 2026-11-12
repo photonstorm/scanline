@@ -12,6 +12,7 @@
 
 mod browser;
 mod channel;
+mod code;
 mod host;
 mod launcher;
 mod panels;

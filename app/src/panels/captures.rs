@@ -327,7 +327,7 @@ fn workspace(player: &mut Player, cx: &mut Context<Player>) -> gpui::Div {
         )))
         .child(div().flex_1())
         .child(button("wide", if player.wide { "Narrow" } else { "Wide" }, DIM).on_click(cx.listener(|this, _, _, cx| {
-            this.wide = !this.wide;
+            this.toggle_wide();
             cx.notify();
         })))
         .child(button("send", "Send to agent", BLUE).on_click(cx.listener(|this, _, _, cx| {
@@ -365,7 +365,7 @@ fn workspace(player: &mut Player, cx: &mut Context<Player>) -> gpui::Div {
 
     let worth = (!findings.is_empty()).then(|| {
         card("Worth a look", RED).children(findings.into_iter().take(8).map(|finding| {
-            let text = finding["text"].as_str().or(finding["summary"].as_str()).map(str::to_string).unwrap_or_else(|| finding.to_string());
+            let text = finding.as_str().or(finding["text"].as_str()).or(finding["summary"].as_str()).map(str::to_string).unwrap_or_else(|| finding.to_string());
 
             div().text_xs().text_color(rgb(TEXT)).child(text)
         }))
@@ -388,7 +388,7 @@ fn workspace(player: &mut Player, cx: &mut Context<Player>) -> gpui::Div {
         )
         .child(canvas(move |bounds, _, _| place.set(Some(bounds)), |_, _, _, _| {}).absolute().size_full())
         .w_full()
-        .h(px(if player.wide { 360.0 } else { 240.0 }))
+        .h(px(if player.panel_px >= 760.0 { (player.panel_px * 0.45).min(560.0) } else { 260.0 }))
         .rounded_md()
         .bg(rgb(0x000000))
         .border_1()
@@ -406,7 +406,7 @@ fn workspace(player: &mut Player, cx: &mut Context<Player>) -> gpui::Div {
     let list = uniform_list(
         "draws",
         count,
-        cx.processor(|this, range: std::ops::Range<usize>, _, _| {
+        cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
             range
                 .filter_map(|index| this.captures.events.get(index).cloned().map(|event| (index, event)))
                 .map(|(index, event)| {
@@ -453,12 +453,15 @@ fn workspace(player: &mut Player, cx: &mut Context<Player>) -> gpui::Div {
                         } else {
                             changed
                         }))
-                        .on_click(move |_, _, cx| crate::player::with_current(cx, move |this, cx| this.select_draw(draw, cx)))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.select_draw(draw, cx);
+                            cx.notify();
+                        }))
                 })
                 .collect()
         }),
     )
-    .h(px(if player.wide { 300.0 } else { 220.0 }));
+    .h(px(if player.panel_px >= 760.0 { 360.0 } else { 240.0 }));
 
     // What a click on the picture found: the pixel's value and every event that changed it.
     let story = state.pixel.map(|(x, y)| {
@@ -538,7 +541,7 @@ fn workspace(player: &mut Player, cx: &mut Context<Player>) -> gpui::Div {
         }
     };
 
-    let body = if player.wide {
+    let body = if player.panel_px >= 760.0 {
         div()
             .flex()
             .gap_3()
