@@ -275,6 +275,8 @@ impl Host {
             "viewer" => viewer::viewer(self, &live()?, &params).await,
             "progress" => Ok(progress(&*self.session(&params)?)),
             "video" => handoff::video(self, &live()?, &params).await,
+            // The Scanline app's texture gallery.
+            "thumbnails" => inventory::thumbnails(&live()?, &params).await,
             // The Scanline app's Send to agent button, as the viewer's.
             "send_to_agent" => Ok(viewer::send_to_agent(&*live()?, &params)),
             "navigate" => commands::navigate(&live()?, &params).await,

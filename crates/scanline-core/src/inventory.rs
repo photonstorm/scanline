@@ -692,6 +692,45 @@ async fn describe_buffer(session: &Arc<Session>, object: &ObjectRef, params: &Va
     }
 }
 
+/// Small pictures of many textures at once, for the Scanline app's gallery: a screenshot of
+/// each (screenshot(source)), one after another. Up to 200 handles.
+pub async fn thumbnails(session: &Arc<Session>, params: &Value) -> Result<Value> {
+    let handles: Vec<String> = params["handles"].as_array().into_iter().flatten().filter_map(|handle| handle.as_str().map(str::to_string)).take(200).collect();
+    let edge = params["max_edge"].as_u64().unwrap_or(160).clamp(16, 512);
+    let mut rows = Vec::new();
+    let mut made = 0;
+
+    for handle in &handles {
+        // A texture with mipmaps is read at the level nearest the picture's size, not whole.
+        let detail = resource(session, &json!({ "handle": handle })).await.ok();
+        let level = detail
+            .as_ref()
+            .map(|value| &value["data"]["detail"])
+            .filter(|detail| {
+                detail["levels"].as_u64().unwrap_or(1) > 1 && (detail["generatedMips"] == true || detail["immutable"] == true || detail["api"] == "webgpu")
+            })
+            .map(|detail| {
+                let largest = detail["width"].as_u64().unwrap_or(1).max(detail["height"].as_u64().unwrap_or(1)) as f64;
+                let wanted = (largest / edge as f64).log2().floor().max(0.0) as u64;
+
+                wanted.min(detail["levels"].as_u64().unwrap_or(1) - 1)
+            })
+            .unwrap_or(0);
+
+        match crate::commands::screenshot(session, &json!({ "source": handle, "max_edge": edge, "level": level })).await {
+            Ok(shot) => {
+                let image = &shot["images"][0];
+
+                made += 1;
+                rows.push(json!({ "handle": handle, "image": image["view"], "width": image["width"], "height": image["height"] }));
+            }
+            Err(error) => rows.push(json!({ "handle": handle, "error": format!("{error:#}") })),
+        }
+    }
+
+    Ok(crate::result(format!("Pictures of {made} of {} textures, at most {edge} pixels on a side.", handles.len()), json!({ "thumbnails": rows })))
+}
+
 pub async fn resource(session: &Arc<Session>, params: &Value) -> Result<Value> {
     let Some(handle) = params["handle"].as_str() else {
         bail!("resource needs handle: an object such as tex_3 (from resources) or a context such as ctx_1 (from status).");
