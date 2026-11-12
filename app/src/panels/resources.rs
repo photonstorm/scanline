@@ -1,9 +1,11 @@
 //! Resources: every live GPU object by kind, largest first, with the line that made it; a
 //! texture opened to its levels, a buffer to its bytes, a shader to its source.
 
+use std::cell::Cell;
 use std::path::PathBuf;
+use std::rc::Rc;
 
-use gpui::{AnyElement, Context, ObjectFit, Window, div, img, prelude::*, px, rgb, uniform_list};
+use gpui::{AnyElement, Bounds, Context, MouseButton, MouseDownEvent, ObjectFit, Pixels, Window, canvas, div, img, prelude::*, px, rgb, uniform_list};
 use serde_json::{Value, json};
 
 use crate::player::Player;
@@ -22,11 +24,28 @@ pub struct State {
     pub level: u64,
     pub offset: u64,
     pub floats: bool,
+    /// The texture's picture on screen, the texel clicked, and what pixels() read there.
+    pub picture: Rc<Cell<Option<Bounds<Pixels>>>>,
+    pub texel: Option<(u32, u32)>,
+    pub texel_value: Option<String>,
 }
 
 impl Default for State {
     fn default() -> Self {
-        State { kind: "texture".into(), kinds: Vec::new(), list: Vec::new(), selected: None, detail: None, error: None, level: 0, offset: 0, floats: false }
+        State {
+            kind: "texture".into(),
+            kinds: Vec::new(),
+            list: Vec::new(),
+            selected: None,
+            detail: None,
+            error: None,
+            level: 0,
+            offset: 0,
+            floats: false,
+            picture: Rc::new(Cell::new(None)),
+            texel: None,
+            texel_value: None,
+        }
     }
 }
 
@@ -66,11 +85,29 @@ impl State {
         }
     }
 
+    /// The texel under a click on a texture's picture, at the level shown.
+    pub fn texel_at(&self, event: &MouseDownEvent) -> Option<(u32, u32)> {
+        let handle = self.selected.as_deref()?;
+        let bounds = self.picture.get()?;
+        let (width, height) = self.size_of(handle)?;
+        let (width, height) = (width as f32, height as f32);
+        let (box_w, box_h) = (f32::from(bounds.size.width), f32::from(bounds.size.height));
+        let scale = (box_w / width).min(box_h / height);
+        let left = f32::from(bounds.origin.x) + (box_w - width * scale) / 2.0;
+        let top = f32::from(bounds.origin.y) + (box_h - height * scale) / 2.0;
+        let x = (f32::from(event.position.x) - left) / scale;
+        let y = (f32::from(event.position.y) - top) / scale;
+
+        (x >= 0.0 && y >= 0.0 && x < width && y < height).then_some((x as u32, y as u32))
+    }
+
     pub fn select(&mut self, handle: &str) {
         if self.selected.as_deref() != Some(handle) {
             self.level = 0;
             self.offset = 0;
             self.detail = None;
+            self.texel = None;
+            self.texel_value = None;
         }
 
         self.selected = Some(handle.to_string());
@@ -135,12 +172,29 @@ fn texture(state: &State, value: &Value, cx: &mut Context<Player>) -> gpui::Div 
     let width = detail["width"].as_u64().unwrap_or(0) >> level;
     let height = detail["height"].as_u64().unwrap_or(0) >> level;
 
+    let place = state.picture.clone();
+    let texel = state.texel.map(|(x, y)| format!("texel ({x}, {y}): {}", state.texel_value.clone().unwrap_or_else(|| "reading…".into())));
+
     div()
         .flex()
         .flex_col()
         .gap_2()
         .child(
             div()
+                .id("texture-picture")
+                .relative()
+                .cursor_crosshair()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                        if let Some(texel) = this.resources.texel_at(event) {
+                            this.read_texel(texel);
+                        }
+
+                        cx.notify();
+                    }),
+                )
+                .child(canvas(move |bounds, _, _| place.set(Some(bounds)), |_, _, _, _| {}).absolute().size_full())
                 .w_full()
                 .h(px(300.0))
                 .rounded_md()
@@ -166,6 +220,7 @@ fn texture(state: &State, value: &Value, cx: &mut Context<Player>) -> gpui::Div 
                 .child(button("level-down", "◀", AMBER).on_click(cx.listener(|this, _, _, cx| {
                     if this.resources.level > 0 {
                         this.resources.level -= 1;
+                        this.resources.texel = None;
                         this.fetch_resource();
                     }
 
@@ -175,12 +230,17 @@ fn texture(state: &State, value: &Value, cx: &mut Context<Player>) -> gpui::Div 
                 .child(button("level-up", "▶", AMBER).on_click(cx.listener(move |this, _, _, cx| {
                     if this.resources.level + 1 < levels {
                         this.resources.level += 1;
+                        this.resources.texel = None;
                         this.fetch_resource();
                     }
 
                     cx.notify();
                 }))),
         )
+        .child(match texel {
+            Some(texel) => div().text_xs().font_family(MONO).text_color(rgb(CYAN)).child(texel),
+            None => note("Click the picture for a texel's exact value."),
+        })
         .child(facts(
             detail,
             &["what", "format", "target", "width", "height", "depth", "levels", "bytes", "compressed", "renderTarget", "immutable", "generatedMips"],

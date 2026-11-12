@@ -133,6 +133,7 @@ pub enum Purpose {
     /// A capture file opened from the Finder while this window was open.
     Import,
     Recording(String),
+    Texel(String, (u32, u32)),
     /// Something the person did, by the command's name: its summary goes in the status bar.
     #[allow(dead_code)]
     Action(&'static str),
@@ -362,6 +363,19 @@ impl Player {
             (Purpose::Draw(capture, draw), Ok(value)) => self.captures.draw(&capture, draw, &value["data"]),
             (Purpose::Target(capture, draw), Ok(value)) => self.captures.target(&capture, draw, &value),
             (Purpose::PixelSource(capture, pixel), Ok(value)) => self.captures.story(&capture, pixel, &value),
+            (Purpose::Texel(handle, texel), reply) => {
+                if self.resources.selected.as_deref() == Some(handle.as_str()) && self.resources.texel == Some(texel) {
+                    // "tex_1 (1, 1) level 0: rgba 8-bit (255, 0, 0, 255). Format …": the part after the place.
+                    self.resources.texel_value = Some(match reply {
+                        Ok(value) => {
+                            let first = value["summary"].as_str().unwrap_or("").lines().next().unwrap_or("").to_string();
+
+                            first.split_once(": ").map(|(_, said)| said.to_string()).unwrap_or(first)
+                        }
+                        Err(error) => error,
+                    });
+                }
+            }
             (Purpose::Recording(recording), Ok(value)) => {
                 if self.captures.recording.as_deref() == Some(recording.as_str()) {
                     self.captures.frames = Some(value);
@@ -596,6 +610,18 @@ impl Player {
         let params = self.resources.request(&handle);
 
         self.ask("resource", params, Purpose::Resource(handle));
+    }
+
+    /// A texel of the selected texture, read exactly, at the level shown.
+    pub fn read_texel(&mut self, texel: (u32, u32)) {
+        let Some(handle) = self.resources.selected.clone() else { return };
+
+        self.resources.texel = Some(texel);
+        self.resources.texel_value = None;
+
+        let level = self.resources.level;
+
+        self.ask("pixels", json!({ "source": handle, "x": texel.0, "y": texel.1, "level": level }), Purpose::Texel(handle, texel));
     }
 
     pub fn show_kind(&mut self, kind: String) {
