@@ -408,12 +408,14 @@ pub const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "viewer",
-        description: "Open the viewer for the person at the machine: a window with an activity log of every command you run and its result, live graphs of frame time, GPU time, draws and memory, and a capture viewer (draw list, state, the target at any draw with zoom and pixel values, shaders). show switches its tab as the person would; output: true returns a picture of it.",
+        description: "Open the viewer for the person at the machine: an activity log of every command you run, live graphs of frame time, GPU time, draws and memory, and a capture viewer (draw list, state, the target at any draw, shaders). show switches its tab as the person would; output: true returns a picture. In the Scanline app, show turns its panels.",
         schema: schema!(
             "[]",
             session!(),
-            r#""show": { "type": "string", "enum": ["activity", "live", "capture"] }"#,
+            r#""show": { "type": "string", "enum": ["activity", "live", "capture", "console", "resources"], "description": "console and resources: the Scanline app's panels only." }"#,
             r#""capture": { "type": "string", "description": "With show: \"capture\": the capture to open." }"#,
+            r#""recording": { "type": "string", "description": "In the Scanline app, with show: \"capture\": the recording to open." }"#,
+            r#""handle": { "type": "string", "description": "In the Scanline app, with show: \"resources\": the object to open." }"#,
             r#""draw": { "type": "integer", "description": "With capture: the event to select." }"#,
             r#""pane": { "type": "string", "enum": ["target", "state", "shaders"], "description": "With show: \"capture\": which pane of the event to show." }"#,
             r#""output": { "type": "boolean", "description": "Return a picture of the viewer." }"#,

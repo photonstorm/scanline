@@ -97,7 +97,7 @@ describe('a session in the app', { skip }, () =>
 
         const status = await scanline('status', '--json');
 
-        assert.deepEqual(status.json.data.app_show, { seq: 1, show: 'capture', capture: 'cap_1', draw: 2, handle: null });
+        assert.deepEqual(status.json.data.app_show, { seq: 1, show: 'capture', capture: 'cap_1', draw: 2, handle: null, recording: null });
 
         const unknown = await scanline('viewer', '--show', 'pixels');
 

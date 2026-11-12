@@ -32,7 +32,7 @@ A capture file (`.scanline`, written by `export`) opens in the app when double-c
 
 ## Agents
 
-An agent shows its session in the app with `launch(url, display: "app")`, or for every launch with `SCANLINE_DISPLAY=app` in the host's environment. `viewer(show: "capture", capture: "cap_2", draw: 14)` points the app's panels at something; `show` is `live`, `resources` (with `handle`), `capture`, `console` or `activity`.
+An agent shows its session in the app with `launch(url, display: "app")`, or for every launch with `SCANLINE_DISPLAY=app` in the host's environment. `viewer(show: "capture", capture: "cap_2", draw: 14)` points the app's panels at something; `show` is `live`, `resources` (with `handle`), `capture` (with `capture` and `draw`, or `recording`), `console` or `activity`.
 
 What you do in the app goes to the host as yours: the activity log says so, the tiers do not apply to it (you can go to any address), and your pause or step works while you have the input. What an agent sends cannot claim to be yours: the command line, MCP and MCP over HTTP drop it.
 

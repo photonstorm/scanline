@@ -132,6 +132,7 @@ pub enum Purpose {
     PixelSource(String, (u32, u32)),
     /// A capture file opened from the Finder while this window was open.
     Import,
+    Recording(String),
     /// Something the person did, by the command's name: its summary goes in the status bar.
     #[allow(dead_code)]
     Action(&'static str),
@@ -361,6 +362,11 @@ impl Player {
             (Purpose::Draw(capture, draw), Ok(value)) => self.captures.draw(&capture, draw, &value["data"]),
             (Purpose::Target(capture, draw), Ok(value)) => self.captures.target(&capture, draw, &value),
             (Purpose::PixelSource(capture, pixel), Ok(value)) => self.captures.story(&capture, pixel, &value),
+            (Purpose::Recording(recording), Ok(value)) => {
+                if self.captures.recording.as_deref() == Some(recording.as_str()) {
+                    self.captures.frames = Some(value);
+                }
+            }
             (Purpose::Import, Ok(value)) => {
                 self.say(value["summary"].as_str().unwrap_or("Opened.").lines().next().unwrap_or(""), false);
 
@@ -410,6 +416,10 @@ impl Player {
 
             self.captures.want_draw = draw;
             self.open_capture(capture, cx);
+        }
+
+        if let Some(recording) = shown["recording"].as_str() {
+            self.open_recording(recording.to_string());
         }
 
         if let Some(handle) = shown["handle"].as_str() {
@@ -480,6 +490,30 @@ impl Player {
     pub fn capture(&mut self) {
         self.say("Capturing the next frame…", false);
         self.ask("capture", json!({}), Purpose::Capture);
+    }
+
+    /// Runs the page for `frames` frames with the flight recorder on, then freezes it: a
+    /// recording of them, and a capture of the last.
+    pub fn record(&mut self, frames: u32) {
+        self.say(&format!("Recording {frames} frames…"), false);
+        self.ask("capture", json!({ "when": { "frames": frames }, "flight_frames": frames }), Purpose::Capture);
+    }
+
+    pub fn open_recording(&mut self, recording: String) {
+        self.show(Panel::Captures);
+        self.captures.opened = None;
+        self.captures.recording = Some(recording.clone());
+        self.captures.frames = None;
+        self.ask("recording", json!({ "recording": recording }), Purpose::Recording(recording));
+    }
+
+    /// One frame of the open recording, made a capture.
+    pub fn capture_frame(&mut self, frame: u64) {
+        let Some(recording) = self.captures.recording.clone() else { return };
+
+        self.captures.recording = None;
+        self.say(&format!("Making frame {frame} of {recording} a capture…"), false);
+        self.ask("capture", json!({ "recording": recording, "frame": frame }), Purpose::Capture);
     }
 
     pub fn debug(&mut self) {

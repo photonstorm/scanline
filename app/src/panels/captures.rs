@@ -28,9 +28,27 @@ pub struct State {
     /// The pixel clicked, and what pixel_source said of it.
     pub pixel: Option<(u32, u32)>,
     pub story: Option<Value>,
+    /// The flight recording opened, and what recording() said of it.
+    pub recording: Option<String>,
+    pub frames: Option<Value>,
 }
 
 impl State {
+    /// The recordings the captures came from, newest first.
+    pub fn recordings(&self) -> Vec<String> {
+        let mut seen = Vec::new();
+
+        for row in &self.rows {
+            if let Some(recording) = row["recording"].as_str() {
+                if !seen.iter().any(|known| known == recording) {
+                    seen.push(recording.to_string());
+                }
+            }
+        }
+
+        seen
+    }
+
     pub fn list(&mut self, data: &Value) {
         self.rows = data["captures"].as_array().cloned().unwrap_or_default();
 
@@ -154,6 +172,7 @@ fn event_line(event: &Value) -> String {
 
 fn list_of_captures(player: &mut Player, cx: &mut Context<Player>) -> gpui::Div {
     let rows = player.captures.rows.clone();
+    let recordings = player.captures.recordings();
 
     div()
         .flex()
@@ -168,8 +187,25 @@ fn list_of_captures(player: &mut Player, cx: &mut Context<Player>) -> gpui::Div 
                     this.capture();
                     cx.notify();
                 })))
+                .child(button("record", "◎  Record 2 s", ORANGE).on_click(cx.listener(|this, _, _, cx| {
+                    this.record(120);
+                    cx.notify();
+                })))
                 .child(note("⇧⌘C from anywhere")),
         )
+        .when(!recordings.is_empty(), |list| {
+            list.child(note("Recordings: every frame of a stretch of play, kept by the flight recorder")).child(div().flex().flex_wrap().gap_1().children(
+                recordings.into_iter().map(|recording| {
+                    let chosen = recording.clone();
+
+                    button(format!("open-{recording}"), recording, ORANGE).on_click(cx.listener(move |this, _, _, cx| {
+                        this.open_recording(chosen.clone());
+                        cx.notify();
+                    }))
+                }),
+            ))
+        })
+        .when(!rows.is_empty(), |list| list.child(note("Captures, newest first")))
         .when(rows.is_empty(), |list| list.child(note("No captures yet. A capture keeps one whole frame: every draw, its state and its target.")))
         .children(rows.into_iter().map(|row| {
             let capture = row["capture"].as_str().unwrap_or("").to_string();
@@ -532,8 +568,87 @@ fn workspace(player: &mut Player, cx: &mut Context<Player>) -> gpui::Div {
     div().flex().flex_col().gap_2().child(header).child(note_field).when(state.loading, |content| content.child(note("Reading the capture…"))).child(body)
 }
 
+/// A recording: its contact sheet, what the host says of it, and its frames, any of which
+/// becomes a capture with a click.
+fn recording(player: &mut Player, cx: &mut Context<Player>) -> gpui::Div {
+    let state = &player.captures;
+    let name = state.recording.clone().unwrap_or_default();
+    let value = state.frames.clone().unwrap_or(Value::Null);
+    let sheet =
+        value["images"].as_array().and_then(|images| images.first()).and_then(|image| image["view"].as_str().or(image["original"].as_str())).map(PathBuf::from);
+    let summary: Vec<String> = value["summary"]
+        .as_str()
+        .unwrap_or("Reading the recording…")
+        .lines()
+        .filter(|line| !line.contains("Contact sheet"))
+        .take(6)
+        .map(str::to_string)
+        .collect();
+    let frames = value["data"]["frames"].as_array().cloned().unwrap_or_default();
+
+    div()
+        .flex()
+        .flex_col()
+        .gap_2()
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(button("back-recording", "◀  All", DIM).on_click(cx.listener(|this, _, _, cx| {
+                    this.captures.recording = None;
+                    cx.notify();
+                })))
+                .child(div().font_family(MONO).text_color(rgb(ORANGE)).child(name)),
+        )
+        .children(summary.into_iter().map(|line| div().text_xs().text_color(rgb(TEXT)).child(line)))
+        .when_some(sheet, |content, sheet| {
+            content.child(
+                div()
+                    .w_full()
+                    .h(px(200.0))
+                    .rounded_md()
+                    .bg(rgb(0x000000))
+                    .border_1()
+                    .border_color(tint(FAINT, 0.8))
+                    .overflow_hidden()
+                    .child(img(sheet).size_full().object_fit(ObjectFit::Contain)),
+            )
+        })
+        .child(note("Each frame by number. Unusual ones are marked in red. Click one to make it a capture."))
+        .child(div().flex().flex_wrap().gap_1().children(frames.into_iter().map(|frame| {
+            let number = frame["frame"].as_u64().unwrap_or(0);
+            let unusual = frame["unusual"] == true;
+
+            div()
+                .id(("frame", number as usize))
+                .px_1p5()
+                .py(px(2.0))
+                .rounded_sm()
+                .text_xs()
+                .font_family(MONO)
+                .cursor_pointer()
+                .bg(tint(if unusual { RED } else { ORANGE }, if unusual { 0.3 } else { 0.08 }))
+                .border_1()
+                .border_color(tint(if unusual { RED } else { ORANGE }, 0.35))
+                .text_color(rgb(if unusual { RED } else { TEXT }))
+                .hover(|chip| chip.bg(tint(ORANGE, 0.3)))
+                .child(number.to_string())
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.capture_frame(number);
+                    cx.notify();
+                }))
+        })))
+}
+
 pub fn render(player: &mut Player, _window: &mut Window, cx: &mut Context<Player>) -> AnyElement {
-    let content = if player.captures.opened.is_some() { workspace(player, cx) } else { list_of_captures(player, cx) };
+    let content = if player.captures.opened.is_some() {
+        workspace(player, cx)
+    } else if player.captures.recording.is_some() {
+        recording(player, cx)
+    } else {
+        list_of_captures(player, cx)
+    };
 
     crate::panels::frame("captures", "Captures", PURPLE, content)
 }

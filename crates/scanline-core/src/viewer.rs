@@ -137,7 +137,9 @@ pub async fn viewer(_host: &Arc<Host>, session: &Arc<Session>, params: &Value) -
         let mut state = session.state.lock().unwrap();
         let seq = state.app_show.as_ref().and_then(|shown| shown["seq"].as_u64()).unwrap_or(0) + 1;
 
-        state.app_show = Some(json!({ "seq": seq, "show": tab, "capture": params["capture"], "draw": params["draw"], "handle": params["handle"] }));
+        state.app_show = Some(
+            json!({ "seq": seq, "show": tab, "capture": params["capture"], "draw": params["draw"], "handle": params["handle"], "recording": params["recording"] }),
+        );
 
         return Ok(result(
             format!("{} is shown in the Scanline app, whose panels are the viewer. It has been asked to show {tab}.", session.id),
