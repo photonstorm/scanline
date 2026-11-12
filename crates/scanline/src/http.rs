@@ -259,20 +259,22 @@ async fn connection(mut stream: TcpStream, port: u16, token: Arc<String>, host: 
             }
         };
 
+        // `serve --http --lean`, or SCANLINE_MCP=lean: the two tools of lean mode.
+        let mode = scanline_mcp::Mode::chosen(&std::env::args().collect::<Vec<_>>());
         let reply = match serde_json::from_slice::<Value>(&request.body) {
             // Earlier revisions of MCP allowed several messages in one request.
             Ok(Value::Array(messages)) => {
                 let mut replies = Vec::new();
 
                 for message in &messages {
-                    if let Some(reply) = scanline_mcp::handle(message, &call).await {
+                    if let Some(reply) = scanline_mcp::handle_in(mode, message, &call).await {
                         replies.push(reply);
                     }
                 }
 
                 (!replies.is_empty()).then(|| Value::Array(replies))
             }
-            Ok(message) => scanline_mcp::handle(&message, &call).await,
+            Ok(message) => scanline_mcp::handle_in(mode, &message, &call).await,
             Err(error) => Some(json!({ "jsonrpc": "2.0", "id": null, "error": { "code": -32700, "message": format!("Parse error: {error}") } })),
         };
 

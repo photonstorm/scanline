@@ -563,6 +563,10 @@ Added on 12 November 2026 at the owner's request, with the app's new look.
 - **The magnifier** in the app is the host's own screenshot (region and zoom) and diff, as an agent uses them. Found on the way and fixed, for agents as much as the app: a region given on the command line (`--region 70,50,20,20`, which it sends as 70.0) was ignored by a capture's screenshot, which returned the whole target; a capture's pixels took x, y, w and h but not a region, as the live one does; and `target: "canvas"` after an event that drew elsewhere returned that event's target, named as the canvas (on spider, a half-size bloom target).
 - **Not yet:** stepping through a shader for one pixel, as Nsight and Metal do. WebGL has no shader debugger; the way to it is to rewrite the shader so that it writes a chosen value at the clicked pixel, a value at a time. Nor a timeline of the page's CPU and GPU over many frames: `trace` records the browser's own, which the app does not yet show.
 
+## Lean MCP
+
+Added on 12 November 2026 at the owner's request, after measuring what each way in costs an agent: the 64 tools' definitions are about 17,400 tokens, sent with every request unless the client defers them; the command line's help is about 1,400 tokens, read only when wanted. The specification makes every command a `gfx_` tool, and that stays the default. `scanline mcp --lean` (or `SCANLINE_MCP=lean`, for `serve --http` as well) offers two tools instead, `gfx(command, args)` and `gfx_help(command)`, about 430 tokens, and instructions written for them. `gfx_help(command)` is made from the same schemas as the full tools, so the two cannot disagree; with no command it is help as before. A command that is not one is answered with the nearest, or for "stop" and the like with close.
+
 ## Known gaps in what is built
 
 - Unlabelled WebGPU objects are not given generated labels, which the specification lists as a modification. They are named by handle in results instead.

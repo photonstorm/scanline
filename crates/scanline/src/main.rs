@@ -92,7 +92,7 @@ async fn run(args: Vec<String>) -> Result<ExitCode> {
             // so an agent client that only lists tools never starts a browser host.
             let link = std::sync::Arc::new(tokio::sync::Mutex::new(None::<control::Link>));
 
-            scanline_mcp::serve_stdio(move |command, arguments| {
+            scanline_mcp::serve_stdio(scanline_mcp::Mode::chosen(&args), move |command, arguments| {
                 let link = link.clone();
 
                 async move {

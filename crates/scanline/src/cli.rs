@@ -156,7 +156,7 @@ pub fn usage() -> String {
         "  serve                    Run the host in this terminal (it is started for you otherwise).".into(),
         "  serve --http [port]      The same, and MCP over HTTP on 127.0.0.1, for a client that cannot spawn `scanline mcp`. Requests need the token in the file http-token.".into(),
         "  stop                     Stop the host and close its browsers.".into(),
-        "  mcp                      Serve these commands to an agent over MCP on stdio.".into(),
+        "  mcp [--lean]             Serve these commands to an agent over MCP on stdio: each as a tool, or (--lean) two tools that run any command and give its parameters.".into(),
         "  browser [install]        Which browser a launch would use; install the pinned Chrome for Testing (--dry-run to see first).".into(),
         "  skill [name] [--to dir]  Print a skill (the recipe for one kind of job), list them, or write them as folders for an agent.".into(),
         String::new(),

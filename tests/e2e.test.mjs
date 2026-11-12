@@ -2507,6 +2507,80 @@ describe('the MCP server', () =>
             child.stdin.end();
         }
     });
+
+    test('lean: two tools, a few hundred tokens, that run any command and give its parameters', async () =>
+    {
+        const child = spawn(binary, ['mcp', '--lean'], { env, stdio: ['pipe', 'pipe', 'inherit'] });
+        const waiting = new Map();
+        let buffer = '';
+        let nextId = 1;
+
+        child.stdout.on('data', (chunk) =>
+        {
+            buffer += chunk;
+
+            let newline;
+
+            while ((newline = buffer.indexOf('\n')) >= 0)
+            {
+                const message = JSON.parse(buffer.slice(0, newline));
+
+                buffer = buffer.slice(newline + 1);
+                waiting.get(message.id)?.(message);
+            }
+        });
+
+        const request = (method, params) => new Promise((resolve) =>
+        {
+            const id = nextId++;
+
+            waiting.set(id, resolve);
+            child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n');
+        });
+        const gfx = async (command, args) => (await request('tools/call', { name: 'gfx', arguments: { command, args } })).result;
+
+        try
+        {
+            const hello = await request('initialize', { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'test', version: '0' } });
+
+            assert.match(hello.result.instructions, /gfx\(command: "launch"/);
+            child.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n');
+
+            const listed = (await request('tools/list', {})).result;
+
+            assert.deepEqual(listed.tools.map((tool) => tool.name), ['gfx', 'gfx_help']);
+            // About 430 tokens, where each command as a tool of its own is some 17,000.
+            assert.ok(JSON.stringify(listed.tools).length < 2500, JSON.stringify(listed.tools).length);
+
+            const help = (await request('tools/call', { name: 'gfx_help', arguments: { command: 'pixels' } })).result;
+
+            assert.match(help.content[0].text, /^pixels: /);
+            assert.match(help.content[0].text, /Parameters \(as args\):\n/);
+
+            const launched = await gfx('launch', { url: server.url('fixtures/history/gbuffer.html'), start: 'paused', headless: true });
+
+            assert.equal(launched.isError, false, launched.content[0].text);
+
+            const session = launched.structuredContent.session;
+
+            await gfx('step', { session, frames: 2 });
+            assert.match((await gfx('pixels', { session, x: 20, y: 60 })).content[0].text, /rgba8 \(255, 0, 0, 255\)/);
+
+            const shot = await gfx('screenshot', { session, region: { x: 70, y: 50, w: 20, h: 20 }, zoom: 8 });
+
+            assert.deepEqual(shot.content.map((part) => part.type), ['text', 'image']);
+
+            const slip = await gfx('pixles', { session, x: 0, y: 0 });
+
+            assert.equal(slip.isError, true);
+            assert.equal(slip.content[0].text, 'No command "pixles". Did you mean "pixels"?');
+            await gfx('close', { session });
+        }
+        finally
+        {
+            child.stdin.end();
+        }
+    });
 });
 
 describe('an engine Scanline has no adapter for', () =>
