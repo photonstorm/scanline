@@ -94,7 +94,19 @@ pub fn run(argv: &[String]) {
 
     let browser = me.display().to_string();
 
-    if let Err(error) = call(&socket, "launch", json!({ "url": url, "display": "app", "browser": browser })) {
-        alert("Scanline could not open a window", &error);
+    match call(&socket, "launch", json!({ "url": url, "display": "app", "browser": browser })) {
+        Err(error) => alert("Scanline could not open a window", &error),
+        // A host from before the app ignores display and opens a browser window instead.
+        Ok(reply) if reply["data"]["display"] != "app" => {
+            if let Some(session) = reply["data"]["session"].as_str() {
+                let _ = call(&socket, "close", json!({ "session": session }));
+            }
+
+            alert(
+                "An older Scanline host is running",
+                "The Scanline host running now was started by an older scanline, which cannot show a game in the app. Stop it with `scanline stop` in a terminal, then open Scanline again.",
+            );
+        }
+        Ok(_) => {}
     }
 }
