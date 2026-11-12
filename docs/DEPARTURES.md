@@ -492,6 +492,7 @@ What has not been checked on Windows is in `docs/BY-HAND.md` under "On Windows":
 
 ## Added, not in the specification
 
+- **A desktop app, designed (12 November 2026, the owner's request): [APP.md](APP.md).** The specification keeps "CEF in a helper process" as a later option for a single window (02-ARCHITECTURE.md, sections 2.2 and 2.3). The design takes it: the game in CEF inside a GPUI window, with the host still its own process so that a browser crash cannot take it down. Launched browsers stay as they are.
 - **A capture says what is worth a look.** The specification puts lints in milestone 5. A first set came out of the evaluation and is built: draws that changed nothing, rejected calls and feedback loops, a viewport that is not its target's size, a clear clipped by a scissor box left on, a blended draw with opaque ones drawn over it, blending off on a translucent colour, a bound texture that cannot be sampled, and what the frame created and deleted. Each is worded as a fact about the frame, not a verdict.
 - **What every event changed is measured when the capture is taken**, by reading its target back around each event in one more replay. `draw_list` shows it. A frame too large for that (more than about 600 million pixels read) goes without, and `draw` measures one event when asked.
 - **A draw that changed nothing is replayed with each test off in turn**, so `draw` can say which test rejected it. This stands in for part of pixel history.
