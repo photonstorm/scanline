@@ -127,6 +127,52 @@ pub struct Browser {
     child: Arc<Mutex<Child>>,
 }
 
+/// Where the Scanline app's executable is (docs/APP.md): `SCANLINE_APP` (the app, or its
+/// executable), else the app this binary is inside, else the usual places for applications.
+/// The host launches it as it launches a browser: it is a Chromium that takes the same switches.
+pub fn find_app() -> Result<PathBuf> {
+    let inside =
+        |app: PathBuf| -> PathBuf { if app.extension().is_some_and(|extension| extension == "app") { app.join("Contents/MacOS/Scanline") } else { app } };
+
+    if let Some(path) = std::env::var_os("SCANLINE_APP") {
+        let path = inside(PathBuf::from(path));
+
+        if path.exists() {
+            return Ok(path);
+        }
+
+        bail!("SCANLINE_APP names {}, which does not exist.", path.display());
+    }
+
+    let mut candidates = Vec::new();
+
+    // The command line inside the app's bundle (Scanline.app/Contents/MacOS/scanline-cli) uses its own app.
+    if let Ok(me) = std::env::current_exe() {
+        if let Some(folder) = me.parent() {
+            candidates.push(folder.join("Scanline"));
+        }
+    }
+
+    if cfg!(target_os = "macos") {
+        if let Some(home) = std::env::var_os("HOME") {
+            candidates.push(PathBuf::from(home).join("Applications/Scanline.app/Contents/MacOS/Scanline"));
+        }
+
+        candidates.push(PathBuf::from("/Applications/Scanline.app/Contents/MacOS/Scanline"));
+    }
+
+    if cfg!(windows) {
+        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+            candidates.push(PathBuf::from(local).join("Programs/Scanline/Scanline.exe"));
+        }
+    }
+
+    candidates
+        .into_iter()
+        .find(|path| path.exists())
+        .ok_or_else(|| anyhow!("The Scanline app is not installed: no Scanline.app in /Applications or ~/Applications. Install it, set SCANLINE_APP to it, or launch with display: \"window\"."))
+}
+
 /// Where a Chromium can be found on this machine.
 pub fn find_browser(explicit: Option<&Path>) -> Result<PathBuf> {
     if let Some(path) = explicit {

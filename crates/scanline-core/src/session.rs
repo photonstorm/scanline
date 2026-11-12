@@ -93,6 +93,9 @@ pub struct QueuedEvent {
 
 #[derive(Default)]
 pub struct State {
+    /// What the agent last asked the Scanline app to show (viewer(show: …) in an app
+    /// session), with a number that rises each time so the app can tell a new request.
+    pub app_show: Option<Value>,
     pub instances: Vec<Instance>,
     pub contexts: Vec<ContextRef>,
     pub next_context: u32,
@@ -182,12 +185,19 @@ pub struct SessionOptions {
     pub unmodified: bool,
     pub deterministic: Option<(u32, f64)>,
     pub browser: Option<PathBuf>,
+    /// Where the game is shown: "window" (a browser window), "headless" or "app" (the
+    /// Scanline app, docs/APP.md), which is launched as the browser.
+    pub display: String,
+    /// More switches for the browser: the app is told its session and the host's home.
+    pub extra_args: Vec<String>,
 }
 
 pub struct Session {
     pub id: String,
     pub profile: Profile,
     pub headless: bool,
+    /// "window", "headless" or "app".
+    pub display: String,
     pub level: String,
     pub unmodified: bool,
     pub dir: PathBuf,
@@ -271,7 +281,7 @@ impl Session {
             height: options.height,
             browser: options.browser.clone(),
             user_data_dir: dir.join("browser-profile"),
-            extra_args: Vec::new(),
+            extra_args: options.extra_args.clone(),
         })
         .await?;
 
@@ -296,14 +306,27 @@ impl Session {
         // the page's when it records where an object was created.
         let source = format!("(() => {{ const __SCANLINE_CONFIG__ = {config};\n{PROBE}\n}})();\n//# sourceURL=scanline-probe.js");
 
-        // Find the page the browser opened and attach to it.
-        let targets = client.send("Target.getTargets", json!({}), None).await?;
-        let target = targets["targetInfos"]
-            .as_array()
-            .and_then(|list| list.iter().find(|info| info["type"] == "page"))
-            .and_then(|info| info["targetId"].as_str())
-            .ok_or_else(|| anyhow!("The browser opened no page."))?
-            .to_string();
+        // Find the page the browser opened and attach to it. The Scanline app makes its page
+        // once its window is up, a moment after it first answers: it is waited for.
+        let mut target = None;
+
+        for _ in 0..100 {
+            let targets = client.send("Target.getTargets", json!({}), None).await?;
+
+            target = targets["targetInfos"]
+                .as_array()
+                .and_then(|list| list.iter().find(|info| info["type"] == "page"))
+                .and_then(|info| info["targetId"].as_str())
+                .map(str::to_string);
+
+            if target.is_some() || options.display != "app" {
+                break;
+            }
+
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        let target = target.ok_or_else(|| anyhow!("The browser opened no page."))?;
 
         let attached = client.send("Target.attachToTarget", json!({ "targetId": target, "flatten": true }), None).await?;
         let page = attached["sessionId"].as_str().ok_or_else(|| anyhow!("The browser gave no session for its page."))?.to_string();
@@ -312,6 +335,7 @@ impl Session {
             id,
             profile: options.profile,
             headless: options.headless,
+            display: options.display.clone(),
             level: options.level.clone(),
             unmodified: options.unmodified,
             dir,
@@ -710,6 +734,11 @@ impl Session {
     /// shows the person who is driving and what the agent asked, with a Debug button.
     /// Does nothing if it is already open.
     pub async fn open_strip(&self) -> Result<()> {
+        // In the Scanline app the toolbar is the strip: it shows who has the input and has Debug.
+        if self.display == "app" {
+            return Ok(());
+        }
+
         if self.state.lock().unwrap().strip.is_some() {
             return Ok(());
         }
@@ -998,6 +1027,11 @@ impl Session {
         }
 
         Ok(())
+    }
+
+    /// Resolves when the browser process exits, with its exit code if it had one.
+    pub async fn wait_browser_exit(&self) -> Option<i32> {
+        self.browser.wait_exit().await
     }
 
     pub fn browser_pid(&self) -> Option<u32> {

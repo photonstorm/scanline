@@ -103,10 +103,34 @@ pub async fn launch(host: &Arc<Host>, params: &Value) -> Result<Value> {
 
     let id = host.new_session_id();
 
+    // Where the game is shown. The Scanline app is launched as the browser and told which
+    // session it shows and where the host is, so its panels can ask the host for the rest.
+    let display = match (params["headless"].as_bool(), params["display"].as_str()) {
+        (Some(true), _) => "headless".to_string(),
+        (_, Some(display)) => display.to_string(),
+        _ => std::env::var("SCANLINE_DISPLAY").ok().filter(|display| !display.is_empty()).unwrap_or_else(|| "window".to_string()),
+    };
+
+    if !["window", "headless", "app"].contains(&display.as_str()) {
+        bail!("display is \"window\" (a browser window), \"app\" (the Scanline app) or \"headless\", not \"{display}\".");
+    }
+
+    let (app, extra_args) = if display == "app" {
+        // browser names the app's executable when given, as the app's own launcher does.
+        let app = match params["browser"].as_str() {
+            Some(path) => scanline_browser::find_browser(Some(std::path::Path::new(path)))?,
+            None => scanline_browser::find_app()?,
+        };
+
+        (Some(app), vec![format!("--scanline-session={id}"), format!("--scanline-home={}", host.home.display())])
+    } else {
+        (None, Vec::new())
+    };
+
     let options = SessionOptions {
         url,
         profile: Profile::parse(params["profile"].as_str().unwrap_or("stock"))?,
-        headless: params["headless"].as_bool().unwrap_or(false),
+        headless: display == "headless",
         width: params["viewport"]["width"].as_u64().unwrap_or(1280) as u32,
         height: params["viewport"]["height"].as_u64().unwrap_or(720) as u32,
         dpr: params["dpr"].as_f64(),
@@ -116,10 +140,14 @@ pub async fn launch(host: &Arc<Host>, params: &Value) -> Result<Value> {
         deterministic,
         // The browser named, else SCANLINE_BROWSER (read where the browser is found), else the
         // pinned one if it has been installed, else whatever is on the machine.
-        browser: params["browser"]
-            .as_str()
-            .map(Into::into)
-            .or_else(|| std::env::var_os("SCANLINE_BROWSER").is_none().then(|| scanline_browser::pinned::pinned_binary(&host.home)).flatten()),
+        browser: app.or_else(|| {
+            params["browser"]
+                .as_str()
+                .map(Into::into)
+                .or_else(|| std::env::var_os("SCANLINE_BROWSER").is_none().then(|| scanline_browser::pinned::pinned_binary(&host.home)).flatten())
+        }),
+        display: display.clone(),
+        extra_args,
         debug_key: params["debug_key"].as_str().map(str::to_string),
         pointer_lock_shim: match params["pointer_lock"].as_str() {
             None | Some("native") => false,
@@ -136,6 +164,19 @@ pub async fn launch(host: &Arc<Host>, params: &Value) -> Result<Value> {
 
     // The person's Debug key is acted on whether or not an agent is waiting for it.
     tokio::spawn(crate::handoff::watch(host.clone(), session.clone()));
+
+    // The person closing the app's window ends the session: the app quits cleanly then,
+    // where a crash does not, and a crashed session is kept for its console and events.
+    if display == "app" {
+        let host = host.clone();
+        let session = session.clone();
+
+        tokio::spawn(async move {
+            if session.wait_browser_exit().await == Some(0) {
+                host.forget(&session.id, "the person closed its window.").await;
+            }
+        });
+    }
 
     if params["strip"] == true {
         if let Err(error) = session.open_strip().await {
@@ -368,6 +409,10 @@ pub async fn status(session: &Arc<Session>) -> Result<Value> {
         "gpu_process_pid": session.gpu_pid().await,
         "profile": session.profile.name(),
         "headless": session.headless,
+        "display": session.display,
+        "app_show": session.state.lock().unwrap().app_show.clone(),
+        "owner": session.state.lock().unwrap().owner.clone(),
+        "request": session.state.lock().unwrap().request.as_ref().map(|request| json!({ "id": request.id, "instruction": request.instruction })),
         "paused": top["paused"],
         "frame": top["frame"],
         "time_ms": top["time"],

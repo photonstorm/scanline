@@ -247,7 +247,16 @@ async fn connection(mut stream: TcpStream, port: u16, token: Arc<String>, host: 
         let call = |command: String, arguments: Value| {
             let host = host.clone();
 
-            async move { host.call(&command, arguments).await }
+            async move {
+                // Who asked is not an MCP client's to say (see control::Link::call).
+                let mut arguments = arguments;
+
+                if let Some(object) = arguments.as_object_mut() {
+                    object.remove("_by");
+                }
+
+                host.call(&command, arguments).await
+            }
         };
 
         let reply = match serde_json::from_slice::<Value>(&request.body) {

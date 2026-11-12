@@ -1,0 +1,29 @@
+[package]
+name = "scanline-app"
+version = "0.0.1"
+edition = "2024"
+publish = false
+license = "PolyForm-Shield-1.0.0"
+description = "The Scanline app: the game in Chromium and Scanline's panels beside it (docs/APP.md)."
+
+# A workspace of its own: it needs CEF and GPUI, which the host and its tests do not, and
+# builds with app/bundle.sh.
+[workspace]
+
+[[bin]]
+name = "Scanline"
+path = "src/main.rs"
+
+[dependencies]
+cef = "=156.4.0"
+gpui = { version = "=0.2.2", features = ["runtime_shaders"] }
+raw-window-handle = "0.6"
+serde_json = "1"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.3"
+objc2-foundation = { version = "0.3.2", features = ["NSGeometry"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"

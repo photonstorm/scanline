@@ -131,7 +131,7 @@ impl Host {
             .unwrap_or_else(|| "agent".to_string());
         let started = std::time::Instant::now();
         let shown = params.clone();
-        let outcome = self.run(method, params).await;
+        let outcome = self.run(method, params, &by).await;
 
         // The log is not logged, nor is the viewer's own keeping up to date.
         if !(method == "activity" || (by == "viewer")) {
@@ -208,7 +208,7 @@ impl Host {
         result(lines.join("\n"), json!({ "activity": rows, "next": next }))
     }
 
-    async fn run(self: &Arc<Self>, method: &str, params: Value) -> Result<Value> {
+    async fn run(self: &Arc<Self>, method: &str, params: Value, by: &str) -> Result<Value> {
         if !params.is_object() {
             bail!("Arguments to {method} must be a JSON object.");
         }
@@ -223,7 +223,11 @@ impl Host {
             Ok(session)
         };
 
-        tiers::check(self, method, &params, self.session(&params).ok().as_ref())?;
+        // The tiers bound what a client may ask. What the person does in the Scanline app
+        // or the viewer is the person's own, and theirs to do.
+        if by != "person" {
+            tiers::check(self, method, &params, self.session(&params).ok().as_ref())?;
+        }
 
         // One owner of the input at a time. While the person has it, the agent may look but
         // may not move time or send input: that would fight them for the game.
@@ -231,8 +235,9 @@ impl Host {
             if let Ok(session) = self.session(&params) {
                 let state = session.state.lock().unwrap();
 
-                // Input sent as the person's own is the person's, whoever typed the command.
-                if state.owner == "human" && !(method == "input" && params["as_person"] == true) {
+                // Input sent as the person's own is the person's, whoever typed the command, and
+                // what the person does through the app's toolbar is theirs too.
+                if state.owner == "human" && by != "person" && !(method == "input" && params["as_person"] == true) {
                     let asked = state.request.as_ref().map(|request| format!(" ({}: «{}»)", request.id, request.instruction)).unwrap_or_default();
 
                     return Err(anyhow!(
@@ -249,6 +254,8 @@ impl Host {
             "sessions" => Ok(self.list()),
             "activity" => Ok(self.activity(&params)),
             "viewer" => viewer::viewer(self, &live()?, &params).await,
+            // The Scanline app's Send to agent button, as the viewer's.
+            "send_to_agent" => Ok(viewer::send_to_agent(&*live()?, &params)),
             "navigate" => commands::navigate(&live()?, &params).await,
             "close" => self.close(&params).await,
             "pause" => commands::pause(&live()?).await,
@@ -369,8 +376,10 @@ impl Host {
 
     fn list(&self) -> Value {
         let sessions = self.sessions.lock().unwrap();
-        let rows: Vec<Value> =
-            sessions.values().map(|session| json!({ "session": session.id, "url": session.url(), "profile": session.profile.name() })).collect();
+        let rows: Vec<Value> = sessions
+            .values()
+            .map(|session| json!({ "session": session.id, "url": session.url(), "profile": session.profile.name(), "display": session.display }))
+            .collect();
 
         let summary = if rows.is_empty() {
             "No sessions are open. Call launch with a url to start one.".to_string()
@@ -396,6 +405,16 @@ impl Host {
         session.close().await;
 
         Ok(result(format!("{} closed. Images it wrote remain in {}.", session.id, session.dir.join("images").display()), json!({ "session": session.id })))
+    }
+
+    /// Drops a session whose browser has gone for good, closing what is left of it.
+    pub async fn forget(&self, id: &str, reason: &str) {
+        let session = self.sessions.lock().unwrap().remove(id);
+
+        if let Some(session) = session {
+            session.state.lock().unwrap().dead = Some(reason.to_string());
+            session.close().await;
+        }
     }
 
     /// Closes every browser. Called when the host stops.

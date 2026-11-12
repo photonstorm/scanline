@@ -234,7 +234,13 @@ impl Link {
         Link { lines: BufReader::new(read).lines(), write, next_id: 1 }
     }
 
-    pub async fn call(&mut self, method: &str, params: Value) -> Result<Value> {
+    /// Calls the host as an agent. Who asked is not the caller's to say: the host would let
+    /// a call marked as the person's past the tiers, and only the app and the viewer may.
+    pub async fn call(&mut self, method: &str, mut params: Value) -> Result<Value> {
+        if let Some(object) = params.as_object_mut() {
+            object.remove("_by");
+        }
+
         let id = self.next_id;
 
         self.next_id += 1;

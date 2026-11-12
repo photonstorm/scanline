@@ -45,6 +45,7 @@ pub const TOOLS: &[Tool] = &[
             r#""url": { "type": "string", "description": "A URL, or a path to a local HTML file." }"#,
             r#""start": { "type": "string", "enum": ["running", "paused"], "description": "paused holds the first frame until you step or resume. Default running." }"#,
             r#""headless": { "type": "boolean", "description": "No window. Default false: a person can watch and play." }"#,
+            r#""display": { "type": "string", "enum": ["window", "app", "headless"], "description": "window: a browser window (default, or SCANLINE_DISPLAY). app: the Scanline app, with the game and its panels in one window. headless: no window." }"#,
             r#""viewport": { "type": "object", "properties": { "width": { "type": "integer" }, "height": { "type": "integer" } } }"#,
             r#""dpr": { "type": "number", "description": "Device pixel ratio to emulate." }"#,
             r#""profile": { "type": "string", "enum": ["stock", "deep", "software", "native-capture"], "description": "stock: as users get it. deep: WebGPU developer features. software: software rasteriser. native-capture: GPU sandbox off, for attaching Xcode's Metal debugger or RenderDoc; the person must allow it." }"#,
