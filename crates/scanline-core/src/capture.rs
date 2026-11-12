@@ -1451,7 +1451,7 @@ pub async fn capture(host: &Arc<Host>, session: &Arc<Session>, params: &Value) -
 
     let top = session.top()?;
     let was_running = session.probe(&top, "status", json!({}), SHORT).await?["paused"] == false;
-    let _busy = session.begin("capture", "Waiting for the next frame");
+    let _busy = session.begin("capture", "Waiting for a frame");
 
     // The state read when the capture is armed must be the state the frame begins with.
     session.probe_all("pause", json!({}), SHORT).await;
@@ -1460,7 +1460,7 @@ pub async fn capture(host: &Arc<Host>, session: &Arc<Session>, params: &Value) -
     let id = armed["capture"].clone();
     let stepped = session.probe_all("step", json!({ "frames": 1 }), Duration::from_secs(20)).await;
 
-    session.stage("Reading the frame's textures and buffers in the page");
+    session.stage("Reading textures and buffers");
 
     let taken = session.probe(&context.instance, "capture.take", json!({ "capture": id }), LONG).await;
 
@@ -1477,7 +1477,7 @@ pub async fn capture(host: &Arc<Host>, session: &Arc<Session>, params: &Value) -
         }
     };
 
-    session.stage("Bringing the frame's data from the page");
+    session.stage("Fetching data");
 
     // Quick: everything but the large blobs now, and those (the textures) in the background.
     let mut body = described(&taken)?;
@@ -1487,7 +1487,7 @@ pub async fn capture(host: &Arc<Host>, session: &Arc<Session>, params: &Value) -
 
     bring(host, session, &context.instance, &id, &now, &sizes, &mut hashes).await?;
 
-    session.stage("Reading the frame's picture");
+    session.stage("Reading the picture");
 
     // The frame's own final image, as the page drew it.
     let original = decode_grab(&session.probe(&context.instance, "image.grab", json!({ "context": context.local }), Duration::from_secs(20)).await?)?;
@@ -1516,7 +1516,7 @@ pub async fn capture(host: &Arc<Host>, session: &Arc<Session>, params: &Value) -
     let (host, session, instance, params) = (host.clone(), session.clone(), context.instance.clone(), params.clone());
 
     tokio::spawn(async move {
-        let _busy = session.begin_for("capture", "Bringing the frame's textures from the page", Some(handle.clone()));
+        let _busy = session.begin_for("capture", "Fetching textures", Some(handle.clone()));
         let brought = bring(&host, &session, &instance, &id, &later, &sizes, &mut hashes).await;
         let _ = session.probe(&instance, "capture.release", json!({ "capture": id }), SHORT).await;
 
@@ -1732,9 +1732,9 @@ pub(crate) async fn finish(host: &Arc<Host>, session: &Arc<Session>, handle: &st
     // comes from replay is suspect, and says so.
     let store = &host.store;
 
-    session.stage("Loading the frame into the replay");
+    session.stage("Loading the replay");
     session.replay_load(&handle, &body, &|index| store.get_blob(&hashes[index])).await?;
-    session.stage("Replaying the frame to check it");
+    session.stage("Checking the replay");
 
     // A capture that cannot be replayed is still kept: what it says can be read, and the
     // verdict says why nothing can be asked of what it did.
@@ -1780,7 +1780,7 @@ pub(crate) async fn finish(host: &Arc<Host>, session: &Arc<Session>, handle: &st
     let mut effects = HashMap::new();
     let mut effect_note = None;
 
-    session.stage("Measuring what each draw changed");
+    session.stage("Measuring draws");
 
     match if replayed.is_null() { Err(anyhow!("the capture does not replay")) } else { session.replay("effects", &json!({ "key": handle }), LONG).await } {
         Ok(measured) if measured["skipped"] == true => {
@@ -1821,7 +1821,7 @@ pub(crate) async fn finish(host: &Arc<Host>, session: &Arc<Session>, handle: &st
         host.store.get_blob(body["blob_hashes"][place].as_str()?).ok()
     };
 
-    session.stage("Building the capture's tables");
+    session.stage("Building tables");
 
     let (capture_tables, mut counts) = tables(&body, tag, &errors, &effects, &call_data);
 
@@ -1892,7 +1892,7 @@ pub(crate) async fn finish(host: &Arc<Host>, session: &Arc<Session>, handle: &st
         "blob_bytes": body["blob_bytes"],
     });
 
-    session.stage("Writing the capture");
+    session.stage("Writing");
     host.store.write_capture(&handle, &body, &meta, capture_tables)?;
 
     let final_path = host.store.capture_dir(&handle).join("final.png");

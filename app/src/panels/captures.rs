@@ -510,15 +510,15 @@ fn list_of_captures(player: &mut Player, cx: &mut Context<Player>) -> gpui::Div 
                 .flex()
                 .items_center()
                 .gap_2()
-                .child(icon_label("capture-now", "capture", "Capture the next frame", PURPLE).on_click(cx.listener(|this, _, _, cx| {
+                .child(icon_label("capture-now", "capture", "Capture", PURPLE).on_click(cx.listener(|this, _, _, cx| {
                     this.capture();
                     cx.notify();
                 })))
-                .child(icon_label("record", "video", "Record 2 s", ORANGE).on_click(cx.listener(|this, _, _, cx| {
+                .child(icon_label("record", "video", "Record 2s", ORANGE).on_click(cx.listener(|this, _, _, cx| {
                     this.record(120);
                     cx.notify();
                 })))
-                .child(note("⇧⌘C from anywhere")),
+                .child(note("⇧⌘C")),
         )
         .when(!recordings.is_empty(), |list| {
             list.child(section("Recordings")).child(div().flex().flex_wrap().gap_1().children(recordings.into_iter().map(|recording| {
@@ -530,8 +530,8 @@ fn list_of_captures(player: &mut Player, cx: &mut Context<Player>) -> gpui::Div 
                 }))
             })))
         })
-        .when(!rows.is_empty(), |list| list.child(section(format!("{} captures, newest first", rows.len()))))
-        .when(rows.is_empty(), |list| list.child(note("No captures yet. A capture keeps one whole frame: every draw, its state and its target.")))
+        .when(!rows.is_empty(), |list| list.child(section(format!("{} captures", rows.len()))))
+        .when(rows.is_empty(), |list| list.child(note("No captures.")))
         .child(grid)
 }
 
@@ -576,7 +576,7 @@ fn state_of(draw: &Value) -> gpui::Div {
         .gap(px(3.0))
         .children(rows.into_iter().map(|(label, value)| row(label, value)))
         .when(!textures.is_empty(), |list| {
-            list.child(note("Textures bound")).children(textures.into_iter().map(|unit| {
+            list.child(section("Textures")).children(textures.into_iter().map(|unit| {
                 let bound: Vec<String> =
                     ["t2d", "cube", "t3d", "array"].iter().filter_map(|key| unit[*key].as_i64().map(|id| format!("{key} tex_{id}"))).collect();
 
@@ -584,14 +584,14 @@ fn state_of(draw: &Value) -> gpui::Div {
             }))
         })
         .when(!uniforms.is_empty(), |list| {
-            list.child(note("Uniforms")).children(uniforms.into_iter().take(40).map(|(name, value)| {
+            list.child(section("Uniforms")).children(uniforms.into_iter().take(40).map(|(name, value)| {
                 let text = value.to_string();
 
                 row(name, if text.len() > 120 { format!("{}…", &text[..120]) } else { text })
             }))
         })
         .when(!groups.is_empty(), |list| {
-            list.child(note("Bind groups")).children(groups.into_iter().take(12).map(|group| {
+            list.child(section("Bind groups")).children(groups.into_iter().take(12).map(|group| {
                 let text = group.to_string();
 
                 div().text_xs().font_family(MONO).text_color(rgb(TEXT)).child(if text.len() > 300 { format!("{}…", &text[..300]) } else { text })
@@ -829,7 +829,7 @@ fn bound_resources(player: &Player, draw: &Value, cx: &mut Context<Player>) -> g
                 .id("bound-program")
                 .cursor_pointer()
                 .hover(|row| row.bg(tint(AMBER, 0.08)))
-                .child(binding_row("program", AMBER, program.clone(), "Program".into(), "open in Resources".into(), None))
+                .child(binding_row("program", AMBER, program.clone(), "Program".into(), String::new(), None))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.show(crate::panels::Panel::Resources);
                     this.select_resource(chosen.clone());
@@ -979,7 +979,7 @@ fn timeline(player: &Player, cx: &mut Context<Player>) -> gpui::Div {
     let total_ms = timing.map(|timing| timing.values().sum::<f64>() / 1e6);
     let chosen = state.selected;
     let caption = match (chosen, timing) {
-        (Some(draw), Some(timing)) => timing.get(&draw).map(|ns| format!("event {draw}: {:.3} ms, {:.1}% of the frame's GPU time", ns / 1e6, ns / 1e6 / total_ms.unwrap_or(1.0) * 100.0)),
+        (Some(draw), Some(timing)) => timing.get(&draw).map(|ns| format!("event {draw}: {:.3} ms · {:.1}%", ns / 1e6, ns / 1e6 / total_ms.unwrap_or(1.0) * 100.0)),
         _ => None,
     };
 
@@ -1063,16 +1063,13 @@ fn timeline(player: &Player, cx: &mut Context<Player>) -> gpui::Div {
                 .items_center()
                 .gap_2()
                 .child(crate::icons::icon("timer", 13.0, rgb(CYAN)))
-                .child(section("Frame timeline"))
-                .child(note(match total_ms {
-                    Some(ms) => format!("{ms:.2} ms of GPU time, each draw as wide as it took (timed over 16 repeats); coloured by program"),
-                    None if state.measuring => "Timing every draw on the GPU…".to_string(),
-                    None => "Each event alike until measured; coloured by program".to_string(),
-                }))
+                .child(section("Timeline"))
+                .when_some(total_ms, |row, ms| row.child(note(format!("{ms:.2} ms GPU"))))
+                .when(state.measuring, |row| row.child(note("Measuring…")))
                 .child(div().flex_1())
                 .when_some(caption, |row, caption| row.child(div().text_xs().font_family(MONO).text_color(rgb(TEXT)).child(caption)))
                 .when(timing.is_none(), |row| {
-                    row.child(icon_label("measure", "timer", if state.measuring { "Measuring…" } else { "Measure GPU time" }, CYAN).on_click(cx.listener(|this, _, _, cx| {
+                    row.child(icon_label("measure", "timer", "Measure", CYAN).on_click(cx.listener(|this, _, _, cx| {
                         this.measure_capture();
                         cx.notify();
                     })))
@@ -1124,12 +1121,12 @@ fn magnifier_card(player: &Player, cx: &mut Context<Player>) -> Option<gpui::Div
     let height = ((h as f32 / w as f32) * 420.0).clamp(140.0, 420.0);
 
     Some(
-        card(format!("Magnifier · {} · {w}×{h} at x {x} y {y}, {}×", magnifier.target, magnifier.zoom), CYAN)
+        card(format!("{} · {w}×{h} at {x}, {y} · {}×", magnifier.target, magnifier.zoom), CYAN)
             .child(
                 group()
-                    .child(tab("magnify-after", format!("After event {}", magnifier.draw), Showing::After, magnifier.after.is_some()))
-                    .child(tab("magnify-before", "Before it".into(), Showing::Before, magnifier.before.is_some()))
-                    .child(tab("magnify-changed", "What it changed".into(), Showing::Changed, magnifier.changed.is_some() || magnifier.unchanged))
+                    .child(tab("magnify-after", "After".into(), Showing::After, magnifier.after.is_some()))
+                    .child(tab("magnify-before", "Before".into(), Showing::Before, magnifier.before.is_some()))
+                    .child(tab("magnify-changed", "Diff".into(), Showing::Changed, magnifier.changed.is_some() || magnifier.unchanged))
                     .child(icon_button("magnify-close", "close", DIM, false).on_click(cx.listener(|this, _, _, cx| {
                         this.captures.magnifier = None;
                         cx.notify();
@@ -1174,10 +1171,10 @@ fn magnifier_card(player: &Player, cx: &mut Context<Player>) -> Option<gpui::Div
                             .justify_center()
                             .gap_2()
                             .child(crate::icons::icon("check", 14.0, rgb(GREEN)))
-                            .child(note(format!("Event {} changed nothing here.", magnifier.draw)))
+                            .child(note("No change"))
                             .into_any_element(),
                         (Some(path), None) => img(path.clone()).size_full().object_fit(ObjectFit::Contain).into_any_element(),
-                        (None, None) => div().size_full().flex().items_center().justify_center().child(note("Reading the region…")).into_any_element(),
+                        (None, None) => div().size_full().flex().items_center().justify_center().child(note("Reading…")).into_any_element(),
                     }),
             )
             .child(
@@ -1191,7 +1188,7 @@ fn magnifier_card(player: &Player, cx: &mut Context<Player>) -> Option<gpui::Div
                     .text_color(rgb(TEXT))
                     .child(match hover {
                         Some((hx, hy)) => format!("x {} y {}", x + hx, y + hy),
-                        None => "Point at a pixel for its value".to_string(),
+                        None => String::new(),
                     })
                     .when_some(before.clone(), |row, (rgba, text)| row.child(div().text_color(rgb(DIM)).child("before")).child(swatch(rgba)).child(text))
                     .when_some(after.clone(), |row, (rgba, text)| row.child(div().text_color(rgb(DIM)).child("after")).child(swatch(rgba)).child(text))
@@ -1199,6 +1196,17 @@ fn magnifier_card(player: &Player, cx: &mut Context<Player>) -> Option<gpui::Div
             )
             .when_some(magnifier.summary.clone(), |card, summary| card.child(note(summary))),
     )
+}
+
+/// A finding as the person reads it: without the sentences that tell an agent which command to
+/// call next ("draw(draw: 10) says which test rejected it").
+fn for_people(text: &str) -> String {
+    let calls = |sentence: &str| {
+        sentence.char_indices().any(|(at, c)| c == '(' && at > 0 && sentence[..at].chars().last().is_some_and(|before| before.is_ascii_lowercase() || before == '_') && sentence[at..].contains(':'))
+    };
+    let kept: Vec<&str> = text.split_inclusive(". ").filter(|sentence| !calls(sentence)).collect();
+
+    if kept.is_empty() { text.to_string() } else { kept.concat().trim_end().to_string() }
 }
 
 /// The depth attachment's picture for the chosen draw, if it has one.
@@ -1221,13 +1229,13 @@ fn attachments_grid(player: &Player, columns: usize, cx: &mut Context<Player>) -
             .gap_2()
             .child(crate::icons::icon("framebuffer", 13.0, rgb(GREEN)))
             .child(section(match &target {
-                Some(target) => format!("Attachments of {target}"),
+                Some(target) => format!("Attachments · {target}"),
                 None => "Attachments".to_string(),
             })),
     );
 
     let Some(attachments) = &state.attachments else {
-        return grid.child(note(if state.selected.is_some() { "Reading every attachment as it stood after this draw…" } else { "Pick a draw." }));
+        return grid.child(note(if state.selected.is_some() { "Reading…" } else { "" }));
     };
 
     let tiles: Vec<Value> = attachments["attachments"].as_array().cloned().unwrap_or_default();
@@ -1304,7 +1312,7 @@ fn attachments_grid(player: &Player, columns: usize, cx: &mut Context<Player>) -
 
     grid = grid.children(rows);
 
-    grid.child(note("Green: the target this draw wrote to. Click one to see it large."))
+    grid
 }
 
 fn workspace(player: &mut Player, cx: &mut Context<Player>) -> gpui::Div {
@@ -1352,7 +1360,7 @@ fn workspace(player: &mut Player, cx: &mut Context<Player>) -> gpui::Div {
             this.toggle_wide();
             cx.notify();
         })))
-        .child(icon_label("send", "send", "Send to agent", BLUE).on_click(cx.listener(|this, _, _, cx| {
+        .child(icon_label("send", "send", "Send", BLUE).on_click(cx.listener(|this, _, _, cx| {
             this.send_to_agent();
             cx.notify();
         })));
@@ -1360,7 +1368,7 @@ fn workspace(player: &mut Player, cx: &mut Context<Player>) -> gpui::Div {
     // A note of the person's own, sent with the capture, draw and pixel.
     let noting = player.noting;
     let shown =
-        if player.note.is_empty() && !noting { "A note for the agent (optional), then Return or Send to agent".to_string() } else { player.note.clone() };
+        if player.note.is_empty() && !noting { "Note for the agent".to_string() } else { player.note.clone() };
     let note_field = div()
         .id("note")
         .track_focus(&player.note_focus)
@@ -1390,8 +1398,9 @@ fn workspace(player: &mut Player, cx: &mut Context<Player>) -> gpui::Div {
         .child(format!("{shown}{}", if noting { "▏" } else { "" }));
 
     let worth = (!findings.is_empty()).then(|| {
-        card("Worth a look", RED).children(findings.into_iter().take(8).map(|finding| {
+        card("Findings", RED).children(findings.into_iter().take(8).map(|finding| {
             let text = finding.as_str().or(finding["text"].as_str()).or(finding["summary"].as_str()).map(str::to_string).unwrap_or_else(|| finding.to_string());
+            let text = for_people(&text);
 
             div().flex().gap_2().text_xs().text_color(rgb(TEXT)).child(crate::icons::icon("warning", 12.0, tint(RED, 0.85))).child(div().flex_1().min_w_0().child(text))
         }))
@@ -1400,14 +1409,11 @@ fn workspace(player: &mut Player, cx: &mut Context<Player>) -> gpui::Div {
     // The big picture: the draw's own target, or an attachment chosen in the grid.
     let enlarged = state.enlarged.and_then(|index| state.attachments.as_ref()?["attachments"][index]["image"].as_str().map(PathBuf::from));
     let caption = match (state.enlarged.and_then(|index| state.attachments.as_ref().map(|all| all["attachments"][index].clone())), selected) {
-        (Some(tile), Some(draw)) => format!("{}: {} after event {draw}", tile["attachment"].as_str().unwrap_or(""), tile["handle"].as_str().unwrap_or("")),
+        (Some(tile), Some(draw)) => format!("{} · {} · event {draw}", tile["attachment"].as_str().unwrap_or(""), tile["handle"].as_str().unwrap_or("")),
         (None, Some(draw)) if state.error.is_some() && depth_picture(state).is_some() => {
-            format!("Depth of {} after event {draw} (it has no colour)", state.draw.as_ref().and_then(|draw| draw["state"]["targetName"].as_str()).unwrap_or("the target"))
+            format!("{} depth · event {draw}", state.draw.as_ref().and_then(|draw| draw["state"]["targetName"].as_str()).unwrap_or("target"))
         }
-        (None, Some(draw)) => format!(
-            "{} after event {draw} · click a pixel for its history, drag a box to magnify it",
-            state.draw.as_ref().and_then(|draw| draw["state"]["targetName"].as_str()).unwrap_or("the target")
-        ),
+        (None, Some(draw)) => format!("{} · event {draw}", state.draw.as_ref().and_then(|draw| draw["state"]["targetName"].as_str()).unwrap_or("target")),
         _ => String::new(),
     };
     let place = state.picture.clone();
@@ -1465,7 +1471,7 @@ fn workspace(player: &mut Player, cx: &mut Context<Player>) -> gpui::Div {
             }
             (_, Some(error)) => div().p_3().text_xs().text_color(rgb(RED)).child(error.clone()).into_any_element(),
             (Some(path), None) => img(path).size_full().object_fit(ObjectFit::Contain).into_any_element(),
-            (None, None) => note(if selected.is_some() { "Replaying to this draw…" } else { "" }).into_any_element(),
+            (None, None) => note(if selected.is_some() { "Replaying…" } else { "" }).into_any_element(),
         })
         // Over the picture, so drawn after it.
         .when_some(marked, |frame, ((left, top, width, height), colour, live)| {
@@ -1491,7 +1497,7 @@ fn workspace(player: &mut Player, cx: &mut Context<Player>) -> gpui::Div {
         let found = card(format!("Pixel ({x}, {y})"), CYAN);
 
         match &state.story {
-            None => found.child(note("Asking which draws touched it…")),
+            None => found.child(note("Reading…")),
             Some(story) => {
                 let swatch = |rgba: &Value| -> gpui::Div {
                     let channel = |index: usize| rgba[index].as_u64().unwrap_or(0) as u32;
@@ -1540,14 +1546,14 @@ fn workspace(player: &mut Player, cx: &mut Context<Player>) -> gpui::Div {
 
         match (effect["changed"].as_u64(), draw["why"].as_str().or(draw["rejected"].as_str())) {
             (_, Some(why)) => why.to_string(),
-            (Some(0), None) => "Changed nothing.".to_string(),
-            (Some(changed), None) => format!("Changed {changed} pixels."),
+            (Some(0), None) => "No change".to_string(),
+            (Some(changed), None) => format!("{changed} pixels changed"),
             _ => String::new(),
         }
     });
     let table = match (&draw, selected) {
-        (_, None) => note("Pick a draw in the navigator.").into_any_element(),
-        (None, Some(number)) => note(format!("Reading draw {number}…")).into_any_element(),
+        (_, None) => note("").into_any_element(),
+        (None, Some(_)) => note("Reading…").into_any_element(),
         (Some(draw), Some(_)) => bound_resources(player, draw, cx).into_any_element(),
     };
     let magnified = magnifier_card(player, cx);
@@ -1574,7 +1580,7 @@ fn workspace(player: &mut Player, cx: &mut Context<Player>) -> gpui::Div {
 
     let line = (!player.captures.events.is_empty()).then(|| timeline(player, cx));
 
-    div().flex().flex_col().gap_2().child(header).child(note_field).when(loading, |content| content.child(note("Reading the capture…"))).children(line).child(body)
+    div().flex().flex_col().gap_2().child(header).child(note_field).when(loading, |content| content.child(note("Reading…"))).children(line).child(body)
 }
 
 /// A recording: its contact sheet, what the host says of it, and its frames, any of which
@@ -1604,7 +1610,7 @@ fn recording(player: &mut Player, cx: &mut Context<Player>) -> gpui::Div {
                 .flex()
                 .items_center()
                 .gap_2()
-                .child(button("back-recording", "◀  All", DIM).on_click(cx.listener(|this, _, _, cx| {
+                .child(icon_label("back-recording", "undo", "All", DIM).on_click(cx.listener(|this, _, _, cx| {
                     this.captures.recording = None;
                     cx.notify();
                 })))
@@ -1624,7 +1630,6 @@ fn recording(player: &mut Player, cx: &mut Context<Player>) -> gpui::Div {
                     .child(img(sheet).size_full().object_fit(ObjectFit::Contain)),
             )
         })
-        .child(note("Each frame by number. Unusual ones are marked in red. Click one to make it a capture."))
         .child(div().flex().flex_wrap().gap_1().children(frames.into_iter().map(|frame| {
             let number = frame["frame"].as_u64().unwrap_or(0);
             let unusual = frame["unusual"] == true;
@@ -1660,4 +1665,18 @@ pub fn render(player: &mut Player, _window: &mut Window, cx: &mut Context<Player
     };
 
     crate::panels::frame("captures", "Captures", PURPLE, content)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_finding_keeps_its_facts_and_loses_the_agent_s_next_step() {
+        assert_eq!(
+            for_people("33 draws changed no pixels: events 11–15, 25–28. draw(draw: 11) says which test rejected it."),
+            "33 draws changed no pixels: events 11–15, 25–28."
+        );
+        assert_eq!(for_people("Event 9 blends, but opaque events 11–12 are drawn after it."), "Event 9 blends, but opaque events 11–12 are drawn after it.");
+    }
 }

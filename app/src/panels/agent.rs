@@ -51,10 +51,10 @@ pub fn render(player: &mut Player, _window: &mut Window, cx: &mut Context<Player
     let human = player.status["owner"] == "human";
 
     let asked = request["instruction"].as_str().map(|instruction| {
-        card("The agent asks you", AMBER)
+        card("Agent request", AMBER)
             .child(div().text_sm().text_color(rgb(TEXT)).child(format!("«{instruction}»")))
-            .child(note("Play until it happens, then press Debug: the frames before the press are kept for the agent."))
-            .child(div().flex().gap_2().child(button("agent-debug", "⚑  Debug", RED).on_click(cx.listener(|this, _, _, cx| {
+            .child(note("Press Debug when it happens."))
+            .child(div().flex().gap_2().child(icon_label("agent-debug", "flag", "Debug", RED).on_click(cx.listener(|this, _, _, cx| {
                 this.debug();
                 cx.notify();
             }))))
@@ -136,19 +136,15 @@ pub fn render(player: &mut Player, _window: &mut Window, cx: &mut Context<Player
                     .flex()
                     .flex_col()
                     .gap_1p5()
-                    .child(note(if human {
-                        "You have the input. The agent can look, but not move time or send input."
-                    } else {
-                        "Newest first. Click a line to read all of it."
-                    }))
+                    .when(human, |bar| bar.child(note("You have the input.")))
                     .when(human, |bar| {
-                        bar.child(button("give-back", "Give the agent the input", BLUE).on_click(cx.listener(|this, _, _, cx| {
+                        bar.child(icon_label("give-back", "agent", "Hand back", BLUE).on_click(cx.listener(|this, _, _, cx| {
                             this.take_input(false);
                             cx.notify();
                         })))
                     }),
             )
-            .when(player.agent.rows.is_empty(), |content| content.child(note("No commands yet. An agent's work on this session appears here as it happens.")))
+            .when(player.agent.rows.is_empty(), |content| content.child(note("No activity.")))
             .child(list),
     )
 }

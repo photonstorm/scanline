@@ -29,40 +29,38 @@
 </style>
 <main>
     <h1>Scanline</h1>
-    <p class="lead">The game runs here, in Chromium. Everything Scanline knows about how it renders is in the panels on the right.</p>
     <h2 class="section">Projects</h2>
     <!-- projects -->
     <canvas id="scene" width="1280" height="420"></canvas>
     <div class="grid">
         <div class="card">
-            <h2>Open a game</h2>
+            <h2>Open</h2>
             <ul>
-                <li><kbd>⌘L</kbd> type an address, then <kbd>↩</kbd></li>
-                <li><kbd>⌘N</kbd> a new window: a new session</li>
+                <li><kbd>⌘L</kbd> address</li>
+                <li><kbd>⌘N</kbd> new window</li>
                 <li><kbd>⌘R</kbd> reload</li>
-                <li><kbd>⇧⌘E</kbd> a size, <kbd>⇧⌘M</kbd> mute</li>
-                <li><kbd>Esc</kbd> the pointer and screen back</li>
+                <li><kbd>⇧⌘E</kbd> size · <kbd>⇧⌘M</kbd> mute</li>
+                <li><kbd>Esc</kbd> release pointer</li>
             </ul>
         </div>
         <div class="card amber">
             <h2>Time</h2>
             <ul>
-                <li><kbd>⌘.</kbd> pause or run</li>
-                <li><kbd>⌘'</kbd> step one frame</li>
-                <li><kbd>⌘[</kbd> <kbd>⌘]</kbd> slower, faster</li>
+                <li><kbd>⌘.</kbd> pause</li>
+                <li><kbd>⌘'</kbd> step</li>
+                <li><kbd>⌘[</kbd> <kbd>⌘]</kbd> speed</li>
             </ul>
         </div>
         <div class="card purple">
-            <h2>Look inside</h2>
+            <h2>Inspect</h2>
             <ul>
-                <li><kbd>⇧⌘C</kbd> capture a frame</li>
-                <li><kbd>⌘1</kbd>–<kbd>⌘6</kbd> Live, Resources, Captures, Experiments, Console, Agent</li>
-                <li><kbd>⌘\</kbd> a wider panel</li>
+                <li><kbd>⇧⌘C</kbd> capture</li>
+                <li><kbd>⌘1</kbd>–<kbd>⌘6</kbd> panels</li>
+                <li><kbd>⌘\</kbd> wide</li>
             </ul>
         </div>
     </div>
-    <p class="lead" style="margin-top: 1.4rem; font-size: 0.8rem">Icons: Streamline Core Line – Free, by Streamline (streamlinehq.com), CC BY 4.0.</p>
-    <p class="lead" style="margin-top: 1.4rem">An agent can drive this window too: <code>launch(url, display: "app")</code>, or set <code>SCANLINE_DISPLAY=app</code>. What it does appears under Agent as it happens.</p>
+    <p class="lead" style="margin-top: 1.4rem; font-size: 0.8rem">Icons: Streamline Core Line Free (streamlinehq.com), CC BY 4.0.</p>
 </main>
 <script>
 // A small WebGL scene, so the panels have something to measure: a ring of glowing bars.

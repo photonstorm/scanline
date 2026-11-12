@@ -281,11 +281,11 @@ fn facts(detail: &Value, keys: &[&str]) -> gpui::Div {
 fn made_at(detail: &Value) -> Option<gpui::Div> {
     let site = detail["site"].as_str().filter(|site| !site.is_empty())?;
 
-    Some(div().flex().flex_col().gap_1().child(note("Made at")).child(div().text_xs().font_family(MONO).text_color(rgb(DIM)).child(site.replace(" < ", "\n"))))
+    Some(div().flex().flex_col().gap_1().child(section("Created")).child(div().text_xs().font_family(MONO).text_color(rgb(DIM)).child(site.replace(" < ", "\n"))))
 }
 
 fn back(id: &'static str, label: &'static str, cx: &mut Context<Player>) -> gpui::Stateful<gpui::Div> {
-    button(id, label, DIM).on_click(cx.listener(|this, _, _, cx| {
+    icon_label(id, "undo", label, DIM).on_click(cx.listener(|this, _, _, cx| {
         this.resources.selected = None;
         this.resources.detail = None;
         cx.notify();
@@ -391,10 +391,10 @@ fn texture(player: &mut Player, value: &Value, cx: &mut Context<Player>) -> gpui
         .overflow_hidden()
         .child(match picture {
             Some(path) => img(path).size_full().object_fit(ObjectFit::Contain).into_any_element(),
-            None => note(value["summary"].as_str().unwrap_or("No picture of this texture.").lines().last().unwrap_or("").to_string()).p_3().into_any_element(),
+            None => note(value["summary"].as_str().unwrap_or("No picture.").lines().last().unwrap_or("").to_string()).p_3().into_any_element(),
         });
 
-    let stand_ins = div().flex().items_center().gap_1().child(note("Stand in:")).children(["checker", "white", "black", "mips"].into_iter().map(|with| {
+    let stand_ins = div().flex().items_center().gap_1().child(section("Replace")).children(["checker", "white", "black", "mips"].into_iter().map(|with| {
         let key = format!("{handle}:{with}");
         let on = player.experiments.on(&key);
         let chosen = handle.clone();
@@ -445,11 +445,11 @@ fn texture(player: &mut Player, value: &Value, cx: &mut Context<Player>) -> gpui
                 .child(div().flex_1())
                 .child(match texel {
                     Some(texel) => div().text_xs().font_family(MONO).text_color(rgb(CYAN)).child(texel),
-                    None => note("Click the picture for a texel's exact value."),
+                    None => note("Click for a texel value."),
                 }),
         )
         .child(stand_ins)
-        .child(card("Facts", AMBER).child(facts(
+        .child(card("Details", AMBER).child(facts(
             &detail,
             &[
                 "what",
@@ -523,7 +523,7 @@ fn shader(player: &mut Player, value: &Value, cx: &mut Context<Player>) -> gpui:
                 ))
                 .when(has_translation, |bar| {
                     bar.child(
-                        button("translated", "As the GPU gets it", if translated { CYAN } else { DIM })
+                        button("translated", "Translated", if translated { CYAN } else { DIM })
                             .when(translated, |button| button.bg(tint(CYAN, 0.25)))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.resources.translated = true;
@@ -535,7 +535,6 @@ fn shader(player: &mut Player, value: &Value, cx: &mut Context<Player>) -> gpui:
         )
         .when_some(log, |content, log| content.child(card("Compile log", RED).child(div().text_xs().font_family(MONO).text_color(rgb(RED)).child(log))))
         .child(div().rounded_md().bg(rgb(FIELD)).border_1().border_color(tint(FAINT, 0.8)).p_2().child(code))
-        .child(note("To change a shader, open its program and press Edit: it opens in your own editor, and each save is tried in the game at once."))
         .children(made_at(&detail))
 }
 
@@ -550,7 +549,7 @@ fn program(player: &mut Player, value: &Value, cx: &mut Context<Player>) -> gpui
     let attributes = detail["attributes"].as_array().cloned().unwrap_or_default();
     let filter_key = if kind_of(&handle) == "pipeline" { "pipeline" } else { "program" };
 
-    let switches = div().flex().items_center().gap_1().child(note("Its draws:")).children(
+    let switches = div().flex().items_center().gap_1().child(section("Draws")).children(
         [("skip", "Hide"), ("solid", "Flat"), ("isolate", "Only")].into_iter().map(|(mode, label)| {
             let key = format!("{handle}:{mode}");
             let on = player.experiments.on(&key);
@@ -565,7 +564,7 @@ fn program(player: &mut Player, value: &Value, cx: &mut Context<Player>) -> gpui
         }),
     );
 
-    let shader_buttons = div().flex().flex_wrap().items_center().gap_1().child(note("Shaders:")).children(shaders.iter().flat_map(|shader| {
+    let shader_buttons = div().flex().flex_wrap().items_center().gap_1().child(section("Shaders")).children(shaders.iter().flat_map(|shader| {
         let open = shader.clone();
         let edit = shader.clone();
         let program = handle.clone();
@@ -612,7 +611,7 @@ fn program(player: &mut Player, value: &Value, cx: &mut Context<Player>) -> gpui
         .child(shader_buttons)
         .child(table("Uniforms, with the value last set", uniforms, AMBER))
         .child(table("Attributes", attributes, CYAN))
-        .child(card("Facts", PURPLE).child(facts(&detail, &["what", "linked", "links", "used", "log"])))
+        .child(card("Details", PURPLE).child(facts(&detail, &["what", "linked", "links", "used", "log"])))
         .children(made_at(&detail))
 }
 
@@ -677,7 +676,7 @@ fn buffer(player: &mut Player, value: &Value, cx: &mut Context<Player>) -> gpui:
                     cx.notify();
                 })))
                 .child(div().flex_1())
-                .child(button("as", if floats { "As hex" } else { "As float32" }, CYAN).on_click(cx.listener(|this, _, _, cx| {
+                .child(button("as", if floats { "Hex" } else { "Float32" }, CYAN).on_click(cx.listener(|this, _, _, cx| {
                     this.resources.floats = !this.resources.floats;
                     cx.notify();
                 }))),
@@ -693,7 +692,7 @@ fn buffer(player: &mut Player, value: &Value, cx: &mut Context<Player>) -> gpui:
                     .child(div().text_color(rgb(TEXT)).whitespace_nowrap().child(line))
             },
         )))
-        .child(card("Facts", AMBER).child(facts(detail, &["what", "size", "usage", "target", "element", "used", "written"])))
+        .child(card("Details", AMBER).child(facts(detail, &["what", "size", "usage", "target", "element", "used", "written"])))
         .children(made_at(detail))
 }
 
@@ -709,7 +708,7 @@ fn other(value: &Value) -> gpui::Div {
         .flex()
         .flex_col()
         .gap_2()
-        .child(card("Facts", AMBER).child(facts(detail, &keys.iter().map(String::as_str).collect::<Vec<_>>())))
+        .child(card("Details", AMBER).child(facts(detail, &keys.iter().map(String::as_str).collect::<Vec<_>>())))
         .children(made_at(detail))
         .when(detail.is_null(), |content| {
             content.child(div().text_xs().font_family(MONO).text_color(rgb(TEXT)).child(value["summary"].as_str().unwrap_or("").to_string()))
@@ -814,13 +813,9 @@ pub fn render(player: &mut Player, _window: &mut Window, cx: &mut Context<Player
                     .flex()
                     .items_center()
                     .gap_2()
-                    .child(note(if count == 0 {
-                        "No textures are alive.".to_string()
-                    } else {
-                        format!("{count} textures, largest first. Click one to open it.")
-                    }))
+                    .child(note(if count == 0 { "None.".to_string() } else { format!("{count}, largest first") }))
                     .child(div().flex_1())
-                    .child(button("refresh-thumbs", "Refresh pictures", DIM).on_click(cx.listener(|this, _, _, cx| {
+                    .child(icon_label("refresh-thumbs", "reload", "Refresh", DIM).on_click(cx.listener(|this, _, _, cx| {
                         this.resources.thumbs.clear();
                         cx.notify();
                     }))),
@@ -831,30 +826,30 @@ pub fn render(player: &mut Player, _window: &mut Window, cx: &mut Context<Player
             .flex()
             .flex_col()
             .gap_2()
-            .child(note(if count == 0 { format!("No {} are alive.", plural(&kind)) } else { format!("{count} alive, largest first. Click one to open it.") }))
+            .child(note(if count == 0 { "None.".to_string() } else { format!("{count}, largest first") }))
             .child(div().rounded_md().border_1().border_color(tint(FAINT, 0.8)).p_1().child(listing(player, cx)))
             .into_any_element(),
         (Some(handle), _, Some(error)) => div()
             .flex()
             .flex_col()
             .gap_2()
-            .child(div().flex().gap_2().child(back("back-error", "◀  All", cx)).child(div().font_family(MONO).text_color(rgb(AMBER)).child(handle.clone())))
+            .child(div().flex().gap_2().child(back("back-error", "All", cx)).child(div().font_family(MONO).text_color(rgb(AMBER)).child(handle.clone())))
             .child(div().text_xs().text_color(rgb(RED)).child(error))
             .into_any_element(),
         (Some(handle), None, None) => div()
             .flex()
             .flex_col()
             .gap_2()
-            .child(div().flex().gap_2().child(back("back-reading", "◀  All", cx)).child(div().font_family(MONO).text_color(rgb(AMBER)).child(handle.clone())))
-            .child(note(format!("Reading {handle}…")))
+            .child(div().flex().gap_2().child(back("back-reading", "All", cx)).child(div().font_family(MONO).text_color(rgb(AMBER)).child(handle.clone())))
+            .child(note("Reading…"))
             .into_any_element(),
         (Some(handle), Some(value), None) => {
             let handle = handle.clone();
             let back_label = match kind_of(&handle) {
-                "texture" => "◀  All textures",
-                "shader" => "◀  All shaders",
-                "program" => "◀  All programs",
-                _ => "◀  All",
+                "texture" => "Textures",
+                "shader" => "Shaders",
+                "program" => "Programs",
+                _ => "All",
             };
             let title = value["data"]["detail"]["what"].as_str().unwrap_or("").to_string();
             let content = match kind_of(&handle) {

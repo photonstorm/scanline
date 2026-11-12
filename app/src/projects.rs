@@ -137,7 +137,7 @@ fn cards(home: &Path, projects: &[Project]) -> String {
     let shown: Vec<&Project> = projects.iter().filter(|project| worth_keeping(&project.url)).collect();
 
     if shown.is_empty() {
-        return "<p class=\"lead\">Games you open appear here, with a picture of each, so you can go back to one with a click. Press <kbd>⌘L</kbd> and type an address to start.</p>".into();
+        return "<p class=\"lead\">No projects yet. <kbd>⌘L</kbd> to open one.</p>".into();
     }
 
     let mut out = String::from("<div class=\"projects\">");

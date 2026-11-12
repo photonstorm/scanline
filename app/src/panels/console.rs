@@ -117,7 +117,7 @@ pub fn render(player: &mut Player, _window: &mut Window, cx: &mut Context<Player
                 .flex_col()
                 .gap_2()
                 .p_3()
-                .child(note(if count == 0 { "Nothing logged yet." } else { "Frame, then the line. Repeats are folded." }))
+                .when(count == 0, |content| content.child(note("Empty.")))
                 .child(list),
         )
         .into_any_element()

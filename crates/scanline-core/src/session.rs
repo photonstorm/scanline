@@ -1102,6 +1102,13 @@ impl Session {
         let count = stream["blobs"].as_array().map_or(0, Vec::len);
         let named: Vec<Option<String>> = (0..count).map(|index| stream["blob_hashes"][index].as_str().map(str::to_string)).collect();
         let mut from = 0;
+        // How far the sending has got, for progress(): "120 of 313 MB".
+        let sizes: Vec<u64> = (0..count).map(|index| stream["blobs"][index].as_u64().unwrap_or(0)).collect();
+        let total_mb = (sizes.iter().sum::<u64>() as f64 / 1_048_576.0).round().max(1.0);
+        let mut sent_bytes = 0u64;
+        let say = |sent: u64| self.stage_detail(format!("{} of {total_mb} MB", sent / 1_048_576));
+
+        say(0);
 
         while from < count {
             let mut batch = Vec::new();
@@ -1112,6 +1119,7 @@ impl Session {
                 let held = named[index].as_ref().is_some_and(|hash| page.as_ref().is_some_and(|page| page.hashes.contains(hash)));
 
                 if held {
+                    sent_bytes += sizes[index];
                     batch.push(json!({ "hash": named[index] }));
                     continue;
                 }
@@ -1135,8 +1143,11 @@ impl Session {
                             Duration::from_secs(60),
                         )
                         .await?;
+
+                        say(sent_bytes + ((number + 1) * PIECE).min(bytes.len()) as u64);
                     }
 
+                    sent_bytes += bytes.len() as u64;
                     batch.push(json!({ "hash": named[index], "pieced": true }));
                     break;
                 }
@@ -1144,6 +1155,7 @@ impl Session {
                 let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
 
                 size += encoded.len();
+                sent_bytes += bytes.len() as u64;
                 batch.push(json!({ "hash": named[index], "data": encoded }));
             }
 
@@ -1156,6 +1168,7 @@ impl Session {
             }
 
             from += sent;
+            say(sent_bytes);
         }
 
         if let Some(page) = page.as_mut() {

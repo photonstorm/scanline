@@ -81,8 +81,7 @@ pub fn render(player: &mut Player, _window: &mut Window, cx: &mut Context<Player
     // The frame drawn another way.
     let views = [("", "Normal"), ("wireframe", "Wireframe"), ("overdraw", "Overdraw"), ("depth", "Depth"), ("draw_id", "Draw ID")];
     let current = player.experiments.view.clone();
-    let view_card = card("See the frame another way", CYAN)
-        .child(note("The running game, drawn as each draw's outline, how often each pixel is drawn, its depth, or a colour per draw. Offscreen passes too."))
+    let view_card = card("View", CYAN)
         .child(div().flex().flex_wrap().gap_1().children(views.into_iter().map(|(view, label)| {
             let on = current == view;
 
@@ -95,18 +94,17 @@ pub fn render(player: &mut Player, _window: &mut Window, cx: &mut Context<Player
         })));
 
     // The whole frame's state.
-    let state_card = card("Every draw", AMBER)
-        .child(note("Switch a test off for the whole frame: is the thing missing because it is culled, hidden by depth, or blended away?"))
+    let state_card = card("All draws", AMBER)
         .child(
             div()
                 .flex()
                 .flex_wrap()
                 .gap_1()
-                .child(switch(player, "all:cull", "Culling off", AMBER, "patch_state", json!({ "state": { "cull": false } }), cx))
-                .child(switch(player, "all:depth_test", "Depth test off", AMBER, "patch_state", json!({ "state": { "depth_test": false } }), cx))
-                .child(switch(player, "all:depth_write", "Depth writes off", AMBER, "patch_state", json!({ "state": { "depth_write": false } }), cx))
-                .child(switch(player, "all:blend", "Blending off", AMBER, "patch_state", json!({ "state": { "blend": false } }), cx))
-                .child(switch(player, "all:solid", "Every draw flat", AMBER, "patch_draws", json!({ "mode": "solid" }), cx)),
+                .child(switch(player, "all:cull", "No culling", AMBER, "patch_state", json!({ "state": { "cull": false } }), cx))
+                .child(switch(player, "all:depth_test", "No depth test", AMBER, "patch_state", json!({ "state": { "depth_test": false } }), cx))
+                .child(switch(player, "all:depth_write", "No depth write", AMBER, "patch_state", json!({ "state": { "depth_write": false } }), cx))
+                .child(switch(player, "all:blend", "No blending", AMBER, "patch_state", json!({ "state": { "blend": false } }), cx))
+                .child(switch(player, "all:solid", "Flat", AMBER, "patch_draws", json!({ "mode": "solid" }), cx)),
         );
 
     // Programs: a three.js material, a pass, a post effect. Hide one, draw it flat, or draw
@@ -115,7 +113,6 @@ pub fn render(player: &mut Player, _window: &mut Window, cx: &mut Context<Player
     let key_name = if webgpu { "pipeline" } else { "program" };
     let programs = player.experiments.programs.clone();
     let programs_card = card(if webgpu { "Pipelines" } else { "Programs" }, PURPLE)
-        .child(note("Each is one shader pair: a material, a pass, a post effect. Hide its draws, draw them in one flat colour, or draw nothing else."))
         .when(programs.is_empty(), |card| card.child(note("None yet.")))
         .children(programs.iter().take(60).map(|row| {
             let handle = row["handle"].as_str().unwrap_or("").to_string();
@@ -156,9 +153,6 @@ pub fn render(player: &mut Player, _window: &mut Window, cx: &mut Context<Player
     // Textures: a stand-in for each, to see where it lands, or to rule it out.
     let textures = player.experiments.textures.clone();
     let textures_card = card("Textures", GREEN)
-        .child(note(
-            "Put a stand-in in a texture's place: a checkerboard shows where and how it is mapped; white or black rules it out; mips colours each level.",
-        ))
         .when(textures.is_empty(), |card| card.child(note("None yet.")))
         .children(textures.iter().take(60).map(|row| {
             let handle = row["handle"].as_str().unwrap_or("").to_string();
@@ -199,10 +193,9 @@ pub fn render(player: &mut Player, _window: &mut Window, cx: &mut Context<Player
     // Where the time goes.
     let measuring = player.experiments.measuring.clone();
     let measured = player.experiments.measured.clone();
-    let measure_card = card("Where the GPU time goes", BLUE)
-        .child(note("Each measures the frame with and without a change, a few times each way, then puts the page back."))
+    let measure_card = card("GPU cost", BLUE)
         .child(div().flex().flex_wrap().gap_1().children(
-            [("scissor_1px", "Fill: draw one pixel"), ("flat_fragment", "Shading: flat colour"), ("textures_2x2", "Textures: 2×2")].into_iter().map(
+            [("scissor_1px", "Fill"), ("flat_fragment", "Shading"), ("textures_2x2", "Texturing")].into_iter().map(
                 |(kind, label)| {
                     let running = measuring.as_deref() == Some(kind);
 
@@ -231,18 +224,22 @@ pub fn render(player: &mut Player, _window: &mut Window, cx: &mut Context<Player
                     .child(div().w(px(80.0)).text_xs().font_family(MONO).text_color(rgb(TEXT)).child(format!("{value:.3} ms")))
             };
 
-            card.child(bar("as it is", without, BLUE)).child(bar("changed", with, GREEN)).child(
+            let saved = without - with;
+            let share = if without > 0.0 { saved / without * 100.0 } else { 0.0 };
+
+            card.child(bar("before", without, BLUE)).child(bar("after", with, GREEN)).child(
                 div()
                     .text_xs()
+                    .font_family(MONO)
                     .text_color(rgb(if steady { TEXT } else { AMBER }))
-                    .child(measured["summary"].as_str().unwrap_or("").lines().take(3).collect::<Vec<_>>().join(" ")),
+                    .child(format!("{} {:.3} ms ({share:.0}%){}", if saved >= 0.0 { "saves" } else { "costs" }, saved.abs(), if steady { "" } else { " · noisy" })),
             )
         });
 
     // What is in force.
     let patches = player.experiments.patches.clone();
-    let force_card = card("In force", RED)
-        .when(patches.is_empty(), |card| card.child(note("Nothing: the game draws as its own code says.")))
+    let force_card = card("Active", RED)
+        .when(patches.is_empty(), |card| card.child(note("Nothing.")))
         .when(!patches.is_empty(), |card| {
             card.child(div().flex().child(div().flex_1()).child(button("undo-all", "Undo all", RED).on_click(cx.listener(|this, _, _, cx| {
                 this.revert_patch("all".to_string());
@@ -269,15 +266,15 @@ pub fn render(player: &mut Player, _window: &mut Window, cx: &mut Context<Player
         }));
 
     let editing = player.experiments.editing.clone().map(|edit| {
-        card("Editing a shader", ORANGE)
+        card("Shader edit", ORANGE)
             .child(
                 div()
                     .text_xs()
                     .text_color(rgb(TEXT))
-                    .child(format!("{} of {} is open in your editor. Each time you save it, the game draws with it.", edit.shader, edit.program)),
+                    .child(format!("{} of {}: saving applies it.", edit.shader, edit.program)),
             )
             .child(div().text_xs().font_family(MONO).text_color(rgb(DIM)).child(edit.path.display().to_string()))
-            .child(button("stop-editing", "Stop and put the shader back", ORANGE).on_click(cx.listener(|this, _, _, cx| {
+            .child(icon_label("stop-editing", "undo", "Revert", ORANGE).on_click(cx.listener(|this, _, _, cx| {
                 this.stop_editing_shader();
                 cx.notify();
             })))

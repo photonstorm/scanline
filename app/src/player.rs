@@ -539,7 +539,7 @@ impl Player {
                     // A quick capture still bringing its textures: progress is followed until
                     // it is done.
                     if value["data"]["finishing"].is_object() {
-                        self.busy = json!({ "capture": capture, "stage": "Bringing the frame's textures from the page" });
+                        self.busy = json!({ "capture": capture, "stage": "Fetching textures" });
                     }
 
                     self.captures.made(&value["data"]);
@@ -617,10 +617,10 @@ impl Player {
 
                 match path.as_deref().and_then(|path| to_desktop(path, "screenshot")) {
                     Some(saved) => self.say(
-                        &format!("Screenshot saved to the desktop: {}", saved.file_name().map(|name| name.to_string_lossy().to_string()).unwrap_or_default()),
+                        &format!("Saved {}", saved.file_name().map(|name| name.to_string_lossy().to_string()).unwrap_or_default()),
                         false,
                     ),
-                    None => self.say("The screenshot was taken but could not be copied to the desktop.", true),
+                    None => self.say("Could not save the screenshot to the desktop.", true),
                 }
             }
             (Purpose::Magnified(seq, before), Ok(value)) => self.magnified(seq, before, &value),
@@ -636,7 +636,7 @@ impl Player {
                     self.captures.measuring = false;
                 }
 
-                self.say(&format!("The frame could not be timed: {error}"), true);
+                self.say(&format!("Timing failed: {error}"), true);
             }
             (Purpose::Attachments(capture, draw), Ok(value)) => self.captures.got_attachments(&capture, draw, &value["data"]),
             (Purpose::Attachments(capture, draw), Err(error)) => {
@@ -667,24 +667,20 @@ impl Player {
                     }
                 }
             }
-            (Purpose::Sized, Ok(value)) => {
-                // Said once, when chosen; not again for every step of the divider.
-                if self.choosing_size {
-                    self.say(value["summary"].as_str().unwrap_or(""), false);
-                }
-            }
+            // The size button and status bar show it.
+            (Purpose::Sized, Ok(_)) => {}
             (Purpose::Sized, Err(error)) => {
                 self.sized_for = None;
                 self.size = None;
                 self.say(&error, true);
             }
-            (Purpose::VideoStart, Ok(_)) => self.say("Recording a video: the last ten seconds are kept. Press Stop to save it.", false),
+            (Purpose::VideoStart, Ok(_)) => self.say("Recording", false),
             (Purpose::VideoStop, Ok(value)) => match value["data"]["video"].as_str().map(PathBuf::from).as_deref().and_then(|path| to_desktop(path, "video")) {
                 Some(saved) => self.say(
-                    &format!("Video saved to the desktop: {}", saved.file_name().map(|name| name.to_string_lossy().to_string()).unwrap_or_default()),
+                    &format!("Saved {}", saved.file_name().map(|name| name.to_string_lossy().to_string()).unwrap_or_default()),
                     false,
                 ),
-                None => self.say(value["summary"].as_str().unwrap_or("No video was made.").lines().next().unwrap_or(""), true),
+                None => self.say(value["summary"].as_str().unwrap_or("No video.").lines().next().unwrap_or(""), true),
             },
             (Purpose::Patched(key), Ok(value)) => {
                 self.experiments.waiting.remove(&key);
@@ -875,7 +871,7 @@ impl Player {
     }
 
     pub fn capture(&mut self) {
-        self.say("Capturing the next frame…", false);
+        self.say("Capturing…", false);
         // Quick: the capture opens once its calls and state are in, and its textures follow
         // in the background (the progress card says how far).
         self.ask("capture", json!({ "quick": true }), Purpose::Capture);
@@ -901,7 +897,7 @@ impl Player {
         let Some(recording) = self.captures.recording.clone() else { return };
 
         self.captures.recording = None;
-        self.say(&format!("Making frame {frame} of {recording} a capture…"), false);
+        self.say(&format!("Capturing frame {frame}…"), false);
         self.ask("capture", json!({ "recording": recording, "frame": frame }), Purpose::Capture);
     }
 
@@ -928,7 +924,7 @@ impl Player {
     /// Starts a video, or stops one and saves it to the desktop.
     pub fn toggle_video(&mut self) {
         if self.video_running() {
-            self.say("Saving the video: replaying its frames and encoding them…", false);
+            self.say("Saving the video…", false);
             self.ask("video", json!({ "action": "stop" }), Purpose::VideoStop);
             self.status["video_seconds"] = Value::Null;
         } else {
@@ -1016,7 +1012,7 @@ impl Player {
 
         self.experiments.editing = Some(panels::experiments::Edit { program, shader: shader.clone(), path, written });
         self.show(Panel::Experiments);
-        self.say(&format!("{shader} is open in your editor. Save it to try it in the game."), false);
+        self.say(&format!("{shader} opened. Save to apply."), false);
     }
 
     fn watch_shader_edit(&mut self) {
@@ -1161,7 +1157,7 @@ impl Player {
         };
 
         if magnifier.draw == 0 && magnifier.after.is_some() {
-            magnifier.summary = Some("The first event: nothing before it to compare with.".into());
+            magnifier.summary = Some("First event: nothing to compare.".into());
         }
 
         if let Some((a, b)) = pair {
@@ -1177,13 +1173,13 @@ impl Player {
         let identical = value["data"]["changed"].as_u64() == Some(0) || value["summary"].as_str().is_some_and(|summary| summary.starts_with("No difference"));
 
         magnifier.summary = if identical {
-            Some(format!("Event {} changed nothing in this region.", magnifier.draw))
+            Some("No change".into())
         } else {
             value["summary"].as_str().and_then(|summary| summary.lines().next()).map(|line| {
                 // "a.png against b.png (20×20): 200 of 400 pixels differ (50.00%)." → from the counts.
                 let counts = line.split_once("): ").map(|(_, counts)| counts.to_string()).unwrap_or_else(|| line.to_string());
 
-                format!("Event {}: {counts}", magnifier.draw)
+                counts
             })
         };
         magnifier.unchanged = identical;
@@ -1364,7 +1360,7 @@ impl Player {
             }
         }
 
-        self.say(if self.muted { "The game is muted, and stays muted when you open it again." } else { "The game's sound is on." }, false);
+        self.say(if self.muted { "Muted" } else { "Sound on" }, false);
     }
 
     /// The page given a size (or its own again), remembered for this game.
@@ -1419,7 +1415,7 @@ impl Player {
                 self.address.clear();
                 self.ask("navigate", json!({ "url": projects::file_url(&page) }), Purpose::Action("navigate"));
             }
-            None => self.say("The projects page is missing from the app: reinstall Scanline.", true),
+            None => self.say("Projects page missing: reinstall Scanline.", true),
         }
     }
 
@@ -1962,6 +1958,53 @@ impl Render for Player {
     }
 }
 
+/// A capture's stages as the host names them: each with its share of a typical capture's time
+/// (spider's, on the Mac's release build) and its typical length in seconds.
+const CAPTURE_STAGES: &[(&str, f32, f32)] = &[
+    ("Waiting for a frame", 0.03, 0.5),
+    ("Reading textures and buffers", 0.04, 0.5),
+    ("Fetching data", 0.30, 4.0),
+    ("Reading the picture", 0.01, 0.1),
+    ("Loading the replay", 0.30, 3.5),
+    ("Checking the replay", 0.06, 0.8),
+    ("Measuring draws", 0.24, 3.5),
+    ("Building tables", 0.01, 0.1),
+    ("Writing", 0.01, 0.1),
+];
+
+/// What a quick capture does in the background, likewise.
+const FINISHING_STAGES: &[(&str, f32, f32)] = &[
+    ("Fetching textures", 0.36, 4.0),
+    ("Loading the replay", 0.30, 3.5),
+    ("Checking the replay", 0.07, 0.8),
+    ("Measuring draws", 0.25, 3.5),
+    ("Building tables", 0.01, 0.1),
+    ("Writing", 0.01, 0.1),
+];
+
+/// How far a long job has got, from 0 to 1: the stages done, and the one under way by its own
+/// count ("120 of 313 MB") or, where it gives none, by its time against a typical one, so the
+/// bar never stands still.
+fn progress_fraction(busy: &Value, stages: &[(&str, f32, f32)]) -> f32 {
+    let total: f32 = stages.iter().map(|(_, share, _)| share).sum::<f32>().max(f32::EPSILON);
+    let done: Vec<&str> = busy["done"].as_array().into_iter().flatten().filter_map(|stage| stage["stage"].as_str()).collect();
+    let finished: f32 = stages.iter().filter(|(name, _, _)| done.contains(name)).map(|(_, share, _)| share).sum();
+    let current = busy["stage"].as_str().unwrap_or("");
+    let within = busy["detail"]
+        .as_str()
+        .and_then(|detail| detail.trim_end_matches(" MB").split_once(" of "))
+        .and_then(|(have, all)| Some(have.trim().parse::<f32>().ok()? / all.trim().parse::<f32>().ok()?.max(1.0)))
+        .unwrap_or_else(|| {
+            let typical = stages.iter().find(|(name, _, _)| *name == current).map_or(1.0, |(_, _, seconds)| *seconds);
+            let elapsed = busy["stage_seconds"].as_f64().unwrap_or(0.0) as f32;
+
+            0.95 * (1.0 - (-elapsed / typical.max(0.1)).exp())
+        });
+    let share = stages.iter().find(|(name, _, _)| *name == current).map_or(0.0, |(_, share, _)| *share);
+
+    ((finished + share * within.clamp(0.0, 1.0)) / total).clamp(0.02, 0.98)
+}
+
 impl Player {
     /// The sizes the game can be given, open from the toolbar's size button. Chromium's view
     /// covers the game area, so the chooser is drawn over the panels.
@@ -1978,12 +2021,9 @@ impl Player {
             button(SharedString::from(id), label, if on { colour } else { TEXT }).when(on, |button| button.bg(tint(colour, 0.25)).border_color(tint(colour, 0.9)))
         };
 
-        let mut card = card("Size the game is given", AMBER)
-            .child(note(
-                "The page is told this size and pixel ratio, as DevTools' device mode does, and what it draws is scaled to fit the game area. Remembered for each game.",
-            ))
+        let mut card = card("Size", AMBER)
             .child(
-                div().flex().flex_wrap().gap_1().child(chip("size-fit".into(), "Its view's own".into(), current.is_none(), AMBER).on_click(cx.listener(|this, _, _, cx| {
+                div().flex().flex_wrap().gap_1().child(chip("size-fit".into(), "Fit".into(), current.is_none(), AMBER).on_click(cx.listener(|this, _, _, cx| {
                     this.set_size(None);
                     cx.notify();
                 }))),
@@ -2011,7 +2051,7 @@ impl Player {
             .flex()
             .gap_1()
             .mt_1()
-            .child(chip("size-retina".into(), "Retina @2x (desktop sizes)".into(), retina, CYAN).on_click(cx.listener(|this, _, _, cx| {
+            .child(chip("size-retina".into(), "Retina".into(), retina, CYAN).on_click(cx.listener(|this, _, _, cx| {
                 if let Some(size) = this.size.filter(|size| !size.preset().mobile) {
                     this.set_size(Some(Size { retina: !size.retina, ..size }));
                     this.choosing_size = true;
@@ -2019,7 +2059,7 @@ impl Player {
 
                 cx.notify();
             })))
-            .child(chip("size-landscape".into(), "Landscape (phones, tablets)".into(), landscape, CYAN).on_click(cx.listener(|this, _, _, cx| {
+            .child(chip("size-landscape".into(), "Landscape".into(), landscape, CYAN).on_click(cx.listener(|this, _, _, cx| {
                 if let Some(size) = this.size.filter(|size| size.preset().mobile) {
                     this.set_size(Some(Size { landscape: !size.landscape, ..size }));
                     this.choosing_size = true;
@@ -2036,7 +2076,7 @@ impl Player {
         card = card.child(toggles);
 
         if let Some(size) = current {
-            card = card.child(row("Given now", size.detail(area)));
+            card = card.child(row("Now", size.detail(area)));
         }
 
         Some(div().p_2().child(card))
@@ -2061,19 +2101,17 @@ impl Player {
             .flatten()
             .map(|stage| (stage["stage"].as_str().unwrap_or("").to_string(), stage["ms"].as_f64().unwrap_or(0.0)))
             .collect();
-        // Eight stages make a capture; the bar moves as each is done.
-        let fraction = ((done.len() as f32 + 0.5) / 8.0).min(0.97);
-        let title = if saving { "Saving the video" } else { "Capturing a frame" };
+        // A capture still finishing in the background has stages of its own.
+        let stages = if busy["capture"].is_string() { FINISHING_STAGES } else { CAPTURE_STAGES };
+        let fraction = if saving { ((done.len() as f32 + 0.5) / 4.0).min(0.97) } else { progress_fraction(busy, stages) };
+        let title = if saving { "Saving video" } else { "Capturing" };
 
         Some(
             div().p_2().child(
                 card(format!("{title} · {seconds:.0} s"), PURPLE)
                     .child(meter(40, fraction, PURPLE))
                     .child(div().text_sm().text_color(rgb(TEXT)).child(format!("{stage}{detail}…")))
-                    .children(done.into_iter().filter(|(_, ms)| *ms >= 50.0).map(|(stage, ms)| row(format!("✓ {stage}"), format!("{:.1} s", ms / 1000.0))))
-                    .child(note(
-                        "A capture keeps every texture and buffer the frame used, and replays it to check it. A heavy scene, hundreds of megabytes, takes several seconds.",
-                    )),
+                    .children(done.into_iter().filter(|(_, ms)| *ms >= 50.0).map(|(stage, ms)| row(format!("✓ {stage}"), format!("{:.1} s", ms / 1000.0)))),
             ),
         )
     }
@@ -2082,26 +2120,18 @@ impl Player {
     fn finishing_card(&self) -> Option<gpui::Div> {
         let busy = &self.busy;
         let capture = busy["capture"].as_str()?;
-        let stage = busy["stage"].as_str().unwrap_or("Bringing the frame's textures from the page");
+        let stage = busy["stage"].as_str().unwrap_or("Fetching textures");
         let detail = busy["detail"].as_str().unwrap_or("");
         let done = busy["done"].as_array().map_or(0, Vec::len);
-        // "120 of 313 MB" while the textures come; then the replay's stages.
-        let within = detail
-            .split_once(" of ")
-            .and_then(|(have, all)| Some(have.trim().parse::<f32>().ok()? / all.trim_end_matches(" MB").trim().parse::<f32>().ok()?.max(1.0)))
-            .unwrap_or(0.0);
-        let fraction = if done == 0 { 0.6 * within } else { (0.6 + 0.1 * done as f32).min(0.97) };
-        let what = if done == 0 { "Fetching textures" } else { "Replaying and checking" };
+        let fraction = progress_fraction(busy, FINISHING_STAGES);
+        let what = if done == 0 { "Textures" } else { "Replay" };
         let detail = if detail.is_empty() { String::new() } else { format!(" ({detail})") };
 
         Some(
             div().p_2().child(
                 card(format!("{what} · {capture} · {:.0} s", busy["seconds"].as_f64().unwrap_or(0.0)), CYAN)
                     .child(meter(40, fraction, CYAN))
-                    .child(div().text_sm().text_color(rgb(TEXT)).child(format!("{stage}{detail}…")))
-                    .child(note(
-                        "The capture is open: its draws, their state, shaders and uniforms can be read now. Each draw's picture, a pixel's story and the replay check follow once the textures are in.",
-                    )),
+                    .child(div().text_sm().text_color(rgb(TEXT)).child(format!("{stage}{detail}…"))),
             ),
         )
     }
@@ -2111,7 +2141,7 @@ impl Player {
         let scale = self.time_scale();
         let human = self.status["owner"] == "human";
         let request = self.status["request"]["instruction"].as_str().map(str::to_string);
-        let shown = if self.address.is_empty() && !self.editing { "Type an address, or ⌘L".to_string() } else { self.address.clone() };
+        let shown = if self.address.is_empty() && !self.editing { "Address".to_string() } else { self.address.clone() };
         let running = self.video_running();
         let seconds = self.status["video_seconds"].as_f64().unwrap_or(0.0);
         let capturing = self.pending.values().any(|purpose| matches!(purpose, Purpose::Capture)) || self.busy["capture"].is_string();
@@ -2283,7 +2313,7 @@ impl Player {
                     .border_color(if human { tint(AMBER, 0.6) } else { rgb(LINE) })
                     .text_color(rgb(if human { AMBER } else { DIM }))
                     .child(icon(if human { "user" } else { "agent" }, 13.0, rgb(if human { AMBER } else { DIM })))
-                    .child(if human { "You have the input" } else { "Agent may drive" })
+                    .child(if human { "You" } else { "Agent" })
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.take_input(!human);
                         cx.notify();
@@ -2354,8 +2384,8 @@ impl Player {
                 bar.child(chip("size", format!("{} {}", size.name(), size.detail((f32::from(bounds.size.width), f32::from(bounds.size.height)))), AMBER))
             })
             .when(self.muted, |bar| bar.child(chip("mute", "muted".into(), RED)))
-            .when(self.fullscreen, |bar| bar.child(chip("fullscreen", "fullscreen in its view · Esc leaves".into(), CYAN)))
-            .when(self.pointer_held, |bar| bar.child(chip("pointer", "the game has the pointer · Esc gives it back".into(), CYAN)))
+            .when(self.fullscreen, |bar| bar.child(chip("fullscreen", "fullscreen · Esc".into(), CYAN)))
+            .when(self.pointer_held, |bar| bar.child(chip("pointer", "pointer locked · Esc".into(), CYAN)))
             .child(div().flex_1())
             .when_some(self.message.clone(), |bar, (text, error)| {
                 bar.child(
@@ -2409,7 +2439,7 @@ fn menus(cx: &mut App, recent: &[String]) {
         .collect();
 
     if opened.is_empty() {
-        opened.push(MenuItem::action("No pages yet", OpenRecent9));
+        opened.push(MenuItem::action("None", OpenRecent9));
     }
 
     cx.set_menus(vec![
@@ -2432,20 +2462,20 @@ fn menus(cx: &mut App, recent: &[String]) {
             name: "Game".into(),
             items: vec![
                 MenuItem::action("Reload", Reload),
-                MenuItem::action("Mute or Unmute", ToggleMute),
+                MenuItem::action("Mute", ToggleMute),
                 MenuItem::action("Size…", ChooseSize),
-                MenuItem::action("Give Back the Pointer and Screen", LeaveFullscreen),
+                MenuItem::action("Release Pointer", LeaveFullscreen),
                 MenuItem::separator(),
-                MenuItem::action("Pause or Run", TogglePause),
-                MenuItem::action("Step One Frame", StepFrame),
-                MenuItem::action("Step Ten Frames", StepTen),
+                MenuItem::action("Pause", TogglePause),
+                MenuItem::action("Step", StepFrame),
+                MenuItem::action("Step 10", StepTen),
                 MenuItem::action("Slower", SlowDown),
                 MenuItem::action("Faster", SpeedUp),
                 MenuItem::separator(),
-                MenuItem::action("Capture Frame", Capture),
-                MenuItem::action("Screenshot to the Desktop", Screenshot),
-                MenuItem::action("Start or Stop a Video", ToggleVideo),
-                MenuItem::action("Debug (answer the agent)", Debug),
+                MenuItem::action("Capture", Capture),
+                MenuItem::action("Screenshot", Screenshot),
+                MenuItem::action("Record", ToggleVideo),
+                MenuItem::action("Debug", Debug),
             ],
         },
         Menu {
@@ -2458,7 +2488,7 @@ fn menus(cx: &mut App, recent: &[String]) {
                 MenuItem::action("Console", ShowConsole),
                 MenuItem::action("Agent", ShowAgent),
                 MenuItem::separator(),
-                MenuItem::action("Wide Panel", ToggleWide),
+                MenuItem::action("Wide", ToggleWide),
             ],
         },
         Menu { name: "Window".into(), items: vec![MenuItem::action("New Window", NewWindow), MenuItem::action("Close Window", CloseWindow)] },
@@ -2628,4 +2658,24 @@ pub fn run(args: cef::args::Args, mut app: cef::App, options: Options) {
 
         cx.activate(true);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn progress_moves_through_a_stage_by_its_count_and_never_stands_still() {
+        let busy = |stage: &str, detail: &str, seconds: f64, done: &[&str]| {
+            json!({ "stage": stage, "detail": detail, "stage_seconds": seconds, "done": done.iter().map(|name| json!({ "stage": name, "ms": 0 })).collect::<Vec<_>>() })
+        };
+        let start = progress_fraction(&busy("Loading the replay", "0 of 287 MB", 0.0, &["Fetching textures"]), FINISHING_STAGES);
+        let half = progress_fraction(&busy("Loading the replay", "143 of 287 MB", 0.0, &["Fetching textures"]), FINISHING_STAGES);
+        let checking = progress_fraction(&busy("Checking the replay", "", 0.4, &["Fetching textures", "Loading the replay"]), FINISHING_STAGES);
+        let later = progress_fraction(&busy("Checking the replay", "", 3.0, &["Fetching textures", "Loading the replay"]), FINISHING_STAGES);
+
+        assert!((start - 0.36).abs() < 0.01, "{start}");
+        assert!((half - 0.51).abs() < 0.01, "{half}");
+        assert!(checking > half && later > checking && later < 0.74, "{checking} {later}");
+    }
 }

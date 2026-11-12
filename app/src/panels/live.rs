@@ -112,22 +112,22 @@ pub fn render(player: &mut Player, _window: &mut Window, _cx: &mut Context<Playe
                 .justify_between()
                 .items_end()
                 .child(figure(if interval > 0.0 { format!("{interval:.2} ms") } else { "–".into() }, GREEN))
-                .child(note(if player.paused() { "paused" } else { "mean of the last 30 frames" })),
+                .child(note(if player.paused() { "paused" } else { "mean, 30 frames" })),
         )
         .child(graph(live.interval.iter().copied().collect(), 33.4, GREEN, 90.0))
         .child(row(
-            "p50 · p95 · worst",
+            "p50 · p95 · max",
             format!("{:.2} · {:.2} · {:.2} ms", number(&stats["intervalMs"]["p50"]), number(&stats["intervalMs"]["p95"]), number(&stats["intervalMs"]["max"])),
         ));
 
     let gpu_ceiling = live.gpu.iter().copied().fold(4.0f32, f32::max) * 1.2;
     let cpu_ceiling = live.cpu.iter().copied().fold(4.0f32, f32::max) * 1.2;
 
-    let times = card("CPU and GPU time per frame", BLUE)
-        .child(row("CPU, the page's frame callback", format!("{cpu:.2} ms (p95 {:.2})", number(&stats["cpuMs"]["p95"]))))
+    let times = card("CPU and GPU", BLUE)
+        .child(row("CPU", format!("{cpu:.2} ms (p95 {:.2})", number(&stats["cpuMs"]["p95"]))))
         .child(graph(live.cpu.iter().copied().collect(), cpu_ceiling, AMBER, 56.0))
         .child(row(
-            if stats["gpu"]["timestamps"] == true { "GPU, timed by the GPU" } else { "GPU, from timer queries" },
+            "GPU",
             format!("{gpu:.3} ms (p95 {:.3})", number(&stats["gpu"]["ms"]["p95"])),
         ))
         .child(graph(live.gpu.iter().copied().collect(), gpu_ceiling, BLUE, 56.0));
@@ -140,7 +140,7 @@ pub fn render(player: &mut Player, _window: &mut Window, _cx: &mut Context<Playe
                 let last = number(&counters[key]["last"]);
                 let max = number(&counters[key]["max"]).max(1.0);
 
-                div().flex().flex_col().gap(px(3.0)).child(row(label, format!("{last:.0}  (most {max:.0})"))).child(meter(32, (last / max) as f32, AMBER))
+                div().flex().flex_col().gap(px(3.0)).child(row(label, format!("{last:.0}  max {max:.0}"))).child(meter(32, (last / max) as f32, AMBER))
             }),
     );
 
@@ -148,19 +148,19 @@ pub fn render(player: &mut Player, _window: &mut Window, _cx: &mut Context<Playe
     let categories = live.memory["categories"].as_object().cloned().unwrap_or_default();
 
     let memory = card("GPU memory", PURPLE)
-        .child(div().flex().justify_between().items_end().child(figure(bytes(total), PURPLE)).child(note("estimated from sizes and formats")))
+        .child(div().flex().justify_between().items_end().child(figure(bytes(total), PURPLE)).child(note("estimate")))
         .child(graph(live.memory_history.iter().copied().collect(), memory_ceiling, PURPLE, 70.0))
         .children(categories.iter().filter(|(_, value)| number(value) > 0.0).map(|(name, value)| row(name.clone(), bytes(number(value)))))
-        .when(process > 0.0, |card| card.child(row("the GPU process, as the system counts it", bytes(process))))
+        .when(process > 0.0, |card| card.child(row("GPU process", bytes(process))))
         .children(live.warnings.iter().map(|warning| div().text_xs().text_color(tint(RED, 1.0)).child(warning.clone())));
 
-    let objects = card("Objects alive", CYAN).children(
+    let objects = card("Objects", CYAN).children(
         live.memory["kinds"]
             .as_object()
             .cloned()
             .unwrap_or_default()
             .into_iter()
-            .map(|(kind, entry)| row(kind, format!("{} alive · {} made · {}", entry["alive"], entry["created"], bytes(number(&entry["bytes"]))))),
+            .map(|(kind, entry)| row(kind, format!("{} live · {} made · {}", entry["alive"], entry["created"], bytes(number(&entry["bytes"]))))),
     );
 
     let empty = player.session().is_none();
@@ -182,7 +182,7 @@ pub fn render(player: &mut Player, _window: &mut Window, _cx: &mut Context<Playe
                         .flex()
                         .flex_col()
                         .gap_2()
-                        .when(empty, |content| content.child(note("This window has no session, so there is nothing to measure.")))
+                        .when(empty, |content| content.child(note("No session.")))
                         .child(levels)
                         .child(frame_time)
                         .child(times),
@@ -193,7 +193,7 @@ pub fn render(player: &mut Player, _window: &mut Window, _cx: &mut Context<Playe
                 .flex()
                 .flex_col()
                 .gap_2()
-                .when(empty, |content| content.child(note("This window has no session, so there is nothing to measure.")))
+                .when(empty, |content| content.child(note("No session.")))
                 .child(levels)
                 .child(frame_time)
                 .child(times)
