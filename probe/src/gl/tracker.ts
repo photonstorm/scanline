@@ -177,6 +177,10 @@ export class GlTracker
     // Extensions the page has enabled, by name. A replay must enable the same ones.
     extensions = new G.Set() as Set<string>;
 
+    // Textures that have been a framebuffer's colour attachment, by id: what a post effect or a
+    // final composite samples.
+    renderTargets = new G.Set() as Set<number>;
+
     // Bindings
     unit = 0;
     units: Unit[] = [newUnit()];
@@ -517,6 +521,12 @@ function attachment (t: GlTracker, target: number, point: number, value: Record<
     else
     {
         entry.p.attachments[point] = value;
+
+        // Colour attachments are 0x8CE0 to 0x8CFF; depth and stencil lie outside.
+        if (value.texture && point >= 0x8CE0 && point <= 0x8CFF)
+        {
+            t.renderTargets.add(value.texture);
+        }
     }
 }
 

@@ -106,9 +106,10 @@ interface Patched
     blits: number;
     restores: Array<() => void>;
     // For the wireframe view: the program of the last draw, and which programs have drawn more
-    // than a full-screen quad. A program that never has is a pass over the whole target (a
-    // post effect, the final composite), and is drawn filled, so that what earlier passes drew
-    // as outlines shows through it.
+    // than a full-screen quad. A draw by a program that never has, sampling a texture the frame
+    // rendered into, is a pass over the whole target (a post effect, the final composite), and
+    // is drawn filled, so that what earlier passes drew as outlines shows through it. A quad
+    // drawn with an ordinary texture (a floor, a sprite) stays outlined.
     previous?: number;
     large?: Set<number>;
     small?: Set<number>;
@@ -302,6 +303,22 @@ function colourOfDraw (index: number): [number, number, number, number]
     return [part(5), part(3), part(1), 1];
 }
 
+// Whether a texture the frame rendered into is bound for this draw, other than one the draw is
+// rendering into now (a page often leaves a target bound while it draws into it, and cannot
+// sample it there).
+function samplesTarget (t: GlTracker): boolean
+{
+    const own = t.drawFramebuffer ? entryOf(t.drawFramebuffer)?.p?.attachments : undefined;
+    const drawingInto = (id: number): boolean => own !== undefined && G.Object.values(own).some((value: any) => value?.texture === id);
+
+    return t.units.some((unit) =>
+    {
+        const id = unit.t2d !== null ? entryOf(unit.t2d)?.id : undefined;
+
+        return id !== undefined && t.renderTargets.has(id) && !drawingInto(id);
+    });
+}
+
 function gate (c: Rec, gl: unknown): boolean
 {
     const t = c.x as GlTracker | null;
@@ -375,7 +392,8 @@ function gate (c: Rec, gl: unknown): boolean
     restores.length = 0;
 
     // A full-screen pass under the wireframe view is drawn filled.
-    if (program !== undefined && state.small?.has(program) && !state.large?.has(program) && state.patches.some((patch) => patch.view === 'wireframe'))
+    if (program !== undefined && state.small?.has(program) && !state.large?.has(program) && state.patches.some((patch) => patch.view === 'wireframe')
+        && samplesTarget(t))
     {
         const mode = n.getExtension.call(gl, 'WEBGL_polygon_mode');
 

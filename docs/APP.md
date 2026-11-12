@@ -168,6 +168,8 @@ On macOS, Apple silicon. Windows and Linux are not built.
 
 **Stage 3, finish: in part.** Built: menus and shortcuts, Open Recent, the icon, several windows (one session each), the look after the owner's reference, and a capture file (`.scanline`, from `export`) opening in the app when double-clicked: imported into the host and shown in a new window's Captures panel, or in the window already open. Written but never compiled: the Windows side (`app/src/win.rs`, `app/bundle.ps1`; HANDOVER.md, section 2a). An unsigned disk image (`npm run package:app`). Not built: a light theme, embedded-browser updates, signing and notarisation (the owner's), Linux.
 
+**Added on 12 November 2026, after the owner's first use** (they asked for more room for the panels, a working and fuller Resources, the debugging an agent does exposed to the person, screenshots and video, and a faster capture with its progress shown): the divider between the game and the panels drags, and the panels start at half the window; Resources' rows ignored clicks (fixed) and Resources is now a texture gallery, coloured shaders and programs with their uniforms; an Experiments panel over the host's patches and live views; Screenshot and Video to the desktop; a capture's progress, stage by stage; and captures about five times quicker on a heavy scene (DEPARTURES.md, "Captures of heavy scenes").
+
 Decided while building, beyond the sections above:
 
 - **One process per window.** A window is a session's browser, as a Chrome window is; a new window is a new session. Several windows are several processes, each with its own Dock entry.

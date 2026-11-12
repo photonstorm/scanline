@@ -15,16 +15,21 @@ Open `Scanline.app`. It asks the host for a new session in the app (starting the
 | `⌘'` | step one frame (`⇧⌘'` ten) |
 | `⌘[` `⌘]` | slower, faster (`0.125×` to `4×`) |
 | `⇧⌘C` | capture the next frame |
+| `⇧⌘S` | a screenshot of the canvas, to the desktop |
+| `⇧⌘V` | start a video; again to stop and save it to the desktop |
 | `⇧⌘D` | Debug: answer the agent's request |
-| `⌘1`–`⌘5` | Live, Resources, Captures, Console, Agent |
-| `⌘\` | a wider panel |
+| `⌘1`–`⌘6` | Live, Resources, Captures, Experiments, Console, Agent |
+| `⌘\` | the panels as wide as the window allows, and back |
 | `⌘W`, `⌘Q` | close the window, which ends its session |
+
+Drag the bar between the game and the panels to share the window between them; double-click it to go back to half and half. The width is remembered.
 
 The panels:
 
 - **Live**: frame time, CPU and GPU time, the work each frame does, GPU memory and the objects alive, as the page runs.
-- **Resources**: every live object by kind, largest first. A texture opens to its levels (◀ ▶), small ones enlarged texel by texel, and a click on it reads that texel exactly; a buffer to its bytes, in hex or as float32, a page at a time; a shader or program to its source and logs. Each says the line of code that made it.
-- **Captures**: the session's captured frames. One opened shows "Worth a look", the target as it stood after the chosen draw, the draw list (each with the box it changed, or "changed nothing"), and the draw's state. Click the picture for a pixel's value and every event that changed it. Send to agent passes the capture, draw, pixel and a note of yours to the agent. Record 2 s keeps every frame of two seconds of play (the flight recorder): a recording shows its contact sheet and frames, any of which becomes a capture with a click.
+- **Resources**: every live object by kind. Textures are a gallery of their pictures; one opens to its levels (◀ ▶), small ones enlarged texel by texel, a click reads a texel exactly, and Checker, White, Black or Mips stands in for it in the game. A shader shows its source coloured, with line numbers, or as the GPU gets it (the browser's translation). A program shows its uniforms with the values last set, its attributes, Hide, Flat and Only for its draws, and Edit for each shader: the shader opens in your own text editor, and each time you save it the game draws with it (Experiments says so, and puts it back). A buffer shows its bytes, in hex or as float32, a page at a time. Each says the line of code that made it.
+- **Experiments**: change how the running game draws. The frame as wireframe (a game's full-screen passes stay filled, so it shows through post-processing), overdraw, depth or a colour per draw; culling, the depth test, depth writes or blending off for every draw; each program hidden, drawn flat or drawn alone; a stand-in for each texture; where the GPU time goes (fill, shading, texture fetching, each measured with and without); and what is in force, each with Undo. Every control is a host command an agent can run too (`help(topic: "patch")`).
+- **Captures**: the session's captured frames. While one is being made, a card at the top of the panels shows its stages and how long each took. One opened shows "Worth a look", the target as it stood after the chosen draw, the draw list (each with the box it changed, or "changed nothing"), and the draw's state. Click the picture for a pixel's value and every event that changed it. Send to agent passes the capture, draw, pixel and a note of yours to the agent. Record 2 s keeps every frame of two seconds of play (the flight recorder): a recording shows its contact sheet and frames, any of which becomes a capture with a click.
 - **Console**: the page's console by frame, repeats folded, filtered to warnings or errors.
 - **Agent**: every command an agent runs on the host, and what you do, newest first; and what the agent has asked of you, with Debug.
 
@@ -66,7 +71,7 @@ That is `app/bundle.sh`: it builds the app and the command line and assembles `a
 
 To use the build with the command line in this repository, point the host at it: `SCANLINE_APP=app/target/Scanline.app`, set where the host is started (a running host keeps its environment: `scanline stop` first). An installed app is found without it, in `/Applications` or `~/Applications`.
 
-`SCANLINE_APP_SNAPSHOTS=<folder>` makes the window save a picture of itself there every two seconds, with where Chromium's view sits beside it: a way to check the window with nobody at the screen. (A picture of one's own window leaves out what Chromium's GPU process draws, so the game area is dark in it.)
+`SCANLINE_APP_SNAPSHOTS=<folder>` makes the window save a picture of itself there every two seconds, with where Chromium's view sits beside it: a way to check the window with nobody at the screen. (A picture of one's own window leaves out what Chromium's GPU process draws, so the game area is dark in it.) In that mode the window also does what a `<session>.do` file in the folder says, one line each, then removes it: `capture`, `screenshot`, `video`, `show experiments`, `select tex_4`, `kind shader`, `back`, `view wireframe`, `patch <key> patch_draws {json}`, `measure flat_fragment`, `width 900`, `draw 12`, `pixel 10 20`, `address <url>`.
 
 `npm run package:app` (`app/package.sh`) makes a release build and packs it into `dist/Scanline-<version>-macos-arm64.dmg`, with a link to `/Applications`. It is unsigned: signing and notarising are the owner's, and come before packing.
 

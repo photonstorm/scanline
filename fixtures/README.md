@@ -61,6 +61,8 @@ The depth test is `LESS` throughout. So:
 | (220, 180), the ramp's right | cleared, grey; event 3 fails the depth test: the shader wrote 0.875 |
 | (260, 180), the blue quad | cleared, grey; event 4 fails the depth test |
 
+`history/composite.html` ends its frame as most games do: a red triangle on blue is drawn to a 160×120 texture, and a full-screen quad (a strip of four vertices) samples it onto the canvas, which is cleared to black first. Under the live wireframe the quad is drawn filled and the triangle outlined, so the centre (80, 60) and the top-right corner (150, 10) are both blue.
+
 `history/nan.html` draws to a 160×120 RGBA16F texture and shows it on the canvas. Columns 0 to 39 of the texture hold NaN (`normalize(vec3(0))`), columns 40 to 79 hold infinity (`1.0 / 0.0`), the rest ordinary values.
 
 ## The page protocol (`protocol/`)

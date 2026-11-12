@@ -1520,6 +1520,25 @@ describe('live patches', () =>
         assert.deepEqual((await scanline('console', '--level', 'error', '--json')).json.data.lines, []);
     });
 
+    test('the wireframe shows a scene through the full-screen pass that puts it on the canvas', async () =>
+    {
+        await open('fixtures/history/composite.html');
+
+        assert.deepEqual([await pixel(80, 60), await pixel(150, 10)], [[255, 0, 0, 255], [0, 0, 255, 255]]);
+
+        await scanline('live_view', 'wireframe');
+        await scanline('step', '2');
+
+        // The triangle is an outline on the texture; the quad that shows it is drawn filled,
+        // where outlines would leave the canvas black but for its edges and one diagonal.
+        assert.deepEqual(await pixel(80, 60), [0, 0, 255, 255], 'inside the triangle\'s outline');
+        assert.deepEqual(await pixel(150, 10), [0, 0, 255, 255], 'the quad is filled');
+
+        await scanline('live_view', 'off');
+        await scanline('step', '2');
+        assert.deepEqual(await pixel(80, 60), [255, 0, 0, 255]);
+    });
+
     test('a shader is edited live, and one that does not compile changes nothing', async () =>
     {
         await open('fixtures/bugs/b00.html');
@@ -1618,7 +1637,11 @@ describe('live patches', () =>
 
             assert.equal(flat.code, 0, flat.out);
             assert.match(flat.json.summary, /Tried for 30 frames: every matching draw writing one flat colour \(every draw is drawn in one flat colour/);
-            assert.ok(flat.json.data.gpu_ms.with < flat.json.data.gpu_ms.without * 0.6, `${page}: ${JSON.stringify(flat.json.data.gpu_ms)}`);
+            // When the tool finds its readings unsteady (another page using the GPU), it says so,
+            // and only the direction of the change is held to.
+            const gpu = flat.json.data.gpu_ms;
+
+            assert.ok(gpu.with < gpu.without * (gpu.steady ? 0.6 : 1), `${page}: ${JSON.stringify(gpu)}`);
             assert.match((await scanline('patches')).out, /No patches are in force/);
         }
 

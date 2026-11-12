@@ -516,6 +516,24 @@ What has not been checked on Windows is in `docs/BY-HAND.md` under "On Windows":
 - **The probe's records ride on the page's objects as private class fields**, one generated class per kind of object. A shared lookup saw every type of object and cost about 75 ns a call; one class per kind costs about 17.
 - **A page's own timer queries win.** Only one can be active, so when the page begins one, Scanline ends its own and stops timing that context.
 
+## Captures of heavy scenes
+
+12 November 2026. A capture of a heavy WebGL scene (spider.sixfingerpunch.com: 103 draws, 20 textures, 338 MB of textures and buffers) took about a minute in the owner's hands. Timing each stage showed recording and replaying the frame took under two seconds; the rest was moving its data from the page to the host and from the host to the replay page. Now about 10 to 12 s:
+
+- **The protocol client** (`scanline-cdp`) searched its whole buffer for the end of a message after every read, so a message of tens of megabytes took seconds to arrive. It searches only what has arrived since.
+- **Blobs travel as plain base64**, made and read with Chromium's own `Uint8Array.toBase64` and `fromBase64`, without gzip, which cost more time than it saved on textures and render targets. A probe from before this still sends gzip and says so.
+- **A blob larger than 3 MB goes to the replay page in pieces**: one script of tens of megabytes stalled the page.
+- **The replay page keeps blobs by their hash**, so a later capture of the same scene sends only what changed; a reused blob is copied, since a replay may write into what it is given.
+- Left: the page still sends every texture each time, unchanged or not. Asking the page to name a texture that has not changed since the last capture, rather than send it, would take most of what remains on a scene like this one.
+
+A capture names its stages as it goes. **`progress`** (a control-API method, not a tool: an agent's own call is waiting on the capture) reads them from the host without asking the page, and a capture's result gives each stage's time (`stages`).
+
+## Added for the app on 12 November 2026
+
+- **`video(action: "start" | "stop")`**, a tool: the flight recorder keeps the last frames (default 600) while the page runs; stop freezes it, makes the frames a recording and its WebM (`recording(video: true)`), and lets it run on. Status gives `video_seconds` while one is recording.
+- **`thumbnails(handles, max_edge)`**, a control-API method for the app's gallery: `screenshot(source)` for each texture, read at the mipmap level nearest the picture's size where the texture has levels.
+- **The live wireframe leaves full-screen passes filled.** It drew every triangle as lines, so on a game that draws its scene offscreen and puts it on the canvas with one full-screen quad, it showed that quad's diagonal and nothing else. The probe now draws filled a draw whose program has only ever drawn four to six vertices and which samples a texture that has been a framebuffer's colour attachment, so the scene's wireframe shows through post effects and the final composite. A quad with an ordinary texture (a floor, a sprite) is still outlined.
+
 ## Known gaps in what is built
 
 - Unlabelled WebGPU objects are not given generated labels, which the specification lists as a modification. They are named by handle in results instead.
