@@ -546,6 +546,18 @@ pub const TOOLS: &[Tool] = &[
         read_only: false,
     },
     Tool {
+        name: "attachments",
+        description: "Every attachment of the target an event drew to, as it stood after that event: each colour target (a deferred renderer's albedo, normals, roughness, emissive…) and the depth, as pictures side by side, named by attachment point and the texture each holds. Replays the capture.",
+        schema: schema!(
+            r#"["capture", "draw"]"#,
+            session!(),
+            r#""capture": { "type": "string" }"#,
+            r#""draw": { "type": "integer", "description": "The event's number, from draw_list." }"#,
+            r#""max_edge": { "type": "integer", "description": "Longest edge of each picture. Default 512." }"#
+        ),
+        read_only: true,
+    },
+    Tool {
         name: "emulate",
         description: "Give the page the size and pixel ratio of a device or a window, as DevTools' device mode does: it sees that innerWidth, innerHeight and devicePixelRatio, and draws its canvas to match. scale draws the view smaller (or larger) so a large size fits where it is shown. mobile: true makes it a phone or tablet: touch events, and its viewport meta tag applies. reset: true gives it its view's own size again.",
         schema: schema!(

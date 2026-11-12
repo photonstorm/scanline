@@ -31,6 +31,36 @@ pub struct State {
     /// The flight recording opened, and what recording() said of it.
     pub recording: Option<String>,
     pub frames: Option<Value>,
+    /// The capture's passes, from its events, and which are open in the navigator.
+    pub passes: Vec<Pass>,
+    pub open_passes: std::collections::HashSet<i64>,
+    /// A picture of each pass's target as the pass left it, by pass number.
+    pub pass_pictures: std::collections::HashMap<i64, Option<PathBuf>>,
+    /// The chosen draw's attachments (attachments()), and the one shown large, if any.
+    pub attachments: Option<Value>,
+    pub enlarged: Option<usize>,
+    /// GPU time by draw, in nanoseconds (profile()), once measured; and whether it is being.
+    pub timing: Option<std::collections::HashMap<i64, f64>>,
+    pub measuring: bool,
+}
+
+/// A run of events on one target.
+#[derive(Clone, Debug)]
+pub struct Pass {
+    pub number: i64,
+    pub target: String,
+    /// Positions in the event list, first and last.
+    pub first: usize,
+    pub last: usize,
+    pub draws: usize,
+    pub clears: usize,
+}
+
+/// One row of the navigator: a pass, or an event in an open one.
+#[derive(Clone, Copy)]
+enum Row {
+    Pass(usize),
+    Event(usize),
 }
 
 impl State {
@@ -81,6 +111,13 @@ impl State {
             self.target = None;
             self.pixel = None;
             self.story = None;
+            self.passes.clear();
+            self.open_passes.clear();
+            self.pass_pictures.clear();
+            self.attachments = None;
+            self.enlarged = None;
+            self.timing = None;
+            self.measuring = false;
 
             if self.made.as_ref().and_then(|made| made["capture"].as_str()) != Some(capture) {
                 self.made = self.rows.iter().find(|row| row["capture"].as_str() == Some(capture)).cloned();
@@ -92,15 +129,31 @@ impl State {
         self.loading = true;
     }
 
-    /// The capture's events. Returns the one to show first: the one asked for, else the last
-    /// draw, which made the frame's final picture.
-    pub fn events(&mut self, capture: &str, data: &Value) -> Option<i64> {
+    /// A page of the capture's events: the first in place of what was there, the rest after it.
+    pub fn page(&mut self, capture: &str, data: &Value, first: bool) {
+        if self.opened.as_deref() != Some(capture) {
+            return;
+        }
+
+        let events = data["events"].as_array().cloned().unwrap_or_default();
+
+        if first {
+            self.events = events;
+        } else {
+            self.events.extend(events);
+        }
+
+        self.passes = passes_of(&self.events);
+    }
+
+    /// The capture's events are all in. Returns the one to show first: the one asked for, else
+    /// the last draw, which made the frame's final picture.
+    pub fn events(&mut self, capture: &str) -> Option<i64> {
         if self.opened.as_deref() != Some(capture) {
             return None;
         }
 
         self.loading = false;
-        self.events = data["events"].as_array().cloned().unwrap_or_default();
 
         // The list again for the capture in view (once it has finished in the background):
         // the draw chosen stays chosen.
@@ -117,6 +170,73 @@ impl State {
         self.selected = Some(draw);
         self.draw = None;
         self.error = None;
+        self.attachments = None;
+        self.enlarged = None;
+
+        // The pass it is in opens in the navigator.
+        if let Some(position) = self.events.iter().position(|event| event["draw"].as_i64() == Some(draw)) {
+            if let Some(pass) = self.passes.iter().find(|pass| (pass.first..=pass.last).contains(&position)) {
+                self.open_passes.insert(pass.number);
+            }
+        }
+    }
+
+    pub fn got_timing(&mut self, capture: &str, data: &Value) {
+        if self.opened.as_deref() == Some(capture) {
+            self.measuring = false;
+            let rows = if data["every"].is_array() { &data["every"] } else { &data["rows"] };
+
+            self.timing = Some(rows.as_array().into_iter().flatten().filter_map(|row| Some((row["draw"].as_i64()?, row["ns"].as_f64()?))).collect());
+        }
+    }
+
+    pub fn got_attachments(&mut self, capture: &str, draw: i64, data: &Value) {
+        if self.opened.as_deref() == Some(capture) && self.selected == Some(draw) {
+            self.attachments = Some(data.clone());
+        }
+    }
+
+    pub fn got_pass_picture(&mut self, capture: &str, pass: i64, value: &Value) {
+        if self.opened.as_deref() == Some(capture) {
+            let path = value["images"][0]["view"].as_str().or(value["images"][0]["original"].as_str()).map(PathBuf::from);
+
+            self.pass_pictures.insert(pass, path);
+        }
+    }
+
+    /// Passes whose picture has not been asked for: each as (number, its last event, target).
+    pub fn wanted_pass_pictures(&mut self) -> Vec<(i64, i64, String)> {
+        let wanted: Vec<(i64, i64, String)> = self
+            .passes
+            .iter()
+            .filter(|pass| !self.pass_pictures.contains_key(&pass.number))
+            .filter_map(|pass| Some((pass.number, self.events.get(pass.last)?["draw"].as_i64()?, pass.target.clone())))
+            .collect();
+
+        for (number, _, _) in &wanted {
+            self.pass_pictures.insert(*number, None);
+        }
+
+        wanted
+    }
+
+    /// The textures the chosen draw has bound, by handle, for their pictures.
+    pub fn bound_textures(&self) -> Vec<String> {
+        let mut out = Vec::new();
+
+        for unit in self.draw.as_ref().map(|draw| draw["state"]["textures"].as_array().cloned().unwrap_or_default()).unwrap_or_default() {
+            for key in ["t2d", "cube", "t3d", "array"] {
+                if let Some(id) = unit[key].as_i64() {
+                    let handle = format!("tex_{id}");
+
+                    if !out.contains(&handle) {
+                        out.push(handle);
+                    }
+                }
+            }
+        }
+
+        out
     }
 
     pub fn draw(&mut self, capture: &str, draw: i64, data: &Value) {
@@ -173,6 +293,44 @@ impl State {
         if self.opened.as_deref() == Some(capture) && self.selected == Some(draw) {
             self.error = Some(error);
         }
+    }
+}
+
+/// Passes from the event list: each run of events with one pass number.
+fn passes_of(events: &[Value]) -> Vec<Pass> {
+    let mut passes: Vec<Pass> = Vec::new();
+
+    for (position, event) in events.iter().enumerate() {
+        let number = event["pass"].as_i64().unwrap_or(-1);
+        let kind = event["kind"].as_str().unwrap_or("");
+
+        match passes.last_mut() {
+            Some(pass) if pass.number == number => {
+                pass.last = position;
+                pass.draws += (kind == "draw") as usize;
+                pass.clears += (kind == "clear") as usize;
+            }
+            _ => passes.push(Pass {
+                number,
+                target: event["target"].as_str().unwrap_or("canvas").to_string(),
+                first: position,
+                last: position,
+                draws: (kind == "draw") as usize,
+                clears: (kind == "clear") as usize,
+            }),
+        }
+    }
+
+    passes
+}
+
+/// The icon and colour for an event by its kind.
+fn kind_look(kind: &str) -> (&'static str, u32) {
+    match kind {
+        "clear" => ("clear", CYAN),
+        "blit" | "copy" => ("blit", ORANGE),
+        "dispatch" => ("program", AMBER),
+        _ => ("draw", PURPLE),
     }
 }
 
@@ -315,42 +473,641 @@ fn state_of(draw: &Value) -> gpui::Div {
         })
 }
 
+/// The navigator: the capture's passes, each with a picture of what it drew, opening onto its
+/// events. One list, so that a frame of thousands of draws scrolls as easily as a short one.
+fn navigator(player: &Player, height: f32, cx: &mut Context<Player>) -> impl IntoElement {
+    let state = &player.captures;
+    let mut rows = Vec::new();
+
+    for (index, pass) in state.passes.iter().enumerate() {
+        rows.push(Row::Pass(index));
+
+        if state.open_passes.contains(&pass.number) {
+            rows.extend((pass.first..=pass.last).map(Row::Event));
+        }
+    }
+
+    let rows = Rc::new(rows);
+    let count = rows.len();
+
+    div()
+        .flex()
+        .flex_col()
+        .rounded(px(7.0))
+        .bg(rgb(CARD))
+        .border_1()
+        .border_color(rgb(LINE))
+        .overflow_hidden()
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .h(px(30.0))
+                .px_2p5()
+                .border_b_1()
+                .border_color(rgb(LINE))
+                .child(crate::icons::icon("pass", 13.0, rgb(PURPLE)))
+                .child(section(format!("{} passes · {} events", state.passes.len(), state.events.len()))),
+        )
+        .child(
+            uniform_list(
+                "navigator",
+                count,
+                cx.processor(move |this, range: std::ops::Range<usize>, _, cx| {
+                    range
+                        .filter_map(|index| rows.get(index).copied().map(|row| (index, row)))
+                        .map(|(index, row)| match row {
+                            Row::Pass(at) => {
+                                let pass = this.captures.passes[at].clone();
+                                let open = this.captures.open_passes.contains(&pass.number);
+                                let picture = this.captures.pass_pictures.get(&pass.number).cloned().flatten();
+                                let holds_choice = this.captures.selected.is_some_and(|draw| {
+                                    this.captures.events.iter().position(|event| event["draw"].as_i64() == Some(draw)).is_some_and(|position| (pass.first..=pass.last).contains(&position))
+                                });
+                                let number = pass.number;
+
+                                div()
+                                    .id(("pass", index))
+                                    .w_full()
+                                    .h(px(30.0))
+                                    .flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .px_2()
+                                    .cursor_pointer()
+                                    .bg(if holds_choice { tint(PURPLE, 0.08) } else { tint(TEXT, 0.02) })
+                                    .border_b_1()
+                                    .border_color(rgb(LINE))
+                                    .hover(|row| row.bg(tint(PURPLE, 0.1)))
+                                    .child(crate::icons::chevron(open, 11.0, tint(DIM, 1.0)))
+                                    .child(
+                                        div()
+                                            .flex_none()
+                                            .w(px(40.0))
+                                            .h(px(22.0))
+                                            .rounded(px(3.0))
+                                            .overflow_hidden()
+                                            .bg(rgb(0x000000))
+                                            .border_1()
+                                            .border_color(rgb(LINE))
+                                            .when_some(picture, |frame, path| frame.child(img(path).size_full().object_fit(ObjectFit::Cover))),
+                                    )
+                                    .child(div().flex_none().text_xs().font_weight(gpui::FontWeight::SEMIBOLD).text_color(rgb(TEXT)).child(format!("Pass {}", pass.number)))
+                                    .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_xs().font_family(MONO).text_color(rgb(DIM)).child(format!("→ {}", pass.target)))
+                                    .child(div().flex_none().text_xs().text_color(rgb(DIM)).child(match (pass.draws, pass.clears) {
+                                        (0, 0) => "—".to_string(),
+                                        (1, 0) => "1 draw".to_string(),
+                                        (draws, 0) => format!("{draws} draws"),
+                                        (0, clears) => format!("{clears} clear{}", if clears == 1 { "" } else { "s" }),
+                                        (draws, clears) => format!("{draws} draw{} · {clears} clear{}", if draws == 1 { "" } else { "s" }, if clears == 1 { "" } else { "s" }),
+                                    }))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        if !this.captures.open_passes.remove(&number) {
+                                            this.captures.open_passes.insert(number);
+                                        }
+
+                                        cx.notify();
+                                    }))
+                            }
+                            Row::Event(position) => {
+                                let event = this.captures.events.get(position).cloned().unwrap_or(Value::Null);
+                                let draw = event["draw"].as_i64().unwrap_or(position as i64);
+                                let on = this.captures.selected == Some(draw);
+                                let kind = event["kind"].as_str().unwrap_or("draw").to_string();
+                                let nothing = event["pixels_changed"] == 0 && kind == "draw";
+                                let (glyph, colour) = kind_look(&kind);
+
+                                div()
+                                    .id(("event", index))
+                                    .w_full()
+                                    .h(px(30.0))
+                                    .flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .pl(px(28.0))
+                                    .pr_2()
+                                    .text_xs()
+                                    .cursor_pointer()
+                                    .bg(if on { tint(PURPLE, 0.26) } else { tint(TEXT, 0.0) })
+                                    .when(on, |row| row.border_l_2().border_color(rgb(PURPLE)))
+                                    .hover(|row| row.bg(tint(PURPLE, 0.12)))
+                                    .child(crate::icons::icon(glyph, 12.0, if nothing { tint(DIM, 0.7) } else { tint(colour, 0.95) }))
+                                    .child(div().w(px(34.0)).flex_none().font_family(MONO).text_color(rgb(DIM)).child(draw.to_string()))
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .overflow_hidden()
+                                            .whitespace_nowrap()
+                                            .text_color(if nothing { rgb(DIM) } else { rgb(TEXT) })
+                                            .child(event_line(&event)),
+                                    )
+                                    .when(nothing, |row| row.child(crate::icons::icon("warning", 11.0, tint(RED, 0.9))))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.select_draw(draw, cx);
+                                        cx.notify();
+                                    }))
+                            }
+                        })
+                        .collect()
+                }),
+            )
+            .h(px(height)),
+        )
+}
+
+/// One row of the bound-resources table: what, where it is bound, and its type.
+fn binding_row(icon: &'static str, colour: u32, label: String, binding: String, kind: String, picture: Option<PathBuf>) -> gpui::Div {
+    div()
+        .flex()
+        .items_center()
+        .gap_2()
+        .h(px(26.0))
+        .px_2()
+        .text_xs()
+        .border_b_1()
+        .border_color(tint(LINE, 0.6))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .flex_1()
+                .min_w_0()
+                .child(match picture {
+                    Some(path) => div()
+                        .flex_none()
+                        .size(px(18.0))
+                        .rounded(px(3.0))
+                        .overflow_hidden()
+                        .border_1()
+                        .border_color(rgb(LINE))
+                        .child(img(path).size_full().object_fit(ObjectFit::Cover))
+                        .into_any_element(),
+                    None => crate::icons::icon(icon, 13.0, tint(colour, 0.95)).into_any_element(),
+                })
+                .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_color(rgb(TEXT)).child(label)),
+        )
+        .child(div().w(px(110.0)).flex_none().overflow_hidden().whitespace_nowrap().text_color(rgb(DIM)).child(binding))
+        .child(div().w(px(130.0)).flex_none().overflow_hidden().whitespace_nowrap().font_family(MONO).text_color(tint(DIM, 0.9)).child(kind))
+}
+
+fn table_section(title: &str) -> gpui::Div {
+    div()
+        .flex()
+        .items_center()
+        .gap_1p5()
+        .h(px(26.0))
+        .px_2()
+        .bg(tint(TEXT, 0.03))
+        .border_b_1()
+        .border_color(rgb(LINE))
+        .child(crate::icons::chevron(true, 10.0, tint(DIM, 1.0)))
+        .child(div().text_xs().font_weight(gpui::FontWeight::SEMIBOLD).text_color(rgb(TEXT)).child(title.to_string()))
+}
+
+/// What the chosen draw has bound, as Metal's debugger lays it out: the pipeline, the vertex
+/// inputs, the textures and the attachments it draws to.
+fn bound_resources(player: &Player, draw: &Value, cx: &mut Context<Player>) -> gpui::Div {
+    let state = &draw["state"];
+    let thumbs = &player.resources.thumbs;
+    let picture = |handle: &str| match thumbs.get(handle) {
+        Some(crate::panels::resources::Thumb::Ready(path)) => Some(path.clone()),
+        _ => None,
+    };
+    let program = state["programName"].as_str().or(state["pipeline"].as_str()).map(str::to_string);
+    let mut table = div().flex().flex_col().rounded(px(7.0)).bg(rgb(CARD)).border_1().border_color(rgb(LINE)).overflow_hidden().child(
+        div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .h(px(30.0))
+            .px_2()
+            .border_b_1()
+            .border_color(rgb(LINE))
+            .text_xs()
+            .text_color(rgb(DIM))
+            .child(div().flex_1().child(section("Bound resources")))
+            .child(div().w(px(110.0)).child(section("Binding")))
+            .child(div().w(px(130.0)).child(section("Type"))),
+    );
+
+    table = table.child(table_section("Pipeline"));
+
+    if let Some(program) = &program {
+        let chosen = program.clone();
+
+        table = table.child(
+            div()
+                .id("bound-program")
+                .cursor_pointer()
+                .hover(|row| row.bg(tint(AMBER, 0.08)))
+                .child(binding_row("program", AMBER, program.clone(), "Program".into(), "open in Resources".into(), None))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.show(crate::panels::Panel::Resources);
+                    this.select_resource(chosen.clone());
+                    cx.notify();
+                })),
+        );
+    }
+
+    table = table.child(binding_row(
+        "draw",
+        PURPLE,
+        format!("{} ×{}", state["mode"].as_str().unwrap_or(state["method"].as_str().unwrap_or("draw")), state["count"]),
+        state["method"].as_str().unwrap_or("").to_string(),
+        state["instances"].as_i64().filter(|count| *count > 1).map(|count| format!("{count} instances")).unwrap_or_default(),
+        None,
+    ));
+
+    let attributes = state["attributes"].as_array().cloned().unwrap_or_default();
+
+    if !attributes.is_empty() || state["elementBuffer"].is_number() {
+        table = table.child(table_section("Vertex"));
+
+        for attribute in attributes.iter().filter(|attribute| attribute["enabled"] != false) {
+            let kind = match attribute["type"].as_u64().unwrap_or(0) {
+                0x1406 => "float",
+                0x1405 => "uint",
+                0x1404 => "int",
+                0x1401 => "ubyte",
+                0x1400 => "byte",
+                0x1403 => "ushort",
+                0x1402 => "short",
+                0x140B => "half",
+                _ => "?",
+            };
+
+            table = table.child(binding_row(
+                "buffer",
+                BLUE,
+                attribute["buffer"].as_i64().map(|id| format!("buf_{id}")).unwrap_or_else(|| "constant".into()),
+                format!("Attribute {}", attribute["index"]),
+                format!("{kind}×{}{}", attribute["size"], if attribute["divisor"].as_u64().unwrap_or(0) > 0 { " per instance" } else { "" }),
+                None,
+            ));
+        }
+
+        if let Some(id) = state["elementBuffer"].as_i64() {
+            table = table.child(binding_row("buffer", BLUE, format!("buf_{id}"), "Indices".into(), state["indexType"].as_str().unwrap_or("").to_string(), None));
+        }
+    }
+
+    let units = state["textures"].as_array().cloned().unwrap_or_default();
+
+    if !units.is_empty() {
+        table = table.child(table_section("Fragment"));
+
+        for unit in &units {
+            for (key, kind) in [("t2d", "Texture 2D"), ("cube", "Texture Cube"), ("t3d", "Texture 3D"), ("array", "Texture 2DArray")] {
+                if let Some(id) = unit[key].as_i64() {
+                    let handle = format!("tex_{id}");
+                    let chosen = handle.clone();
+
+                    table = table.child(
+                        div()
+                            .id(gpui::SharedString::from(format!("bound-{handle}-{}", unit["unit"])))
+                            .cursor_pointer()
+                            .hover(|row| row.bg(tint(AMBER, 0.08)))
+                            .child(binding_row("texture", AMBER, handle.clone(), format!("Texture {}", unit["unit"]), kind.to_string(), picture(&handle)))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.show(crate::panels::Panel::Resources);
+                                this.select_resource(chosen.clone());
+                                cx.notify();
+                            })),
+                    );
+                }
+            }
+        }
+    }
+
+    let uniforms = state["uniforms"].as_object().cloned().unwrap_or_default();
+
+    if !uniforms.is_empty() {
+        table = table.child(table_section("Uniforms"));
+
+        for (name, value) in uniforms.into_iter().take(40) {
+            let text = match &value {
+                Value::String(text) => text.clone(),
+                other => other.to_string(),
+            };
+
+            table = table.child(binding_row("shader", CYAN, name, "Uniform".into(), if text.len() > 40 { format!("{}…", &text[..40]) } else { text }, None));
+        }
+    }
+
+    if let Some(attachments) = &player.captures.attachments {
+        table = table.child(table_section("Attachments"));
+
+        for attachment in attachments["attachments"].as_array().cloned().unwrap_or_default() {
+            let handle = attachment["handle"].as_str().unwrap_or("").to_string();
+            let label = attachment["label"].as_str().filter(|label| !label.is_empty()).map(|label| format!("{label} ({handle})")).unwrap_or(handle);
+
+            table = table.child(binding_row(
+                if attachment["attachment"].as_str().is_some_and(|name| name.starts_with("Depth")) { "depth" } else { "framebuffer" },
+                GREEN,
+                label,
+                attachment["attachment"].as_str().unwrap_or("").to_string(),
+                attachment["what"].as_str().unwrap_or("").to_string(),
+                attachment["image"].as_str().map(PathBuf::from),
+            ));
+        }
+    }
+
+    table
+}
+
+/// A colour for a program, the same each time: draws by one shader read as one block.
+fn program_colour(program: &str) -> u32 {
+    const PALETTE: [u32; 10] = [0x7c83fd, 0x4ade80, 0xfbbf24, 0xf472b6, 0x22d3ee, 0xfb923c, 0xa78bfa, 0x34d399, 0xf87171, 0x60a5fa];
+    let sum = program.bytes().fold(7u32, |sum, byte| sum.wrapping_mul(31).wrapping_add(byte as u32));
+
+    PALETTE[(sum % PALETTE.len() as u32) as usize]
+}
+
+/// The frame laid out in time, as Nsight's GPU trace does: its passes, and beneath them their
+/// draws, each as wide as the GPU time it took (or all alike until measured), coloured by
+/// program. A click chooses a draw.
+fn timeline(player: &Player, cx: &mut Context<Player>) -> gpui::Div {
+    let state = &player.captures;
+    let timing = state.timing.as_ref();
+    let events = &state.events;
+    // Each event's share of the frame: its GPU time, or one part in the count.
+    let weight = |event: &Value| -> f64 {
+        match timing {
+            Some(timing) => event["draw"].as_i64().and_then(|draw| timing.get(&draw)).copied().unwrap_or(0.0).max(1.0),
+            None => 1.0,
+        }
+    };
+    let weights: Vec<f64> = events.iter().map(weight).collect();
+    let total: f64 = weights.iter().sum::<f64>().max(1.0);
+    let mut starts = Vec::with_capacity(weights.len());
+    let mut at = 0.0;
+
+    for weight in &weights {
+        starts.push(at / total);
+        at += weight;
+    }
+
+    let total_ms = timing.map(|timing| timing.values().sum::<f64>() / 1e6);
+    let chosen = state.selected;
+    let caption = match (chosen, timing) {
+        (Some(draw), Some(timing)) => timing.get(&draw).map(|ns| format!("event {draw}: {:.3} ms, {:.1}% of the frame's GPU time", ns / 1e6, ns / 1e6 / total_ms.unwrap_or(1.0) * 100.0)),
+        _ => None,
+    };
+
+    let passes = div().relative().w_full().h(px(22.0)).children(state.passes.iter().enumerate().map(|(index, pass)| {
+        let left = starts.get(pass.first).copied().unwrap_or(0.0);
+        let width: f64 = weights[pass.first..=pass.last.min(weights.len().saturating_sub(1))].iter().sum::<f64>() / total;
+        let ms = timing.map(|timing| (pass.first..=pass.last).filter_map(|position| events[position]["draw"].as_i64()).filter_map(|draw| timing.get(&draw)).sum::<f64>() / 1e6);
+        let colour = [0x7c83fd, 0x22d3ee, 0xa78bfa, 0x34d399][index % 4];
+        let first = events.get(pass.first).and_then(|event| event["draw"].as_i64());
+
+        div()
+            .id(("timeline-pass", index))
+            .absolute()
+            .top_0()
+            .left(gpui::relative(left as f32))
+            .w(gpui::relative(width as f32))
+            .h_full()
+            .px_1()
+            .flex()
+            .items_center()
+            .overflow_hidden()
+            .whitespace_nowrap()
+            .rounded(px(3.0))
+            .bg(tint(colour, 0.28))
+            .border_1()
+            .border_color(tint(colour, 0.7))
+            .text_size(px(10.0))
+            .text_color(rgb(TEXT))
+            .cursor_pointer()
+            .hover(move |bar| bar.bg(tint(colour, 0.45)))
+            .child(match ms {
+                Some(ms) => format!("Pass {} → {} · {ms:.2} ms", pass.number, pass.target),
+                None => format!("Pass {} → {}", pass.number, pass.target),
+            })
+            .on_click(cx.listener(move |this, _, _, cx| {
+                if let Some(draw) = first {
+                    this.select_draw(draw, cx);
+                }
+
+                cx.notify();
+            }))
+    }));
+
+    let draws = div().relative().w_full().h(px(26.0)).children(events.iter().enumerate().map(|(position, event)| {
+        let draw = event["draw"].as_i64().unwrap_or(position as i64);
+        let kind = event["kind"].as_str().unwrap_or("draw");
+        let colour = if kind == "draw" { program_colour(event["program"].as_str().unwrap_or("")) } else { DIM };
+        let on = chosen == Some(draw);
+
+        div()
+            .id(("timeline-draw", position))
+            .absolute()
+            .top_0()
+            .left(gpui::relative(starts[position] as f32))
+            .w(gpui::relative((weights[position] / total) as f32))
+            .h_full()
+            .bg(tint(colour, if on { 1.0 } else { 0.75 }))
+            .border_r_1()
+            .border_color(tint(0x000000, 0.35))
+            .when(on, |bar| bar.border_2().border_color(rgb(0xffffff)).shadow(glow(0xffffff, 0.6)))
+            .cursor_pointer()
+            .hover(|bar| bar.bg(rgb(0xffffff)))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.select_draw(draw, cx);
+                cx.notify();
+            }))
+    }));
+
+    div()
+        .flex()
+        .flex_col()
+        .gap_1p5()
+        .p_2()
+        .rounded(px(7.0))
+        .bg(rgb(CARD))
+        .border_1()
+        .border_color(rgb(LINE))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(crate::icons::icon("timer", 13.0, rgb(CYAN)))
+                .child(section("Frame timeline"))
+                .child(note(match total_ms {
+                    Some(ms) => format!("{ms:.2} ms of GPU time, each draw as wide as it took (timed over 16 repeats); coloured by program"),
+                    None if state.measuring => "Timing every draw on the GPU…".to_string(),
+                    None => "Each event alike until measured; coloured by program".to_string(),
+                }))
+                .child(div().flex_1())
+                .when_some(caption, |row, caption| row.child(div().text_xs().font_family(MONO).text_color(rgb(TEXT)).child(caption)))
+                .when(timing.is_none(), |row| {
+                    row.child(icon_label("measure", "timer", if state.measuring { "Measuring…" } else { "Measure GPU time" }, CYAN).on_click(cx.listener(|this, _, _, cx| {
+                        this.measure_capture();
+                        cx.notify();
+                    })))
+                }),
+        )
+        .child(passes)
+        .child(draws)
+}
+
+/// The depth attachment's picture for the chosen draw, if it has one.
+fn depth_picture(state: &State) -> Option<PathBuf> {
+    state.attachments.as_ref()?["attachments"]
+        .as_array()?
+        .iter()
+        .find(|tile| tile["attachment"].as_str().is_some_and(|name| name.starts_with("Depth")))
+        .and_then(|tile| tile["image"].as_str().map(PathBuf::from))
+}
+
+/// Every attachment of the chosen draw's target, side by side, as it stood after the draw.
+fn attachments_grid(player: &Player, columns: usize, cx: &mut Context<Player>) -> gpui::Div {
+    let state = &player.captures;
+    let target = state.draw.as_ref().and_then(|draw| draw["state"]["targetName"].as_str().map(str::to_string));
+    let mut grid = div().flex().flex_col().gap_2().p_2().rounded(px(7.0)).bg(rgb(CARD)).border_1().border_color(rgb(LINE)).child(
+        div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .child(crate::icons::icon("framebuffer", 13.0, rgb(GREEN)))
+            .child(section(match &target {
+                Some(target) => format!("Attachments of {target}"),
+                None => "Attachments".to_string(),
+            })),
+    );
+
+    let Some(attachments) = &state.attachments else {
+        return grid.child(note(if state.selected.is_some() { "Reading every attachment as it stood after this draw…" } else { "Pick a draw." }));
+    };
+
+    let tiles: Vec<Value> = attachments["attachments"].as_array().cloned().unwrap_or_default();
+    let enlarged = state.enlarged;
+    let mut row = div().flex().gap_2();
+    let mut in_row = 0;
+    let mut rows = Vec::new();
+
+    for (index, tile) in tiles.into_iter().enumerate() {
+        let name = tile["attachment"].as_str().unwrap_or("").to_string();
+        let handle = tile["handle"].as_str().unwrap_or("").to_string();
+        let label = tile["label"].as_str().filter(|label| !label.is_empty()).map(str::to_string).unwrap_or_else(|| handle.clone());
+        let depth = name.starts_with("Depth");
+        // What the draw wrote: every colour attachment of its target.
+        let own = !depth;
+        let on = enlarged == Some(index);
+        let colour = if depth { BLUE } else { GREEN };
+
+        let picture = match (tile["image"].as_str(), tile["error"].as_str()) {
+            (Some(path), _) => img(PathBuf::from(path)).size_full().object_fit(ObjectFit::Contain).into_any_element(),
+            (None, Some(error)) => div().p_2().text_xs().text_color(rgb(DIM)).child(error.to_string()).into_any_element(),
+            _ => note("…").into_any_element(),
+        };
+
+        row = row.child(
+            div()
+                .id(("attachment", index))
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .rounded(px(6.0))
+                .overflow_hidden()
+                .cursor_pointer()
+                .border_2()
+                .border_color(if on { tint(PURPLE, 1.0) } else if own { tint(GREEN, 0.85) } else { rgb(LINE) })
+                .when(own || on, |tile| tile.shadow(glow(if on { PURPLE } else { GREEN }, 0.35)))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_1p5()
+                        .h(px(24.0))
+                        .px_2()
+                        .bg(rgb(RAISED))
+                        .text_xs()
+                        .child(crate::icons::icon(if depth { "depth" } else { "texture" }, 11.0, rgb(colour)))
+                        .child(div().flex_none().font_weight(gpui::FontWeight::SEMIBOLD).text_color(rgb(TEXT)).child(format!("{name}:")))
+                        .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_color(rgb(DIM)).child(label)),
+                )
+                .child(div().h(px(150.0)).bg(rgb(0x000000)).flex().items_center().justify_center().child(picture))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.captures.enlarged = if this.captures.enlarged == Some(index) { None } else { Some(index) };
+                    cx.notify();
+                })),
+        );
+        in_row += 1;
+
+        if in_row == columns {
+            rows.push(row);
+            row = div().flex().gap_2();
+            in_row = 0;
+        }
+    }
+
+    if in_row > 0 {
+        // Empty places keep the last row's tiles the width of the others.
+        for _ in in_row..columns {
+            row = row.child(div().flex_1());
+        }
+
+        rows.push(row);
+    }
+
+    grid = grid.children(rows);
+
+    grid.child(note("Green: the target this draw wrote to. Click one to see it large."))
+}
+
 fn workspace(player: &mut Player, cx: &mut Context<Player>) -> gpui::Div {
     let state = &player.captures;
     let capture = state.opened.clone().unwrap_or_default();
     let count = state.events.len();
     let selected = state.selected;
+    let loading = state.loading;
     let made = state.made.clone().unwrap_or(Value::Null);
     let findings = made["findings"].as_array().cloned().unwrap_or_default();
+    let width = player.panel_px;
+    let identical = made["replay_matches"] == true;
+    let waiting = made["pending"] == true || made["replay"].as_str().is_some_and(|replay| replay.starts_with("still to come"));
 
     let header = div()
         .flex()
         .items_center()
         .gap_2()
-        .child(button("back", "◀  All", DIM).on_click(cx.listener(|this, _, _, cx| {
+        .child(icon_label("back", "home", "All", DIM).on_click(cx.listener(|this, _, _, cx| {
             this.captures.opened = None;
             cx.notify();
         })))
-        .child(div().font_family(MONO).text_color(rgb(PURPLE)).child(capture.clone()))
+        .child(div().font_family(MONO).text_sm().text_color(rgb(PURPLE)).child(capture.clone()))
         .child(note(format!(
-            "frame {} · {} · {} events{}",
+            "frame {} · {} · {count} events",
             made["frame"].as_u64().map(|frame| frame.to_string()).unwrap_or_else(|| "?".into()),
             made["api"].as_str().unwrap_or(""),
-            count,
-            if made["replay_matches"] == true {
-                " · replay identical"
-            } else if made["pending"] == true || made["replay"].as_str().is_some_and(|replay| replay.starts_with("still to come")) {
-                " · textures on their way"
-            } else {
-                ""
-            }
         )))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap_1()
+                .px_1p5()
+                .py(px(1.0))
+                .rounded(px(4.0))
+                .text_xs()
+                .bg(tint(if identical { GREEN } else if waiting { CYAN } else { AMBER }, 0.14))
+                .text_color(rgb(if identical { GREEN } else if waiting { CYAN } else { AMBER }))
+                .child(crate::icons::icon(if identical { "check" } else if waiting { "timer" } else { "warning" }, 11.0, rgb(if identical { GREEN } else if waiting { CYAN } else { AMBER })))
+                .child(if identical { "replay identical" } else if waiting { "textures on their way" } else { "replay differs" }),
+        )
         .child(div().flex_1())
-        .child(button("wide", if player.wide { "Narrow" } else { "Wide" }, DIM).on_click(cx.listener(|this, _, _, cx| {
+        .child(icon_label("wide", "wide", if player.wide { "Narrow" } else { "Wide" }, DIM).on_click(cx.listener(|this, _, _, cx| {
             this.toggle_wide();
             cx.notify();
         })))
-        .child(button("send", "Send to agent", BLUE).on_click(cx.listener(|this, _, _, cx| {
+        .child(icon_label("send", "send", "Send to agent", BLUE).on_click(cx.listener(|this, _, _, cx| {
             this.send_to_agent();
             cx.notify();
         })));
@@ -362,13 +1119,16 @@ fn workspace(player: &mut Player, cx: &mut Context<Player>) -> gpui::Div {
     let note_field = div()
         .id("note")
         .track_focus(&player.note_focus)
+        .flex()
+        .items_center()
+        .gap_2()
         .px_2()
-        .py(px(4.0))
-        .rounded_md()
+        .h(px(28.0))
+        .rounded(px(6.0))
         .text_xs()
         .bg(rgb(FIELD))
         .border_1()
-        .border_color(tint(if noting { BLUE } else { FAINT }, 0.8))
+        .border_color(if noting { tint(BLUE, 0.8) } else { rgb(LINE) })
         .text_color(if player.note.is_empty() && !noting { rgb(DIM) } else { rgb(TEXT) })
         .overflow_hidden()
         .whitespace_nowrap()
@@ -381,16 +1141,27 @@ fn workspace(player: &mut Player, cx: &mut Context<Player>) -> gpui::Div {
             }),
         )
         .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| this.type_note(event, cx)))
+        .child(crate::icons::icon("edit", 12.0, tint(DIM, 1.0)))
         .child(format!("{shown}{}", if noting { "▏" } else { "" }));
 
     let worth = (!findings.is_empty()).then(|| {
         card("Worth a look", RED).children(findings.into_iter().take(8).map(|finding| {
             let text = finding.as_str().or(finding["text"].as_str()).or(finding["summary"].as_str()).map(str::to_string).unwrap_or_else(|| finding.to_string());
 
-            div().text_xs().text_color(rgb(TEXT)).child(text)
+            div().flex().gap_2().text_xs().text_color(rgb(TEXT)).child(crate::icons::icon("warning", 12.0, tint(RED, 0.85))).child(div().flex_1().min_w_0().child(text))
         }))
     });
 
+    // The big picture: the draw's own target, or an attachment chosen in the grid.
+    let enlarged = state.enlarged.and_then(|index| state.attachments.as_ref()?["attachments"][index]["image"].as_str().map(PathBuf::from));
+    let caption = match (state.enlarged.and_then(|index| state.attachments.as_ref().map(|all| all["attachments"][index].clone())), selected) {
+        (Some(tile), Some(draw)) => format!("{}: {} after event {draw}", tile["attachment"].as_str().unwrap_or(""), tile["handle"].as_str().unwrap_or("")),
+        (None, Some(draw)) if state.error.is_some() && depth_picture(state).is_some() => {
+            format!("Depth of {} after event {draw} (it has no colour)", state.draw.as_ref().and_then(|draw| draw["state"]["targetName"].as_str()).unwrap_or("the target"))
+        }
+        (None, Some(draw)) => format!("{} after event {draw} · click a pixel for its history", state.draw.as_ref().and_then(|draw| draw["state"]["targetName"].as_str()).unwrap_or("the target")),
+        _ => String::new(),
+    };
     let place = state.picture.clone();
     let picture = div()
         .id("picture")
@@ -399,8 +1170,10 @@ fn workspace(player: &mut Player, cx: &mut Context<Player>) -> gpui::Div {
         .on_mouse_down(
             MouseButton::Left,
             cx.listener(|this, event: &MouseDownEvent, _, cx| {
-                if let Some(pixel) = this.captures.pixel_at(event) {
-                    this.pick_pixel(pixel);
+                if this.captures.enlarged.is_none() {
+                    if let Some(pixel) = this.captures.pixel_at(event) {
+                        this.pick_pixel(pixel);
+                    }
                 }
 
                 cx.notify();
@@ -408,80 +1181,27 @@ fn workspace(player: &mut Player, cx: &mut Context<Player>) -> gpui::Div {
         )
         .child(canvas(move |bounds, _, _| place.set(Some(bounds)), |_, _, _, _| {}).absolute().size_full())
         .w_full()
-        .h(px(if player.panel_px >= 760.0 { (player.panel_px * 0.45).min(560.0) } else { 260.0 }))
-        .rounded_md()
+        .h(px(if width >= 760.0 { (width * 0.36).clamp(260.0, 520.0) } else { 240.0 }))
+        .rounded(px(7.0))
         .bg(rgb(0x000000))
         .border_1()
-        .border_color(tint(FAINT, 0.8))
+        .border_color(rgb(LINE))
         .flex()
         .items_center()
         .justify_center()
         .overflow_hidden()
-        .child(match (&state.target, &state.error) {
+        .child(match (enlarged.clone().or(state.target.clone()), &state.error) {
+            // A target with no colour (a shadow map's): its depth, from the attachments.
+            (_, Some(_)) if enlarged.is_none() && depth_picture(state).is_some() => {
+                img(depth_picture(state).unwrap_or_default()).size_full().object_fit(ObjectFit::Contain).into_any_element()
+            }
             (_, Some(error)) => div().p_3().text_xs().text_color(rgb(RED)).child(error.clone()).into_any_element(),
-            (Some(path), None) => img(path.clone()).size_full().object_fit(ObjectFit::Contain).into_any_element(),
+            (Some(path), None) => img(path).size_full().object_fit(ObjectFit::Contain).into_any_element(),
             (None, None) => note(if selected.is_some() { "Replaying to this draw…" } else { "" }).into_any_element(),
+        })
+        .when(!caption.is_empty(), |frame| {
+            frame.child(div().absolute().left(px(8.0)).top(px(8.0)).px_1p5().py(px(1.0)).rounded(px(4.0)).bg(tint(0x000000, 0.65)).text_xs().text_color(rgb(TEXT)).child(caption))
         });
-
-    let list = uniform_list(
-        "draws",
-        count,
-        cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
-            range
-                .filter_map(|index| this.captures.events.get(index).cloned().map(|event| (index, event)))
-                .map(|(index, event)| {
-                    let draw = event["draw"].as_i64().unwrap_or(index as i64);
-                    let on = this.captures.selected == Some(draw);
-                    let nothing = event["pixels_changed"] == 0 && event["kind"] == "draw";
-                    let kind = event["kind"].as_str().unwrap_or("");
-                    let colour = match kind {
-                        "clear" => CYAN,
-                        "blit" | "copy" => ORANGE,
-                        "dispatch" => AMBER,
-                        _ => TEXT,
-                    };
-                    let changed = event["changed_box"].as_str().map(|area| format!("[{area}]")).unwrap_or_default();
-
-                    div()
-                        .id(index)
-                        .w_full()
-                        .flex()
-                        .gap_2()
-                        .px_1()
-                        .py(px(2.0))
-                        .text_xs()
-                        .cursor_pointer()
-                        .bg(if on {
-                            tint(PURPLE, 0.22)
-                        } else if index % 2 == 0 {
-                            tint(TEXT, 0.03)
-                        } else {
-                            tint(TEXT, 0.0)
-                        })
-                        .child(div().w(px(36.0)).flex_none().font_family(MONO).text_color(rgb(DIM)).child(draw.to_string()))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .overflow_hidden()
-                                .whitespace_nowrap()
-                                .text_color(rgb(if nothing { DIM } else { colour }))
-                                .child(event_line(&event)),
-                        )
-                        .child(div().flex_none().font_family(MONO).text_color(rgb(if nothing { RED } else { DIM })).child(if nothing {
-                            "changed nothing".to_string()
-                        } else {
-                            changed
-                        }))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.select_draw(draw, cx);
-                            cx.notify();
-                        }))
-                })
-                .collect()
-        }),
-    )
-    .h(px(if player.panel_px >= 760.0 { 360.0 } else { 240.0 }));
 
     // What a click on the picture found: the pixel's value and every event that changed it.
     let story = state.pixel.map(|(x, y)| {
@@ -494,7 +1214,7 @@ fn workspace(player: &mut Player, cx: &mut Context<Player>) -> gpui::Div {
                     let channel = |index: usize| rgba[index].as_u64().unwrap_or(0) as u32;
                     let colour = (channel(0) << 16) | (channel(1) << 8) | channel(2);
 
-                    div().size(px(14.0)).rounded_sm().border_1().border_color(tint(FAINT, 1.0)).bg(rgb(colour))
+                    div().size(px(14.0)).rounded_sm().border_1().border_color(rgb(LINE)).bg(rgb(colour))
                 };
                 let finished = story["final"].clone();
 
@@ -531,64 +1251,46 @@ fn workspace(player: &mut Player, cx: &mut Context<Player>) -> gpui::Div {
         }
     });
 
-    let detail = match (&state.draw, selected) {
-        (_, None) => note("Pick a draw.").into_any_element(),
-        (None, Some(draw)) => note(format!("Reading draw {draw}…")).into_any_element(),
-        (Some(draw), Some(number)) => {
-            let effect = &draw["effect"];
-            let said = match (effect["changed"].as_u64(), draw["why"].as_str().or(draw["rejected"].as_str())) {
-                (_, Some(why)) => why.to_string(),
-                (Some(0), None) => "Changed nothing.".to_string(),
-                (Some(changed), None) => format!("Changed {changed} pixels."),
-                _ => String::new(),
-            };
+    let draw = state.draw.clone();
+    let said = draw.as_ref().map(|draw| {
+        let effect = &draw["effect"];
 
-            let program = draw["state"]["programName"].as_str().or(draw["state"]["pipeline"].as_str()).map(str::to_string);
-
-            card(format!("Draw {number}"), PURPLE)
-                .child(div().text_xs().text_color(rgb(TEXT)).child(said))
-                .when_some(program, |card, program| {
-                    let chosen = program.clone();
-
-                    card.child(button("open-program", format!("Open {program} in Resources"), AMBER).on_click(cx.listener(move |this, _, _, cx| {
-                        this.show(crate::panels::Panel::Resources);
-                        this.select_resource(chosen.clone());
-                        cx.notify();
-                    })))
-                })
-                .child(state_of(draw))
-                .into_any_element()
+        match (effect["changed"].as_u64(), draw["why"].as_str().or(draw["rejected"].as_str())) {
+            (_, Some(why)) => why.to_string(),
+            (Some(0), None) => "Changed nothing.".to_string(),
+            (Some(changed), None) => format!("Changed {changed} pixels."),
+            _ => String::new(),
         }
+    });
+    let table = match (&draw, selected) {
+        (_, None) => note("Pick a draw in the navigator.").into_any_element(),
+        (None, Some(number)) => note(format!("Reading draw {number}…")).into_any_element(),
+        (Some(draw), Some(_)) => bound_resources(player, draw, cx).into_any_element(),
     };
+    let state_card = draw.as_ref().zip(selected).map(|(draw, number)| card(format!("Draw {number}"), PURPLE).when_some(said.clone(), |card, said| card.child(div().text_xs().text_color(rgb(TEXT)).child(said))).child(state_of(draw)));
 
-    let body = if player.panel_px >= 760.0 {
+    let body = if width >= 1100.0 {
+        let tall = 640.0;
+
         div()
             .flex()
             .gap_3()
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .child(picture)
-                    .child(div().rounded_md().border_1().border_color(tint(FAINT, 0.8)).p_1().child(list)),
-            )
-            .child(div().w(px(380.0)).flex_none().flex().flex_col().gap_2().children(worth).children(story).child(detail))
-    } else {
+            .child(div().w(px(310.0)).flex_none().child(navigator(player, tall, cx)))
+            .child(div().flex_1().min_w_0().flex().flex_col().gap_2().child(picture).child(table).children(state_card))
+            .child(div().w(px((width * 0.3).clamp(320.0, 520.0))).flex_none().flex().flex_col().gap_2().child(attachments_grid(player, 1, cx)).children(worth).children(story))
+    } else if width >= 760.0 {
         div()
             .flex()
-            .flex_col()
-            .gap_2()
-            .children(worth)
-            .child(picture)
-            .children(story)
-            .child(div().rounded_md().border_1().border_color(tint(FAINT, 0.8)).p_1().child(list))
-            .child(detail)
+            .gap_3()
+            .child(div().w(px(280.0)).flex_none().child(navigator(player, 560.0, cx)))
+            .child(div().flex_1().min_w_0().flex().flex_col().gap_2().children(worth).child(picture).children(story).child(attachments_grid(player, 2, cx)).child(table).children(state_card))
+    } else {
+        div().flex().flex_col().gap_2().children(worth).child(navigator(player, 260.0, cx)).child(picture).children(story).child(attachments_grid(player, 2, cx)).child(table).children(state_card)
     };
 
-    div().flex().flex_col().gap_2().child(header).child(note_field).when(state.loading, |content| content.child(note("Reading the capture…"))).child(body)
+    let line = (!player.captures.events.is_empty()).then(|| timeline(player, cx));
+
+    div().flex().flex_col().gap_2().child(header).child(note_field).when(loading, |content| content.child(note("Reading the capture…"))).children(line).child(body)
 }
 
 /// A recording: its contact sheet, what the host says of it, and its frames, any of which

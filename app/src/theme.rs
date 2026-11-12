@@ -1,18 +1,23 @@
-//! The look (docs/APP.md, section 6): a near-black window, cards tinted with their own
-//! colour, segmented meters that glow, line graphs with a fading fill, a light display face
-//! for titles and tabular figures for numbers.
+//! The look (docs/APP.md, section 6): an instrument's. A near-black window of flat panels
+//! edged with hairlines; colour kept for meaning (what is chosen, what is on, which kind of
+//! thing); icons in grouped segments; segmented meters and line graphs that glow; tabular
+//! figures for numbers.
 
 use gpui::{
     BoxShadow, Div, FontWeight, Hsla, IntoElement, ParentElement, PathBuilder, Rgba, SharedString, Stateful, Styled, canvas, div, point, prelude::*, px, rgb,
 };
 
-pub const WINDOW: u32 = 0x08090c;
-pub const SIDEBAR: u32 = 0x0d0f13;
-pub const CARD: u32 = 0x111419;
-pub const FIELD: u32 = 0x06070a;
-pub const TEXT: u32 = 0xdde2e8;
-pub const DIM: u32 = 0x7d8695;
-pub const FAINT: u32 = 0x3a404b;
+pub const WINDOW: u32 = 0x0a0c0f;
+pub const SIDEBAR: u32 = 0x0e1115;
+pub const CARD: u32 = 0x13171c;
+/// A control resting on a panel: buttons, chips.
+pub const RAISED: u32 = 0x1a1f26;
+/// The hairline between things.
+pub const LINE: u32 = 0x232a33;
+pub const FIELD: u32 = 0x07090b;
+pub const TEXT: u32 = 0xe3e7ed;
+pub const DIM: u32 = 0x8b94a3;
+pub const FAINT: u32 = 0x3a424e;
 
 pub const GREEN: u32 = 0x4ade80;
 pub const BLUE: u32 = 0x60a5fa;
@@ -36,14 +41,73 @@ pub fn glow(colour: u32, strength: f32) -> Vec<BoxShadow> {
     vec![BoxShadow { color: Hsla::from(tint(colour, strength)), offset: point(px(0.0), px(0.0)), blur_radius: px(6.0), spread_radius: px(0.0) }]
 }
 
-/// A card: a rounded panel faintly tinted and edged with its colour, with a title.
+/// A card: a flat panel edged with a hairline, its title marked with its colour.
 pub fn card(title: impl Into<SharedString>, colour: u32) -> Div {
-    div().flex().flex_col().gap_1p5().p_3().rounded_lg().bg(rgb(CARD)).border_1().border_color(tint(colour, 0.32)).child(heading(title, colour))
+    div().flex().flex_col().gap_2().p_3().rounded(px(7.0)).bg(rgb(CARD)).border_1().border_color(rgb(LINE)).child(heading(title, colour))
 }
 
-/// A card's title: the light display face.
+/// A card's title: a short bar of its colour, then the title.
 pub fn heading(title: impl Into<SharedString>, colour: u32) -> Div {
-    div().text_color(tint(colour, 0.95)).text_base().font_weight(FontWeight::LIGHT).child(title.into())
+    div()
+        .flex()
+        .items_center()
+        .gap_2()
+        .child(div().flex_none().w(px(3.0)).h(px(12.0)).rounded(px(1.5)).bg(rgb(colour)).shadow(glow(colour, 0.45)))
+        .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).text_color(rgb(TEXT)).child(title.into()))
+}
+
+/// A small label over a group of things: quiet capitals.
+pub fn section(title: impl Into<SharedString>) -> Div {
+    let title: SharedString = title.into();
+
+    div().text_size(px(10.5)).font_weight(FontWeight::SEMIBOLD).text_color(rgb(DIM)).child(SharedString::from(title.to_uppercase()))
+}
+
+/// Controls side by side in one recessed segment, as on an instrument's front panel.
+pub fn group() -> Div {
+    div().flex().flex_none().items_center().gap(px(1.0)).p(px(2.0)).rounded(px(8.0)).bg(rgb(FIELD)).border_1().border_color(rgb(LINE))
+}
+
+/// A square button with an icon alone, for a segment. `on` lights it in its colour.
+pub fn icon_button(id: impl Into<SharedString>, name: &'static str, colour: u32, on: bool) -> Stateful<Div> {
+    let id: SharedString = id.into();
+
+    div()
+        .id(id)
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .size(px(28.0))
+        .rounded(px(6.0))
+        .cursor_pointer()
+        .when(on, |button| button.bg(tint(colour, 0.2)))
+        .hover(move |style| style.bg(tint(colour, 0.16)))
+        .active(move |style| style.bg(tint(colour, 0.3)))
+        .child(crate::icons::icon(name, 15.0, if on { tint(colour, 1.0) } else { tint(TEXT, 0.82) }))
+}
+
+/// A button with an icon and a word, for a segment or a toolbar. `on` lights it.
+pub fn tool_button(id: impl Into<SharedString>, name: &'static str, label: impl Into<SharedString>, colour: u32, on: bool) -> Stateful<Div> {
+    let id: SharedString = id.into();
+
+    div()
+        .id(id)
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap_1p5()
+        .h(px(28.0))
+        .px_2p5()
+        .rounded(px(6.0))
+        .text_xs()
+        .cursor_pointer()
+        .text_color(if on { tint(colour, 1.0) } else { tint(TEXT, 0.88) })
+        .when(on, |button| button.bg(tint(colour, 0.2)))
+        .hover(move |style| style.bg(tint(colour, 0.16)))
+        .active(move |style| style.bg(tint(colour, 0.3)))
+        .child(crate::icons::icon(name, 14.0, if on { tint(colour, 1.0) } else { tint(colour, 0.9) }))
+        .child(label.into())
 }
 
 /// A large figure, such as a frame rate.
@@ -141,24 +205,33 @@ pub fn graph(values: Vec<f32>, ceiling: f32, colour: u32, height: f32) -> impl I
     .h(px(height))
 }
 
-/// A button in a colour.
+/// A button: neutral at rest with its colour in its word, lit in its colour on hover.
 pub fn button(id: impl Into<SharedString>, label: impl Into<SharedString>, colour: u32) -> Stateful<Div> {
-    let id: SharedString = id.into();
+    plain(id.into(), colour).child(label.into())
+}
 
+fn plain(id: SharedString, colour: u32) -> Stateful<Div> {
     div()
         .id(id)
+        .flex()
+        .items_center()
+        .gap_1p5()
         .px_2()
         .py(px(3.0))
-        .rounded_md()
-        .text_sm()
+        .rounded(px(5.0))
+        .text_xs()
         .cursor_pointer()
-        .bg(tint(colour, 0.12))
+        .bg(rgb(RAISED))
         .border_1()
-        .border_color(tint(colour, 0.38))
-        .text_color(tint(colour, 1.0))
-        .hover(move |style| style.bg(tint(colour, 0.26)))
-        .active(move |style| style.bg(tint(colour, 0.4)))
-        .child(label.into())
+        .border_color(rgb(LINE))
+        .text_color(tint(colour, 0.95))
+        .hover(move |style| style.bg(tint(colour, 0.16)).border_color(tint(colour, 0.5)))
+        .active(move |style| style.bg(tint(colour, 0.3)))
+}
+
+/// A button with an icon before its word.
+pub fn icon_label(id: impl Into<SharedString>, name: &'static str, label: impl Into<SharedString>, colour: u32) -> Stateful<Div> {
+    plain(id.into(), colour).child(crate::icons::icon(name, 13.0, tint(colour, 0.95))).child(label.into())
 }
 
 /// A label on the left, a value on the right.

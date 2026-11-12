@@ -108,10 +108,17 @@ pub fn render(player: &mut Player, _window: &mut Window, cx: &mut Context<Player
         .size_full()
         .flex()
         .flex_col()
-        .gap_2()
-        .p_3()
-        .child(div().flex().justify_between().items_center().child(heading("Console", CYAN).text_xl()).child(filters))
-        .child(note(if count == 0 { "Nothing logged yet." } else { "Frame, then the line. Repeats are folded." }))
-        .child(list)
+        .child(crate::panels::header("console", "Console", CYAN).child(div().flex_1()).child(filters))
+        .child(
+            div()
+                .flex_1()
+                .min_h_0()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .p_3()
+                .child(note(if count == 0 { "Nothing logged yet." } else { "Frame, then the line. Repeats are folded." }))
+                .child(list),
+        )
         .into_any_element()
 }

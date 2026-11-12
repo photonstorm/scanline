@@ -1,0 +1,4 @@
+<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 14 14" id="chevron">
+  <desc>Scanline's own: a disclosure chevron, pointing right, drawn to match Streamline Core.</desc>
+  <path stroke="#ffffff" stroke-linecap="round" stroke-linejoin="round" d="m5 3 4 4 -4 4" stroke-width="1.2"></path>
+</svg>

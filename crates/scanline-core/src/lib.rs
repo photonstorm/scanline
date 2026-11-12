@@ -369,6 +369,7 @@ impl Host {
             "export" => capture::export(self, &params).await,
             "import" => capture::import(self, &params),
             "pass_tree" => capture::pass_tree(self, &params),
+            "attachments" => capture::attachments(self, &params).await,
             "draw_list" => capture::draw_list(self, &params),
             "draw" => capture::draw(self, &params).await,
             "draw_diff" => capture::draw_diff(self, &params),

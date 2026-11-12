@@ -1637,7 +1637,8 @@ pub async fn profile(host: &Arc<Host>, params: &Value) -> Result<Value> {
 
     Ok(result(
         lines.join("\n"),
-        json!({ "capture": handle, "by": by, "total_ns": total, "draws": measured.len(), "rows": rows, "provenance": "gpu-measured", "method": "amplified replay" }),
+        // every: each draw's time, in order, whatever top lists (the Scanline app's timeline).
+        json!({ "capture": handle, "by": by, "total_ns": total, "draws": measured.len(), "rows": rows, "every": measured.iter().map(|(draw, ns)| json!({ "draw": draw, "ns": ns })).collect::<Vec<_>>(), "provenance": "gpu-measured", "method": "amplified replay" }),
     ))
 }
 

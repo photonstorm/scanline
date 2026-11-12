@@ -15,6 +15,7 @@ mod channel;
 mod code;
 mod device;
 mod host;
+mod icons;
 mod launcher;
 mod panels;
 // Where CEF and GPUI meet in the platform's windows: AppKit, or on Windows Win32.

@@ -22,6 +22,7 @@ use crate::host::{HostLink, Reply};
 use crate::panels::{self, Panel};
 use crate::theme::*;
 use crate::device::{self, Size};
+use crate::icons::icon;
 use crate::projects::{self, Project};
 use crate::{browser, platform};
 
@@ -154,7 +155,8 @@ pub enum Purpose {
     Resources(String),
     Resource(String),
     Capture,
-    DrawList(String),
+    /// A capture's events, a page at a time: the capture, and the cursor of the page.
+    DrawList(String, u64),
     Draw(String, i64),
     Target(String, i64),
     PixelSource(String, (u32, u32)),
@@ -183,6 +185,13 @@ pub enum Purpose {
     Action(&'static str),
     /// The page given a size (emulate), or its own again.
     Sized,
+    /// Every attachment of a draw's target, after it.
+    Attachments(String, i64),
+    /// GPU time by draw for a capture (profile).
+    Profile(String),
+    /// A picture of a pass's target as the pass left it; its depth, for a target with no colour.
+    PassPicture(String, i64, i64, String),
+    PassDepth(String, i64),
     /// A picture of the game for the projects page, by its key.
     Picture(String),
 }
@@ -451,6 +460,20 @@ impl Player {
             }
         }
 
+        // Pictures of the textures the chosen draw has bound, for its bound-resources table.
+        if self.panel == Panel::Captures && !self.polling.contains("thumbnails") {
+            let wanted: Vec<String> =
+                self.captures.bound_textures().into_iter().filter(|handle| !self.resources.thumbs.contains_key(handle)).take(4).collect();
+
+            if !wanted.is_empty() {
+                for handle in &wanted {
+                    self.resources.thumbs.insert(handle.clone(), panels::resources::Thumb::Waiting);
+                }
+
+                self.ask("thumbnails", json!({ "handles": wanted, "max_edge": 128 }), Purpose::Thumbnails);
+            }
+        }
+
         // The gallery's pictures, a few at a time, so they arrive as they are made.
         if matches!(self.panel, Panel::Resources | Panel::Experiments) && !self.polling.contains("thumbnails") {
             if self.panel == Panel::Experiments && self.resources.list.is_empty() {
@@ -520,8 +543,29 @@ impl Player {
                     self.open_capture(capture.to_string(), cx);
                 }
             }
-            (Purpose::DrawList(capture), Ok(value)) => {
-                let first = self.captures.events(&capture, &value["data"]);
+            (Purpose::DrawList(capture, cursor), Ok(value)) => {
+                let data = &value["data"];
+
+                // The rest, a page at a time; the draw to show and the passes' pictures once
+                // the list is whole.
+                if let Some(next) = data["next_cursor"].as_u64() {
+                    self.captures.page(&capture, data, cursor == 0);
+                    self.ask("draw_list", json!({ "capture": capture, "limit": 200, "cursor": next }), Purpose::DrawList(capture.clone(), next));
+                    return;
+                }
+
+                self.captures.page(&capture, data, cursor == 0);
+
+                let first = self.captures.events(&capture);
+
+                // A picture of each pass's target, for the navigator.
+                for (pass, last, target) in self.captures.wanted_pass_pictures() {
+                    self.ask(
+                        "screenshot",
+                        json!({ "capture": capture, "at_draw": last, "target": target, "max_edge": 200 }),
+                        Purpose::PassPicture(capture.clone(), pass, last, target.clone()),
+                    );
+                }
 
                 if let Some(draw) = first {
                     self.select_draw(draw, cx);
@@ -551,7 +595,7 @@ impl Player {
                 // the replay check) is shown.
                 if let Some(capture) = finishing.filter(|capture| busy["capture"].as_str() != Some(capture.as_str())) {
                     if self.captures.opened.as_deref() == Some(capture.as_str()) {
-                        self.ask("draw_list", json!({ "capture": capture, "limit": 5000 }), Purpose::DrawList(capture.clone()));
+                        self.ask("draw_list", json!({ "capture": capture, "limit": 200 }), Purpose::DrawList(capture.clone(), 0));
 
                         // The draw in view, with its effect now.
                         if let Some(draw) = self.captures.selected {
@@ -575,6 +619,25 @@ impl Player {
                     ),
                     None => self.say("The screenshot was taken but could not be copied to the desktop.", true),
                 }
+            }
+            (Purpose::Profile(capture), Ok(value)) => self.captures.got_timing(&capture, &value["data"]),
+            (Purpose::Profile(capture), Err(error)) => {
+                if self.captures.opened.as_deref() == Some(capture.as_str()) {
+                    self.captures.measuring = false;
+                }
+
+                self.say(&format!("The frame could not be timed: {error}"), true);
+            }
+            (Purpose::Attachments(capture, draw), Ok(value)) => self.captures.got_attachments(&capture, draw, &value["data"]),
+            (Purpose::Attachments(capture, draw), Err(error)) => {
+                self.captures.got_attachments(&capture, draw, &json!({ "attachments": [{ "attachment": "Attachments", "handle": "", "error": error }] }))
+            }
+            (Purpose::PassPicture(capture, pass, _, _), Ok(value)) | (Purpose::PassDepth(capture, pass), Ok(value)) => {
+                self.captures.got_pass_picture(&capture, pass, &value)
+            }
+            // A shadow map's pass, say: no colour to read, so its depth.
+            (Purpose::PassPicture(capture, pass, last, target), Err(_)) => {
+                self.ask("view", json!({ "capture": capture, "view": "depth", "at_draw": last, "target": target }), Purpose::PassDepth(capture, pass));
             }
             (Purpose::Picture(key), Ok(value)) => {
                 let made = value["images"][0]["view"].as_str().or(value["images"][0]["original"].as_str()).map(PathBuf::from);
@@ -679,7 +742,7 @@ impl Player {
             (
                 Purpose::Action(_)
                 | Purpose::Capture
-                | Purpose::DrawList(_)
+                | Purpose::DrawList(..)
                 | Purpose::Import
                 | Purpose::Shot
                 | Purpose::VideoStart
@@ -1001,7 +1064,17 @@ impl Player {
         self.show(Panel::Captures);
         self.captures.open(&capture);
         self.last.remove("captures");
-        self.ask("draw_list", json!({ "capture": capture, "limit": 5000 }), Purpose::DrawList(capture));
+        self.ask("draw_list", json!({ "capture": capture, "limit": 200 }), Purpose::DrawList(capture, 0));
+    }
+
+    /// Times every draw of the open capture on the GPU, for its timeline.
+    pub fn measure_capture(&mut self) {
+        let Some(capture) = self.captures.opened.clone() else { return };
+
+        if !self.captures.measuring {
+            self.captures.measuring = true;
+            self.ask("profile", json!({ "capture": capture, "top": 10 }), Purpose::Profile(capture));
+        }
     }
 
     pub fn select_draw(&mut self, draw: i64, _cx: &mut Context<Self>) {
@@ -1010,6 +1083,7 @@ impl Player {
         self.captures.select(draw);
         // now: its state at once, while a capture finishes; its effect when it has.
         self.ask("draw", json!({ "capture": capture, "draw": draw, "now": true }), Purpose::Draw(capture.clone(), draw));
+        self.ask("attachments", json!({ "capture": capture, "draw": draw, "max_edge": 480 }), Purpose::Attachments(capture.clone(), draw));
         self.ask("screenshot", json!({ "capture": capture, "at_draw": draw }), Purpose::Target(capture, draw));
     }
 
@@ -1440,6 +1514,7 @@ impl Player {
             "screenshot" => self.screenshot(),
             "video" => self.toggle_video(),
             "mute" => self.toggle_mute(),
+            "timeline" => self.measure_capture(),
             "projects" => self.show_projects(),
             "release" => self.leave_fullscreen(),
             "sizes" => self.choosing_size = !self.choosing_size,
@@ -1884,8 +1959,10 @@ impl Player {
         let scale = self.time_scale();
         let human = self.status["owner"] == "human";
         let request = self.status["request"]["instruction"].as_str().map(str::to_string);
-        let field = if self.editing { BLUE } else { FAINT };
         let shown = if self.address.is_empty() && !self.editing { "Type an address, or ⌘L".to_string() } else { self.address.clone() };
+        let running = self.video_running();
+        let seconds = self.status["video_seconds"].as_f64().unwrap_or(0.0);
+        let capturing = self.pending.values().any(|purpose| matches!(purpose, Purpose::Capture)) || self.busy["capture"].is_string();
 
         div()
             .flex()
@@ -1896,8 +1973,9 @@ impl Player {
             // Room for the window's buttons, which sit over the bar on a Mac.
             .pl(px(if cfg!(target_os = "macos") { 84.0 } else { 12.0 }))
             .pr_3()
+            .bg(rgb(SIDEBAR))
             .border_b_1()
-            .border_color(tint(FAINT, 0.6))
+            .border_color(rgb(LINE))
             .on_mouse_down(MouseButton::Left, |event, window, _| {
                 if event.click_count == 2 {
                     window.titlebar_double_click();
@@ -1905,27 +1983,35 @@ impl Player {
                     window.start_window_move();
                 }
             })
-            .child(button("projects", "⌂", TEXT).text_base().on_click(cx.listener(|this, _, _, cx| {
-                this.show_projects();
-                cx.notify();
-            })))
-            .child(button("reload", "↻", TEXT).text_base().on_click(cx.listener(|this, _, _, cx| {
-                this.reload();
-                cx.notify();
-            })))
+            // Where: the projects page, reload, the address.
+            .child(
+                group()
+                    .child(icon_button("projects", "home", TEXT, false).on_click(cx.listener(|this, _, _, cx| {
+                        this.show_projects();
+                        cx.notify();
+                    })))
+                    .child(icon_button("reload", "reload", TEXT, false).on_click(cx.listener(|this, _, _, cx| {
+                        this.reload();
+                        cx.notify();
+                    }))),
+            )
             .child(
                 div()
                     .id("address")
                     .track_focus(&self.focus)
+                    .flex()
+                    .items_center()
+                    .gap_2()
                     .flex_1()
                     .min_w(px(160.0))
-                    .px_2()
-                    .py(px(5.0))
-                    .rounded_md()
+                    .h(px(34.0))
+                    .px_2p5()
+                    .rounded(px(8.0))
                     .text_sm()
                     .bg(rgb(FIELD))
                     .border_1()
-                    .border_color(tint(field, 0.8))
+                    .border_color(if self.editing { tint(BLUE, 0.8) } else { rgb(LINE) })
+                    .when(self.editing, |field| field.shadow(glow(BLUE, 0.35)))
                     .text_color(if self.address.is_empty() && !self.editing { rgb(DIM) } else { rgb(TEXT) })
                     .overflow_hidden()
                     .whitespace_nowrap()
@@ -1937,81 +2023,114 @@ impl Player {
                         }),
                     )
                     .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| this.type_key(event, cx)))
-                    .child(format!("{shown}{}", if self.editing { "▏" } else { "" })),
+                    .child(icon(if self.loading { "timer" } else { "search" }, 13.0, tint(DIM, 1.0)))
+                    .child(div().overflow_hidden().child(format!("{shown}{}", if self.editing { "▏" } else { "" }))),
             )
-            .child(div().w(px(6.0)))
-            .child(button("pause", if paused { "▶  Run" } else { "❚❚  Pause" }, GREEN).on_click(cx.listener(|this, _, _, cx| {
-                this.toggle_pause();
-                cx.notify();
-            })))
-            .child(button("step", "▶|  Step", GREEN).on_click(cx.listener(|this, _, _, cx| {
-                this.step(1);
-                cx.notify();
-            })))
-            .child(button("scale", format!("{}×", trim(scale)), CYAN).on_click(cx.listener(|this, _, _, cx| {
-                let next = match this.time_scale() {
-                    s if s < 0.3 => 0.5,
-                    s if s < 0.6 => 1.0,
-                    s if s < 1.5 => 2.0,
-                    _ => 0.25,
-                };
-
-                this.set_time_scale(next);
-                cx.notify();
-            })))
+            // Time: run or pause, step, speed.
             .child(
-                button("size", format!("⤢  {}", self.size.map(|size| size.name()).unwrap_or_else(|| "Fit".into())), AMBER)
-                    .when(self.size.is_some() || self.choosing_size, |button| button.bg(tint(AMBER, 0.22)).border_color(tint(AMBER, 0.8)))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.choosing_size = !this.choosing_size;
+                group()
+                    .child(icon_button("pause", if paused { "play" } else { "pause" }, GREEN, paused).on_click(cx.listener(|this, _, _, cx| {
+                        this.toggle_pause();
                         cx.notify();
-                    })),
+                    })))
+                    .child(icon_button("step", "step", GREEN, false).on_click(cx.listener(|this, _, _, cx| {
+                        this.step(1);
+                        cx.notify();
+                    })))
+                    .child(tool_button("scale", "speed", format!("{}×", trim(scale)), CYAN, (scale - 1.0).abs() > 1e-6).on_click(cx.listener(|this, _, _, cx| {
+                        let next = match this.time_scale() {
+                            s if s < 0.3 => 0.5,
+                            s if s < 0.6 => 1.0,
+                            s if s < 1.5 => 2.0,
+                            _ => 0.25,
+                        };
+
+                        this.set_time_scale(next);
+                        cx.notify();
+                    }))),
             )
+            // The game: its size, its sound.
             .child(
-                button("mute", if self.muted { "♪  Muted" } else { "♪  Sound" }, if self.muted { RED } else { DIM })
-                    .when(self.muted, |button| button.bg(tint(RED, 0.25)).border_color(tint(RED, 0.8)))
-                    .on_click(cx.listener(|this, _, _, cx| {
+                group()
+                    .child(
+                        tool_button("size", "size", self.size.map(|size| size.name()).unwrap_or_else(|| "Fit".into()), AMBER, self.size.is_some() || self.choosing_size)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.choosing_size = !this.choosing_size;
+                                cx.notify();
+                            })),
+                    )
+                    .child(icon_button("mute", if self.muted { "mute" } else { "sound" }, RED, self.muted).on_click(cx.listener(|this, _, _, cx| {
                         this.toggle_mute();
                         cx.notify();
+                    }))),
+            )
+            // Looking inside: capture (the main thing), a picture, a video.
+            .child(
+                div()
+                    .id("capture")
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .gap_1p5()
+                    .h(px(34.0))
+                    .px_3()
+                    .rounded(px(8.0))
+                    .text_sm()
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .cursor_pointer()
+                    .text_color(rgb(0xffffff))
+                    .bg(tint(PURPLE, if capturing { 0.55 } else { 0.32 }))
+                    .border_1()
+                    .border_color(tint(PURPLE, 0.85))
+                    .shadow(glow(PURPLE, if capturing { 0.8 } else { 0.35 }))
+                    .hover(|style| style.bg(tint(PURPLE, 0.45)))
+                    .active(|style| style.bg(tint(PURPLE, 0.6)))
+                    .child(icon("capture", 15.0, rgb(0xffffff)))
+                    .child(if capturing { "Capturing" } else { "Capture" })
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.capture();
+                        cx.notify();
                     })),
             )
-            .child(div().w(px(6.0)))
-            .child(button("capture", "●  Capture", PURPLE).on_click(cx.listener(|this, _, _, cx| {
-                this.capture();
-                cx.notify();
-            })))
-            .child(button("shot", "Screenshot", BLUE).on_click(cx.listener(|this, _, _, cx| {
-                this.screenshot();
-                cx.notify();
-            })))
-            .child({
-                let running = self.video_running();
-                let seconds = self.status["video_seconds"].as_f64().unwrap_or(0.0);
-
-                button("video", if running { format!("■  Stop {:.0}:{:02.0}", (seconds / 60.0).floor(), seconds % 60.0) } else { "◉  Video".to_string() }, RED)
-                    .when(running, |button| button.bg(tint(RED, 0.35)).border_color(tint(RED, 0.9)).shadow(glow(RED, 0.6)))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.toggle_video();
+            .child(
+                group()
+                    .child(icon_button("shot", "screenshot", BLUE, false).on_click(cx.listener(|this, _, _, cx| {
+                        this.screenshot();
                         cx.notify();
-                    }))
-            })
+                    })))
+                    .child(
+                        tool_button("video", "video", if running { format!("{:.0}:{:02.0}", (seconds / 60.0).floor(), seconds % 60.0) } else { "Rec".to_string() }, RED, running)
+                            .when(running, |button| button.shadow(glow(RED, 0.6)))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.toggle_video();
+                                cx.notify();
+                            })),
+                    ),
+            )
             .when_some(request, |bar, _| {
-                bar.child(button("debug", "⚑  Debug", RED).on_click(cx.listener(|this, _, _, cx| {
+                bar.child(icon_label("debug", "flag", "Debug", RED).h(px(30.0)).shadow(glow(RED, 0.5)).on_click(cx.listener(|this, _, _, cx| {
                     this.debug();
                     cx.notify();
                 })))
             })
+            // Who has the input.
             .child(
                 div()
                     .id("owner")
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .gap_1p5()
+                    .h(px(28.0))
                     .px_2()
-                    .py(px(3.0))
-                    .rounded_md()
+                    .rounded_full()
                     .text_xs()
                     .cursor_pointer()
+                    .bg(if human { tint(AMBER, 0.14) } else { rgb(FIELD) })
                     .border_1()
-                    .border_color(tint(if human { AMBER } else { DIM }, 0.5))
+                    .border_color(if human { tint(AMBER, 0.6) } else { rgb(LINE) })
                     .text_color(rgb(if human { AMBER } else { DIM }))
+                    .child(icon(if human { "user" } else { "agent" }, 13.0, rgb(if human { AMBER } else { DIM })))
                     .child(if human { "You have the input" } else { "Agent may drive" })
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.take_input(!human);
@@ -2022,7 +2141,7 @@ impl Player {
 
     fn status_bar(&self) -> impl IntoElement {
         let connected = self.host.connected();
-        let frame = self.status["frame"].as_u64().map(|frame| format!("frame {frame}")).unwrap_or_default();
+        let frame = self.status["frame"].as_u64().map(|frame| format!("{frame}")).unwrap_or_default();
         let state = if self.status.is_null() {
             "".to_string()
         } else if self.paused() {
@@ -2044,6 +2163,21 @@ impl Player {
             )
         });
         let browser = self.status["browser"].as_str().map(|browser| browser.replace("Chrome/", "Chromium ")).unwrap_or_default();
+        let chip = |name: &'static str, text: String, colour: u32| {
+            div()
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap_1()
+                .px_1p5()
+                .py(px(1.0))
+                .rounded(px(4.0))
+                .bg(tint(colour, 0.12))
+                .text_color(rgb(colour))
+                .child(icon(name, 11.0, rgb(colour)))
+                .child(text)
+        };
+        let item = |name: &'static str, text: String| div().flex().flex_none().items_center().gap_1().child(icon(name, 11.0, tint(DIM, 0.9))).child(text);
 
         div()
             .flex()
@@ -2054,24 +2188,36 @@ impl Player {
             .h(px(STATUS))
             .text_xs()
             .text_color(rgb(DIM))
+            .bg(rgb(SIDEBAR))
             .border_t_1()
-            .border_color(tint(FAINT, 0.6))
-            .child(div().size(px(8.0)).rounded_full().bg(rgb(if connected { GREEN } else { AMBER })).shadow(glow(if connected { GREEN } else { AMBER }, 0.6)))
+            .border_color(rgb(LINE))
+            .child(div().size(px(7.0)).rounded_full().bg(rgb(if connected { GREEN } else { AMBER })).shadow(glow(if connected { GREEN } else { AMBER }, 0.6)))
             .child(if connected { self.options.session.clone().unwrap_or_else(|| "no session".into()) } else { "host not reachable".into() })
-            .child(div().font_family(MONO).child(frame))
+            .when(!frame.is_empty(), |bar| bar.child(item("timer", format!("frame {frame}")).font_family(MONO)))
             .child(state)
-            .when_some(context, |bar, context| bar.child(context))
+            .when_some(context, |bar, context| bar.child(item("program", context)))
             .child(self.status["profile"].as_str().unwrap_or("").to_string())
             .child(browser)
             .when_some(self.size.zip(self.game.get()), |bar, (size, bounds)| {
-                bar.child(div().text_color(rgb(AMBER)).child(format!("{} {}", size.name(), size.detail((f32::from(bounds.size.width), f32::from(bounds.size.height))))))
+                bar.child(chip("size", format!("{} {}", size.name(), size.detail((f32::from(bounds.size.width), f32::from(bounds.size.height)))), AMBER))
             })
-            .when(self.muted, |bar| bar.child(div().text_color(rgb(RED)).child("muted")))
-            .when(self.fullscreen, |bar| bar.child(div().text_color(rgb(CYAN)).child("fullscreen in its view · Esc leaves")))
-            .when(self.pointer_held, |bar| bar.child(div().text_color(rgb(CYAN)).child("the game has the pointer · Esc gives it back")))
+            .when(self.muted, |bar| bar.child(chip("mute", "muted".into(), RED)))
+            .when(self.fullscreen, |bar| bar.child(chip("fullscreen", "fullscreen in its view · Esc leaves".into(), CYAN)))
+            .when(self.pointer_held, |bar| bar.child(chip("pointer", "the game has the pointer · Esc gives it back".into(), CYAN)))
             .child(div().flex_1())
             .when_some(self.message.clone(), |bar, (text, error)| {
-                bar.child(div().max_w(px(560.0)).overflow_hidden().whitespace_nowrap().text_color(rgb(if error { RED } else { TEXT })).child(text))
+                bar.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_1p5()
+                        .max_w(px(560.0))
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_color(rgb(if error { RED } else { TEXT }))
+                        .child(icon(if error { "error" } else { "info" }, 11.0, rgb(if error { RED } else { DIM })))
+                        .child(text),
+                )
             })
     }
 }
@@ -2243,7 +2389,7 @@ fn bind(cx: &mut App) {
 }
 
 pub fn run(args: cef::args::Args, mut app: cef::App, options: Options) {
-    let application = Application::new();
+    let application = Application::new().with_assets(crate::icons::Assets);
 
     application.on_open_urls(|urls| OPENED.lock().unwrap().extend(urls));
     application.run(move |cx: &mut App| {

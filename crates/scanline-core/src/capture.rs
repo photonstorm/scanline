@@ -3657,6 +3657,119 @@ pub(crate) async fn replayed(host: &Arc<Host>, params: &Value) -> Result<(Arc<Se
     Ok((session, handle, image, what, meta))
 }
 
+/// The name of an attachment point: COLOR_ATTACHMENTn, DEPTH, STENCIL, DEPTH_STENCIL.
+fn attachment_name(point: u64) -> Option<String> {
+    match point {
+        0x8CE0..=0x8CFF => Some(format!("Color {}", point - 0x8CE0)),
+        0x8D00 => Some("Depth".into()),
+        0x8D20 => Some("Stencil".into()),
+        0x821A => Some("Depth and stencil".into()),
+        _ => None,
+    }
+}
+
+/// Every attachment of the target an event drew to, as it stood after that event: each colour
+/// target and the depth, as pictures. A deferred renderer's G-buffer (albedo, normals,
+/// roughness, emissive, depth) side by side, as Metal's debugger and Nsight show it.
+pub async fn attachments(host: &Arc<Host>, params: &Value) -> Result<Value> {
+    let (handle, meta) = the_capture(host, params)?;
+    let Some(draw) = params["draw"].as_i64() else { bail!("attachments needs draw: an event's number from draw_list.") };
+    let max_edge = params["max_edge"].as_u64().unwrap_or(512).clamp(16, 2048);
+    let rows = host.store.query(&handle, "SELECT framebuffer, target FROM draws WHERE draw = ?1", &[Sql::Integer(draw)], 1)?;
+    let Some(row) = rows.rows.first() else { bail!("{handle} has no event {draw}: draw_list lists them.") };
+    let framebuffer = row[0].as_str().map(str::to_string);
+    let target = row[1].as_str().unwrap_or("canvas").to_string();
+
+    // What each attachment point holds, by handle: from the framebuffer's record, or the
+    // canvas (or a WebGPU pass's target) alone.
+    let mut points: Vec<(String, String, Value)> = Vec::new();
+
+    if let Some(framebuffer) = &framebuffer {
+        let record = host.store.query(&handle, "SELECT detail FROM objects WHERE handle = ?1", &[Sql::Text(framebuffer.clone())], 1)?;
+        let detail: Value = record.rows.first().and_then(|row| row[0].as_str()).and_then(|text| serde_json::from_str(text).ok()).unwrap_or(Value::Null);
+        let mut attached: Vec<(u64, Value)> =
+            detail["attachments"].as_object().into_iter().flatten().filter_map(|(point, what)| Some((point.parse::<u64>().ok()?, what.clone()))).collect();
+
+        attached.sort_by_key(|(point, _)| if (0x8CE0..=0x8CFF).contains(point) { *point } else { 0x10000 + point });
+
+        for (point, what) in attached {
+            let Some(name) = attachment_name(point) else { continue };
+            let (kind, id) = if what["texture"].is_number() { ("texture", &what["texture"]) } else { ("renderbuffer", &what["renderbuffer"]) };
+            let object = host.store.query(&handle, "SELECT handle FROM objects WHERE kind = ?1 AND id = ?2", &[Sql::Text(kind.into()), int(id)], 1)?;
+            let held = object.rows.first().and_then(|row| row[0].as_str()).map(str::to_string).unwrap_or_else(|| format!("{kind} {id}"));
+
+            points.push((name, held, what));
+        }
+    }
+
+    if points.is_empty() {
+        points.push(("Color 0".into(), target.clone(), Value::Null));
+        points.push(("Depth".into(), target.clone(), Value::Null));
+    }
+
+    let session = host.replayer(params)?;
+    let mut lines = vec![format!(
+        "{} event {draw}: {} of {}, as {} after it.",
+        about(host, params, &handle, &meta),
+        if points.len() == 1 { "the one attachment".to_string() } else { format!("the {} attachments", points.len()) },
+        framebuffer.as_deref().unwrap_or(&target),
+        if points.len() == 1 { "it stood" } else { "they stood" }
+    )];
+    let mut listed = Vec::new();
+    let mut images = Vec::new();
+
+    for (name, held, _) in &points {
+        let described = host.store.query(&handle, "SELECT label, what FROM objects WHERE handle = ?1", &[Sql::Text(held.clone())], 1)?;
+        let (label, what) = described.rows.first().map(|row| (row[0].as_str().unwrap_or("").to_string(), row[1].as_str().unwrap_or("").to_string())).unwrap_or_default();
+        let depth = name.starts_with("Depth");
+
+        // Colour: the target read back. A renderbuffer is read through its framebuffer.
+        // Depth: the depth view, as a picture.
+        let read = if depth {
+            let view_target = framebuffer.clone().unwrap_or_else(|| target.clone());
+
+            crate::analysis::view(host, &json!({ "capture": handle, "view": "depth", "at_draw": draw, "target": view_target, "session": params["session"], "max_edge": max_edge }))
+                .await
+                .and_then(|reply| reply["images"][0]["view"].as_str().map(str::to_string).ok_or_else(|| anyhow!("{}", reply["summary"].as_str().unwrap_or("no picture"))))
+        } else {
+            let as_target = if held.starts_with("renderbuffer") || held.starts_with("rbo_") { framebuffer.clone().unwrap_or_else(|| target.clone()) } else { held.clone() };
+
+            match replayed(host, &json!({ "capture": handle, "at_draw": draw, "target": as_target, "session": params["session"] })).await {
+                Ok((_, _, image, _, _)) => {
+                    let (view, _) = image.opaque().fit(max_edge as u32);
+
+                    save(&session, &format!("{handle}-draw{draw}-{}", name.to_lowercase().replace(' ', "-")), &view).map(|path| path.display().to_string())
+                }
+                Err(error) => Err(error),
+            }
+        };
+
+        let shown = if label.is_empty() { held.clone() } else { format!("{label} ({held})") };
+
+        match read {
+            Ok(path) => {
+                lines.push(format!("  {name}: {shown}{}", if what.is_empty() { String::new() } else { format!(", {what}") }));
+                images.push(json!({ "view": path, "label": format!("{name}: {shown}") }));
+                listed.push(json!({ "attachment": name, "handle": held, "label": label, "what": what, "image": path }));
+            }
+            Err(error) => {
+                lines.push(format!("  {name}: {shown}, not read: {error}"));
+                listed.push(json!({ "attachment": name, "handle": held, "label": label, "what": what, "error": format!("{error}") }));
+            }
+        }
+    }
+
+    if meta["replay_matches"] != true {
+        lines.push("Warning: this capture's replay did not match the original frame, so these may be wrong.".into());
+    }
+
+    let mut value = result(lines.join("\n"), json!({ "capture": handle, "draw": draw, "framebuffer": framebuffer, "attachments": listed, "provenance": "gpu-measured" }));
+
+    value["images"] = json!(images);
+
+    Ok(value)
+}
+
 pub async fn screenshot(host: &Arc<Host>, params: &Value) -> Result<Value> {
     let (session, handle, full, what, meta) = replayed(host, params).await?;
     let region = &params["region"];

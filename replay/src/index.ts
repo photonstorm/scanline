@@ -1636,7 +1636,31 @@ function sizeOfTarget (data: CaptureData, target: Json): [number, number]
 
     const renderbuffer = target?.framebuffer ? colourRenderbuffer(data, target.framebuffer) : null;
 
-    return renderbuffer ? [renderbuffer.width, renderbuffer.height] : [data.header.width, data.header.height];
+    if (renderbuffer)
+    {
+        return [renderbuffer.width, renderbuffer.height];
+    }
+
+    // A framebuffer with no colour renderbuffer (a shadow map's, depth alone): the size of
+    // what is attached to it, colour first.
+    const record = target?.framebuffer ? data.objects.find((object) => object.kind === 'framebuffer' && object.id === target.framebuffer) : null;
+    const points = Object.keys(record?.attachments ?? {}).map(Number).sort((a, b) => a - b);
+
+    for (const point of points)
+    {
+        const attached = record.attachments[point];
+        const object = attached?.texture
+            ? data.objects.find((candidate) => candidate.kind === 'texture' && candidate.id === attached.texture)
+            : data.objects.find((candidate) => candidate.kind === 'renderbuffer' && candidate.id === attached?.renderbuffer);
+        const level = attached?.level || 0;
+
+        if (object?.width && object?.height)
+        {
+            return [Math.max(1, object.width >> level), Math.max(1, object.height >> level)];
+        }
+    }
+
+    return [data.header.width, data.header.height];
 }
 
 function sameTarget (row: Json, target: Json): boolean
@@ -2987,8 +3011,11 @@ const api = {
             const row = args.draw === null || args.draw === undefined ? null : item.data.draws[args.draw];
             const target = args.target ?? (row ? targetOfRow(row) : null);
             const [width, height] = sizeOfTarget(item.data, target);
-            // The framebuffer whose depth goes with the target: the one an event drew to it through.
-            const through = row && sameTarget(row, target) ? row : [...item.data.draws].reverse().find((event) => sameTarget(event, target));
+            // The framebuffer whose depth goes with the target: the one an event drew to it
+            // through. A framebuffer asked for by name matches the events drawn through it,
+            // whatever colour target they are listed under.
+            const drewTo = (event: Json): boolean => sameTarget(event, target) || (target?.framebuffer && !target.texture && event.framebuffer === target.framebuffer);
+            const through = row && drewTo(row) ? row : [...item.data.draws].reverse().find(drewTo);
             const source = through?.framebuffer ? run.object('framebuffer', through.framebuffer) : null;
 
             if (target && !source)

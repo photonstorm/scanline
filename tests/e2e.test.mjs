@@ -841,6 +841,48 @@ describe('what was set up long before the frame', () =>
     });
 });
 
+describe('a G-buffer', () =>
+{
+    // fixtures/history/gbuffer.html: events 0-1 the shadow map, 2-3 the G-buffer, 4 the canvas.
+    test('attachments shows every target of a draw, the depth of a framebuffer by name, and a shadow map at its own size', async () =>
+    {
+        await scanline('launch', server.url('fixtures/history/gbuffer.html'), '--headless', '--paused');
+        await scanline('step', 2);
+
+        const capture = (await scanline('capture', '--json')).json.data.capture;
+        const gbuffer = await scanline('attachments', '--capture', capture, '--draw', '3', '--json');
+        const listed = gbuffer.json.data.attachments;
+
+        assert.equal(gbuffer.code, 0, gbuffer.out);
+        assert.deepEqual(listed.map((one) => [one.attachment, one.handle]), [['Color 0', 'tex_2'], ['Color 1', 'tex_3'], ['Depth', 'tex_4']]);
+        assert.ok(listed.every((one) => typeof one.image === 'string' && !one.error), gbuffer.out);
+        assert.match(gbuffer.out, /the 3 attachments of fbo_2, as they stood after it/);
+
+        const texel = async (target) => (await scanline('pixels', '20', '60', '--capture', capture, '--at_draw', '3', '--target', target, '--json')).json.data.rgba8;
+
+        assert.deepEqual(await texel('tex_2'), [255, 0, 0, 255], 'albedo');
+        assert.deepEqual(await texel('tex_3'), [0, 0, 255, 255], 'normals');
+        assert.match((await scanline('view', '--capture', capture, '--view', 'depth', '--at_draw', '3', '--target', 'fbo_2', '--x', '20', '--y', '60')).out, /Depth at \(20, 60\): 0\.5000000/);
+
+        // Depth alone, larger than the canvas: read at its own size.
+        const shadow = await scanline('attachments', '--capture', capture, '--draw', '1', '--json');
+
+        assert.deepEqual(shadow.json.data.attachments.map((one) => [one.attachment, one.handle, one.what]), [['Depth', 'tex_1', '256×256 DEPTH_COMPONENT24, render target']]);
+        assert.match(shadow.out, /the one attachment of fbo_1, as it stood after it/);
+        assert.match((await scanline('view', '--capture', capture, '--view', 'depth', '--at_draw', '1', '--target', 'fbo_1', '--x', '200', '--y', '200')).out, /Depth at \(200, 200\): 0\.2500000/);
+
+        // The frame's GPU time, every draw of it, whatever top lists.
+        const timed = await scanline('profile', capture, '--top', '1', '--json');
+
+        if (timed.code === 0) {
+            assert.deepEqual(timed.json.data.every.map((row) => row.draw), [1, 3, 4]);
+            assert.equal(timed.json.data.rows.length, 1);
+        }
+
+        await scanline('stop');
+    });
+});
+
 describe('a quick capture', () =>
 {
     // fixtures/history/large.html: one 16 MB texture, its left half red and its right half green.

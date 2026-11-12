@@ -1,0 +1,111 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>A small G-buffer and a shadow map</title>
+<style>body { margin: 0; background: #111; } canvas { display: block; }</style>
+<canvas id="scene" width="160" height="120"></canvas>
+<script type="module">
+// What a deferred renderer draws, small enough to check by hand. Raw WebGL 2.
+//
+//   Event 0: clears the shadow map, a 256×256 DEPTH_COMPONENT24 texture alone (fbo_1).
+//   Event 1: draws a quad into it at depth 0.25.
+//   Event 2: clears the G-buffer (fbo_2): colour 0 (albedo) and colour 1 (normals), both
+//            RGBA8 160×120 textures, and a DEPTH_COMPONENT24 texture.
+//   Event 3: draws a quad over the left half at depth 0.5, writing albedo red (255, 0, 0)
+//            and the normal (0, 0, 255).
+//   Event 4: shows colour 0 on the canvas.
+const gl = document.getElementById('scene').getContext('webgl2', { antialias: false, alpha: false });
+
+function program (vertex, fragment)
+{
+    const made = gl.createProgram();
+
+    for (const [type, source] of [[gl.VERTEX_SHADER, vertex], [gl.FRAGMENT_SHADER, fragment]])
+    {
+        const shader = gl.createShader(type);
+
+        gl.shaderSource(shader, source);
+        gl.compileShader(shader);
+        gl.attachShader(made, shader);
+    }
+
+    gl.linkProgram(made);
+
+    return made;
+}
+
+const quad = (left, right, depth) => `#version 300 es
+    void main () { gl_Position = vec4(gl_VertexID % 2 == 0 ? ${left} : ${right}, gl_VertexID < 2 ? -1.0 : 1.0, ${depth}, 1.0); }`;
+
+const shadow = program(quad('-1.0', '1.0', '-0.5'), `#version 300 es
+    precision highp float;
+    void main () {}`);
+const fill = program(quad('-1.0', '0.0', '0.0'), `#version 300 es
+    precision highp float;
+    layout(location = 0) out vec4 albedo;
+    layout(location = 1) out vec4 normal;
+    void main () { albedo = vec4(1.0, 0.0, 0.0, 1.0); normal = vec4(0.0, 0.0, 1.0, 1.0); }`);
+const show = program(`#version 300 es
+    void main () { gl_Position = vec4(float(gl_VertexID % 2) * 2.0 - 1.0, float(gl_VertexID / 2) * 2.0 - 1.0, 0.0, 1.0); }`, `#version 300 es
+    precision highp float;
+    uniform sampler2D picture;
+    out vec4 result;
+    void main () { result = vec4(texelFetch(picture, ivec2(gl_FragCoord.xy), 0).rgb, 1.0); }`);
+
+function texture (width, height, format)
+{
+    const made = gl.createTexture();
+
+    gl.bindTexture(gl.TEXTURE_2D, made);
+    gl.texStorage2D(gl.TEXTURE_2D, 1, format, width, height);
+
+    return made;
+}
+
+const shadowMap = texture(256, 256, gl.DEPTH_COMPONENT24);
+const shadowTarget = gl.createFramebuffer();
+
+gl.bindFramebuffer(gl.FRAMEBUFFER, shadowTarget);
+gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.TEXTURE_2D, shadowMap, 0);
+gl.drawBuffers([gl.NONE]);
+gl.readBuffer(gl.NONE);
+
+const albedo = texture(160, 120, gl.RGBA8);
+const normals = texture(160, 120, gl.RGBA8);
+const depth = texture(160, 120, gl.DEPTH_COMPONENT24);
+const gbuffer = gl.createFramebuffer();
+
+gl.bindFramebuffer(gl.FRAMEBUFFER, gbuffer);
+gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, albedo, 0);
+gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT1, gl.TEXTURE_2D, normals, 0);
+gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.TEXTURE_2D, depth, 0);
+gl.drawBuffers([gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1]);
+
+gl.enable(gl.DEPTH_TEST);
+
+function frame ()
+{
+    gl.bindFramebuffer(gl.FRAMEBUFFER, shadowTarget);
+    gl.viewport(0, 0, 256, 256);
+    gl.clear(gl.DEPTH_BUFFER_BIT);
+    gl.useProgram(shadow);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, gbuffer);
+    gl.viewport(0, 0, 160, 120);
+    gl.clearColor(0, 0, 0, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    gl.useProgram(fill);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, albedo);
+    gl.useProgram(show);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+    window.fixture = { name: 'gbuffer', frames: (window.fixture?.frames ?? 0) + 1 };
+    requestAnimationFrame(frame);
+}
+
+requestAnimationFrame(frame);
+</script>

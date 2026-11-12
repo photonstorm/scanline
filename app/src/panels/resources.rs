@@ -778,17 +778,25 @@ pub fn render(player: &mut Player, _window: &mut Window, cx: &mut Context<Player
     }
 
     // The kinds, as tabs: how many of each are alive and how much memory they hold.
-    let tabs = div().flex().flex_wrap().gap_1().children(kinds.into_iter().map(|(name, alive, total)| {
+    let tabs = group().flex_wrap().children(kinds.into_iter().map(|(name, alive, total)| {
         let on = name == kind;
         let label = if total > 0.0 { format!("{} {alive} · {}", plural(&name), bytes(total)) } else { format!("{} {alive}", plural(&name)) };
         let chosen = name.clone();
+        let glyph = match name.as_str() {
+            "texture" => "texture",
+            "shader" => "shader",
+            "program" => "program",
+            "buffer" => "buffer",
+            "framebuffer" | "renderbuffer" => "framebuffer",
+            "vertex_array" => "draw",
+            "sampler" => "eye",
+            _ => "resources",
+        };
 
-        button(format!("kind-{name}"), label, if on { AMBER } else { DIM })
-            .when(on, |button| button.bg(tint(AMBER, 0.28)).border_color(tint(AMBER, 0.9)))
-            .on_click(cx.listener(move |this, _, _, cx| {
-                this.show_kind(chosen.clone());
-                cx.notify();
-            }))
+        tool_button(format!("kind-{name}"), glyph, label, AMBER, on).on_click(cx.listener(move |this, _, _, cx| {
+            this.show_kind(chosen.clone());
+            cx.notify();
+        }))
     }));
 
     let selected = player.resources.selected.clone().filter(|handle| kind_of(handle) == kind || kind_of(handle) == "other" || kind == "other");
