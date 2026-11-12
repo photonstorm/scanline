@@ -75,6 +75,25 @@ fn clip_line(text: &str, most: usize) -> String {
     if text.chars().count() > most { format!("{}…", text.chars().take(most).collect::<String>()) } else { text.to_string() }
 }
 
+/// What a session is busy with (a capture, stage by stage), read from the host alone: the
+/// page may be too busy to answer while it is.
+fn progress(session: &session::Session) -> Value {
+    let state = session.state.lock().unwrap();
+
+    match &state.busy {
+        None => result(format!("{} is not busy.", session.id), json!({ "busy": null })),
+        Some(busy) => {
+            let seconds = busy.started.elapsed().as_secs_f64();
+            let detail = if busy.detail.is_empty() { String::new() } else { format!(" ({})", busy.detail) };
+
+            result(
+                format!("{}: {} for {seconds:.0} s. Now: {}{detail}.", session.id, busy.what, busy.stage),
+                json!({ "busy": { "what": busy.what, "stage": busy.stage, "detail": busy.detail, "seconds": seconds, "stage_seconds": busy.stage_started.elapsed().as_secs_f64(), "done": busy.stages.iter().map(|(stage, ms)| json!({ "stage": stage, "ms": ms })).collect::<Vec<_>>() } }),
+            )
+        }
+    }
+}
+
 pub fn result(summary: impl Into<String>, data: Value) -> Value {
     json!({ "summary": summary.into(), "data": data, "images": [] })
 }
@@ -254,6 +273,7 @@ impl Host {
             "sessions" => Ok(self.list()),
             "activity" => Ok(self.activity(&params)),
             "viewer" => viewer::viewer(self, &live()?, &params).await,
+            "progress" => Ok(progress(&*self.session(&params)?)),
             // The Scanline app's Send to agent button, as the viewer's.
             "send_to_agent" => Ok(viewer::send_to_agent(&*live()?, &params)),
             "navigate" => commands::navigate(&live()?, &params).await,

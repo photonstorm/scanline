@@ -26,6 +26,11 @@ use crate::{Host, result};
 
 pub(crate) const LONG: Duration = Duration::from_secs(60);
 
+/// Data the page sent as plain base64.
+pub(crate) fn unbase64(text: &str) -> Result<Vec<u8>> {
+    base64::engine::general_purpose::STANDARD.decode(text).context("decoding data from the page")
+}
+
 pub(crate) fn unpack(text: &str) -> Result<Vec<u8>> {
     let packed = base64::engine::general_purpose::STANDARD.decode(text).context("decoding data from the page")?;
     let mut bytes = Vec::new();
@@ -1425,6 +1430,7 @@ pub async fn capture(host: &Arc<Host>, session: &Arc<Session>, params: &Value) -
 
     let top = session.top()?;
     let was_running = session.probe(&top, "status", json!({}), SHORT).await?["paused"] == false;
+    let _busy = session.begin("capture", "Waiting for the next frame");
 
     // The state read when the capture is armed must be the state the frame begins with.
     session.probe_all("pause", json!({}), SHORT).await;
@@ -1432,6 +1438,9 @@ pub async fn capture(host: &Arc<Host>, session: &Arc<Session>, params: &Value) -
     let armed = session.probe(&context.instance, "capture.arm", json!({ "context": context.local }), SHORT).await?;
     let id = armed["capture"].clone();
     let stepped = session.probe_all("step", json!({ "frames": 1 }), Duration::from_secs(20)).await;
+
+    session.stage("Reading the frame's textures and buffers in the page");
+
     let taken = session.probe(&context.instance, "capture.take", json!({ "capture": id }), LONG).await;
 
     let taken = match taken {
@@ -1447,7 +1456,11 @@ pub async fn capture(host: &Arc<Host>, session: &Arc<Session>, params: &Value) -
         }
     };
 
+    session.stage("Bringing the frame's data from the page");
+
     let body = fetch(host, session, &context.instance, &id, &taken).await?;
+
+    session.stage("Reading the frame's picture");
 
     // The frame's own final image, as the page drew it.
     let original = decode_grab(&session.probe(&context.instance, "image.grab", json!({ "context": context.local }), Duration::from_secs(20)).await?)?;
@@ -1471,14 +1484,24 @@ pub async fn capture(host: &Arc<Host>, session: &Arc<Session>, params: &Value) -
 pub(crate) async fn fetch(host: &Arc<Host>, session: &Arc<Session>, instance: &crate::session::Instance, id: &Value, taken: &Value) -> Result<Value> {
     let mut body: Value = serde_json::from_slice(&unpack(taken["body"].as_str().unwrap_or(""))?).context("reading the capture the page sent")?;
     let count = taken["blobs"].as_u64().unwrap_or(0);
+    let total = taken["blobBytes"].as_f64().unwrap_or(0.0);
     let mut hashes = Vec::with_capacity(count as usize);
     let mut from = 0u64;
+    let mut brought = 0usize;
 
     while from < count {
-        let part = session.probe(instance, "capture.blobs", json!({ "capture": id, "from": from }), LONG).await?;
+        session.stage_detail(format!("{} of {} MB", brought / 1_048_576, (total / 1_048_576.0).round()));
+
+        let part = session.probe(instance, "capture.blobs", json!({ "capture": id, "from": from, "raw": true }), LONG).await?;
+        // A probe from before raw blobs sends them gzipped, and says so.
+        let raw = part["encoding"] == "base64";
 
         for blob in part["blobs"].as_array().into_iter().flatten() {
-            hashes.push(host.store.put_blob(&unpack(blob.as_str().unwrap_or(""))?)?);
+            let text = blob.as_str().unwrap_or("");
+            let bytes = if raw { unbase64(text)? } else { unpack(text)? };
+
+            brought += bytes.len();
+            hashes.push(host.store.put_blob(&bytes)?);
         }
 
         from = part["next"].as_u64().unwrap_or(count);
@@ -1540,7 +1563,9 @@ pub(crate) async fn build(host: &Arc<Host>, session: &Arc<Session>, body: Value,
     // comes from replay is suspect, and says so.
     let store = &host.store;
 
+    session.stage("Loading the frame into the replay");
     session.replay_load(&handle, &body, &|index| store.get_blob(&hashes[index])).await?;
+    session.stage("Replaying the frame to check it");
 
     // A capture that cannot be replayed is still kept: what it says can be read, and the
     // verdict says why nothing can be asked of what it did.
@@ -1586,6 +1611,8 @@ pub(crate) async fn build(host: &Arc<Host>, session: &Arc<Session>, body: Value,
     let mut effects = HashMap::new();
     let mut effect_note = None;
 
+    session.stage("Measuring what each draw changed");
+
     match if replayed.is_null() { Err(anyhow!("the capture does not replay")) } else { session.replay("effects", &json!({ "key": handle }), LONG).await } {
         Ok(measured) if measured["skipped"] == true => {
             effect_note =
@@ -1624,6 +1651,8 @@ pub(crate) async fn build(host: &Arc<Host>, session: &Arc<Session>, body: Value,
 
         host.store.get_blob(body["blob_hashes"][place].as_str()?).ok()
     };
+
+    session.stage("Building the capture's tables");
 
     let (capture_tables, mut counts) = tables(&body, tag, &errors, &effects, &call_data);
 
@@ -1694,6 +1723,7 @@ pub(crate) async fn build(host: &Arc<Host>, session: &Arc<Session>, body: Value,
         "blob_bytes": body["blob_bytes"],
     });
 
+    session.stage("Writing the capture");
     host.store.write_capture(&handle, &body, &meta, capture_tables)?;
 
     let final_path = host.store.capture_dir(&handle).join("final.png");
@@ -1706,6 +1736,8 @@ pub(crate) async fn build(host: &Arc<Host>, session: &Arc<Session>, body: Value,
 
     value["images"] =
         json!([{ "view": view_path, "original": final_path, "width": view.width, "height": view.height, "scale": 1.0 / factor as f64, "space": "canvas_px" }]);
+    // How long each stage took, where the capture was made in one go.
+    value["data"]["stages"] = session.stage_times();
     value["summary"] = json!(format!(
         "{}\nNext: draw_list(capture: \"{handle}\"), pixel_source(capture: \"{handle}\", x, y), draw(capture: \"{handle}\", draw: n).",
         value["summary"].as_str().unwrap_or("")

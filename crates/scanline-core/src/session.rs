@@ -91,8 +91,31 @@ pub struct QueuedEvent {
     pub data: Value,
 }
 
+/// A long job under way on a session (a capture), stage by stage, for progress() to report
+/// while the page is too busy to answer anything else.
+pub struct Busy {
+    pub what: String,
+    pub stage: String,
+    pub detail: String,
+    pub started: std::time::Instant,
+    pub stage_started: std::time::Instant,
+    /// Each stage finished so far, with its milliseconds.
+    pub stages: Vec<(String, u128)>,
+}
+
+/// Ends the job when dropped, however it ends.
+pub struct BusyGuard(Arc<Session>);
+
+impl Drop for BusyGuard {
+    fn drop(&mut self) {
+        self.0.state.lock().unwrap().busy = None;
+    }
+}
+
 #[derive(Default)]
 pub struct State {
+    /// A long job under way, for progress().
+    pub busy: Option<Busy>,
     /// What the agent last asked the Scanline app to show (viewer(show: …) in an app
     /// session), with a number that rises each time so the app can tell a new request.
     pub app_show: Option<Value>,
@@ -232,6 +255,9 @@ struct ReplayPage {
     cdp_session: String,
     /// Captures whose stream and blobs it already holds.
     loaded: HashSet<String>,
+    /// Blobs it already holds, by their hash in the store: a later capture that uses one is
+    /// told its hash instead of being sent it again.
+    hashes: HashSet<String>,
 }
 
 /// The control strip: its page, its address, the function it calls the host through, and
@@ -270,6 +296,52 @@ fn injectable(url: &str) -> bool {
 }
 
 impl Session {
+    /// Starts a long job: progress() reports it until the guard is dropped.
+    pub fn begin(self: &Arc<Self>, what: &str, stage: &str) -> BusyGuard {
+        let now = std::time::Instant::now();
+
+        self.state.lock().unwrap().busy =
+            Some(Busy { what: what.to_string(), stage: stage.to_string(), detail: String::new(), started: now, stage_started: now, stages: Vec::new() });
+
+        BusyGuard(self.clone())
+    }
+
+    /// The job moves on to another stage.
+    pub fn stage(&self, stage: &str) {
+        let mut state = self.state.lock().unwrap();
+
+        if let Some(busy) = state.busy.as_mut() {
+            let took = busy.stage_started.elapsed().as_millis();
+            let finished = std::mem::replace(&mut busy.stage, stage.to_string());
+
+            busy.stages.push((finished, took));
+            busy.stage_started = std::time::Instant::now();
+            busy.detail.clear();
+        }
+    }
+
+    /// A word on how far the current stage has got ("40 of 338 MB").
+    pub fn stage_detail(&self, detail: String) {
+        if let Some(busy) = self.state.lock().unwrap().busy.as_mut() {
+            busy.detail = detail;
+        }
+    }
+
+    /// The stages finished so far, and the one under way, in milliseconds.
+    pub fn stage_times(&self) -> Value {
+        let state = self.state.lock().unwrap();
+
+        match &state.busy {
+            None => Value::Null,
+            Some(busy) => {
+                let mut stages: Vec<Value> = busy.stages.iter().map(|(stage, ms)| json!({ "stage": stage, "ms": ms })).collect();
+
+                stages.push(json!({ "stage": busy.stage, "ms": busy.stage_started.elapsed().as_millis() }));
+                json!(stages)
+            }
+        }
+    }
+
     pub async fn launch(id: String, dir: PathBuf, options: SessionOptions) -> Result<Arc<Session>> {
         std::fs::create_dir_all(dir.join("images")).with_context(|| format!("creating {}", dir.display()))?;
 
@@ -934,7 +1006,7 @@ impl Session {
             self.serve(&cdp_session, REPLAY_URL, "<!doctype html><title>Scanline replay</title>").await.context("opening the replay page")?;
             self.client.send("Runtime.evaluate", json!({ "expression": REPLAY }), Some(&cdp_session)).await.context("loading the replay script")?;
 
-            *page = Some(ReplayPage { cdp_session, loaded: HashSet::new() });
+            *page = Some(ReplayPage { cdp_session, loaded: HashSet::new(), hashes: HashSet::new() });
         }
 
         let quote = |text: &str| Value::String(text.to_string()).to_string();
@@ -980,6 +1052,10 @@ impl Session {
     /// Gives the replay page a capture, unless it already has it. `stream` is the capture's
     /// description; `blob` fetches one of its blobs by index.
     pub async fn replay_load(&self, key: &str, stream: &Value, blob: &(dyn Fn(usize) -> Result<Vec<u8>> + Sync)) -> Result<()> {
+        // A blob larger than this goes to the page in pieces of this size (a multiple of three
+        // bytes, so each piece is base64 of its own).
+        const PIECE: usize = 3 * 1024 * 1024;
+
         use base64::Engine;
         use std::io::Write;
 
@@ -1001,8 +1077,11 @@ impl Session {
 
         self.replay_on(&mut page, "load", &json!({ "key": key, "body": body }), Duration::from_secs(60)).await?;
 
-        // A few megabytes of blobs to a call.
+        // A few megabytes of blobs to a call, as plain base64: they rarely shrink under gzip,
+        // and gzip at this size costs more than it saves. A blob the page already holds (from
+        // an earlier capture of the same scene) is named by its hash instead.
         let count = stream["blobs"].as_array().map_or(0, Vec::len);
+        let named: Vec<Option<String>> = (0..count).map(|index| stream["blob_hashes"][index].as_str().map(str::to_string)).collect();
         let mut from = 0;
 
         while from < count {
@@ -1010,15 +1089,53 @@ impl Session {
             let mut size = 0;
 
             while from + batch.len() < count && (batch.is_empty() || size < 6_000_000) {
-                let packed = pack(&blob(from + batch.len())?)?;
+                let index = from + batch.len();
+                let held = named[index].as_ref().is_some_and(|hash| page.as_ref().is_some_and(|page| page.hashes.contains(hash)));
 
-                size += packed.len();
-                batch.push(packed);
+                if held {
+                    batch.push(json!({ "hash": named[index] }));
+                    continue;
+                }
+
+                let bytes = blob(index)?;
+
+                // A large blob goes on its own, in pieces the page puts back together: one
+                // script of tens of megabytes is more than a page takes in good time.
+                if bytes.len() > PIECE {
+                    if !batch.is_empty() {
+                        break;
+                    }
+
+                    for (number, piece) in bytes.chunks(PIECE).enumerate() {
+                        let encoded = base64::engine::general_purpose::STANDARD.encode(piece);
+
+                        self.replay_on(
+                            &mut page,
+                            "piece",
+                            &json!({ "key": key, "index": index, "hash": named[index], "total": bytes.len(), "offset": number * PIECE, "data": encoded }),
+                            Duration::from_secs(60),
+                        )
+                        .await?;
+                    }
+
+                    batch.push(json!({ "hash": named[index], "pieced": true }));
+                    break;
+                }
+
+                let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+
+                size += encoded.len();
+                batch.push(json!({ "hash": named[index], "data": encoded }));
             }
 
             let sent = batch.len();
 
-            self.replay_on(&mut page, "blobs", &json!({ "key": key, "from": from, "blobs": batch }), Duration::from_secs(60)).await?;
+            self.replay_on(&mut page, "blobs", &json!({ "key": key, "from": from, "blobs": batch, "encoding": "base64" }), Duration::from_secs(90)).await?;
+
+            if let Some(page) = page.as_mut() {
+                page.hashes.extend(named[from..from + sent].iter().flatten().cloned());
+            }
+
             from += sent;
         }
 

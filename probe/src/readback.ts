@@ -11,12 +11,17 @@ import { trackerFor } from './gl/tracker';
 import { block, copyBytes } from './gpu/formats';
 import { depthNeedsSampling, sampleGpuTexture } from './gpu/sample';
 import { natives } from './hooks/install';
-import { G, nBtoa, nFromCharCode } from './natives';
+import { G, nBtoa, nFromCharCode, nToBase64 } from './natives';
 import { alive, deviceFor, find, type Entry } from './registry';
 import { expose } from './transport';
 
 export function base64 (bytes: Uint8Array): string
 {
+    if (nToBase64)
+    {
+        return nToBase64.call(bytes);
+    }
+
     const CHUNK = 0x8000;
 
     let binary = '';

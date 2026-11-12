@@ -40,6 +40,9 @@ export const NativeFunction: FunctionConstructor = G.Function;
 
 export const nAddEventListener: Fn = G.EventTarget.prototype.addEventListener;
 export const nBtoa: (data: string) => string = G.btoa.bind(G);
+// Chromium's own base64 of a byte array, where it has one (Chromium 140 and later): many
+// times quicker than building a string a character at a time for btoa.
+export const nToBase64: ((this: Uint8Array) => string) | undefined = (G.Uint8Array.prototype as unknown as { toBase64?: (this: Uint8Array) => string }).toBase64;
 export const nFromCharCode: (...codes: number[]) => string = G.String.fromCharCode;
 
 // A task with no minimum delay. Nested setTimeout(0) is clamped to 4 ms by the browser,

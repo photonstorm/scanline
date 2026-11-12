@@ -35,8 +35,20 @@ const loaded = new Map<string, Loaded>();
 
 // ---- Loading ----
 
+// Blobs this page holds, by their hash in the host's store, so a later capture of the same
+// scene need not send them again.
+const byHash = new Map<string, Uint8Array>();
+
 function fromBase64 (text: string): Uint8Array
 {
+    // Chromium's own decoder where it has one (Chromium 140 and later).
+    const native = (Uint8Array as unknown as { fromBase64?: (text: string) => Uint8Array }).fromBase64;
+
+    if (native)
+    {
+        return native(text);
+    }
+
     const binary = atob(text);
     const bytes = new Uint8Array(binary.length);
 
@@ -1809,13 +1821,71 @@ const api = {
         return { commands: data.commands.length, draws: data.draws.length, blobs: data.blobs.length };
     },
 
-    async blobs (args: { key: string; from: number; blobs: string[] }): Promise<Json>
+    // One piece of a large blob, at its place in it. The last piece makes it whole.
+    async piece (args: { key: string; index: number; hash?: string; total: number; offset: number; data: string }): Promise<Json>
+    {
+        const target = capture(args.key);
+        const bytes = fromBase64(args.data);
+        let whole = target.blobs[args.index];
+
+        if (!whole || whole.length !== args.total)
+        {
+            whole = new Uint8Array(args.total);
+            target.blobs[args.index] = whole;
+        }
+
+        whole.set(bytes, args.offset);
+
+        if (args.hash && args.offset + bytes.length === args.total)
+        {
+            byHash.set(args.hash, whole.slice());
+        }
+
+        return { index: args.index, have: args.offset + bytes.length, of: args.total };
+    },
+
+    async blobs (args: { key: string; from: number; blobs: Array<string | { hash?: string; data?: string }>; encoding?: string }): Promise<Json>
     {
         const target = capture(args.key);
 
         for (let i = 0; i < args.blobs.length; i++)
         {
-            target.blobs[args.from + i] = await gunzip(fromBase64(args.blobs[i]));
+            const entry = args.blobs[i];
+
+            if (typeof entry === 'string')
+            {
+                target.blobs[args.from + i] = await gunzip(fromBase64(entry));
+                continue;
+            }
+
+            // Sent before, in pieces (piece, below).
+            if ((entry as { pieced?: boolean }).pieced)
+            {
+                if (!target.blobs[args.from + i])
+                {
+                    throw new Error(`The replay page did not get every piece of blob ${args.from + i}.`);
+                }
+
+                continue;
+            }
+
+            // Plain base64, or only the hash of a blob this page already has.
+            // A blob held from an earlier capture is copied: a replay may write into the bytes it
+            // is given, and the next capture must start from what was recorded.
+            const held = entry.data === undefined ? byHash.get(entry.hash ?? '') : undefined;
+            const bytes = entry.data !== undefined ? (args.encoding === 'base64' ? fromBase64(entry.data) : await gunzip(fromBase64(entry.data))) : held?.slice();
+
+            if (!bytes)
+            {
+                throw new Error(`The replay page does not hold blob ${entry.hash ?? '(unnamed)'}.`);
+            }
+
+            if (entry.hash && entry.data !== undefined)
+            {
+                byHash.set(entry.hash, bytes.slice());
+            }
+
+            target.blobs[args.from + i] = bytes;
         }
 
         return { have: target.blobs.filter(Boolean).length, of: target.blobs.length };

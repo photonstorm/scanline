@@ -1679,7 +1679,9 @@ export function installCapture (): void
     });
 
     // Blobs in order, several to a call, up to about `budget` bytes of them.
-    expose('capture.blobs', async (args: { capture: number; from: number; budget?: number }) =>
+    // raw: base64 alone. Textures and render targets rarely shrink under gzip, and gzip at
+    // this size costs more time than the bytes it saves.
+    expose('capture.blobs', async (args: { capture: number; from: number; budget?: number; raw?: boolean }) =>
     {
         const capture = captures.get(args.capture);
 
@@ -1697,11 +1699,11 @@ export function installCapture (): void
         while (index < capture.blobs.length && (out.length === 0 || size + capture.blobs[index].length <= budget))
         {
             size += capture.blobs[index].length;
-            out.push(base64(await gzip(capture.blobs[index])));
+            out.push(args.raw ? base64(capture.blobs[index]) : base64(await gzip(capture.blobs[index])));
             index++;
         }
 
-        return { from: args.from, next: index, done: index >= capture.blobs.length, encoding: 'gzip+base64', blobs: out };
+        return { from: args.from, next: index, done: index >= capture.blobs.length, encoding: args.raw ? 'base64' : 'gzip+base64', blobs: out };
     });
 
     expose('capture.release', (args: { capture: number }) =>

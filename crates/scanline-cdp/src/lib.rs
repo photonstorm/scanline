@@ -74,8 +74,12 @@ impl Client {
         let reader_closed = closed.clone();
 
         tokio::spawn(async move {
-            let mut buffer: Vec<u8> = Vec::with_capacity(1 << 16);
-            let mut chunk = vec![0u8; 1 << 16];
+            let mut buffer: Vec<u8> = Vec::with_capacity(1 << 20);
+            let mut chunk = vec![0u8; 1 << 20];
+            // How far into the buffer has been searched for the NUL that ends a message. Only
+            // what arrives after it is searched: searching from the start on every read made a
+            // message of tens of megabytes take seconds to arrive.
+            let mut searched = 0;
 
             loop {
                 let read = match from_browser.read(&mut chunk).await {
@@ -85,13 +89,18 @@ impl Client {
 
                 buffer.extend_from_slice(&chunk[..read]);
 
-                while let Some(end) = buffer.iter().position(|byte| *byte == 0) {
+                while let Some(offset) = buffer[searched..].iter().position(|byte| *byte == 0) {
+                    let end = searched + offset;
                     let message: Vec<u8> = buffer.drain(..=end).collect();
+
+                    searched = 0;
 
                     if let Ok(value) = serde_json::from_slice::<Value>(&message[..message.len() - 1]) {
                         dispatch(value, &reader_pending, &reader_events, &reader_last);
                     }
                 }
+
+                searched = buffer.len();
             }
 
             // The browser has gone. Fail everything still waiting, and say so.
