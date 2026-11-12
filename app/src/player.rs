@@ -189,6 +189,9 @@ pub enum Purpose {
     Attachments(String, i64),
     /// GPU time by draw for a capture (profile).
     Profile(String),
+    /// The magnifier's region after the draw (false) or before it (true), and what changed.
+    Magnified(u64, bool),
+    MagnifiedDiff(u64),
     /// A picture of a pass's target as the pass left it; its depth, for a target with no colour.
     PassPicture(String, i64, i64, String),
     PassDepth(String, i64),
@@ -618,6 +621,13 @@ impl Player {
                         false,
                     ),
                     None => self.say("The screenshot was taken but could not be copied to the desktop.", true),
+                }
+            }
+            (Purpose::Magnified(seq, before), Ok(value)) => self.magnified(seq, before, &value),
+            (Purpose::MagnifiedDiff(seq), Ok(value)) => self.magnified_diff(seq, &value),
+            (Purpose::Magnified(seq, _), Err(error)) | (Purpose::MagnifiedDiff(seq), Err(error)) => {
+                if let Some(magnifier) = self.captures.magnifier.as_mut().filter(|magnifier| magnifier.seq == seq) {
+                    magnifier.error = Some(error);
                 }
             }
             (Purpose::Profile(capture), Ok(value)) => self.captures.got_timing(&capture, &value["data"]),
@@ -1065,6 +1075,131 @@ impl Player {
         self.captures.open(&capture);
         self.last.remove("captures");
         self.ask("draw_list", json!({ "capture": capture, "limit": 200 }), Purpose::DrawList(capture, 0));
+    }
+
+    /// A box dragged on the capture's picture: a short one is a click (the pixel's history),
+    /// a larger one is magnified.
+    pub fn finish_drag(&mut self) {
+        let Some(region) = self.captures.dragged() else { return };
+        let start = self.captures.drag.map(|(start, _)| start);
+
+        self.captures.drag = None;
+
+        match region {
+            (_, _, w, h) if w <= 2 && h <= 2 => {
+                if self.captures.enlarged.is_none() {
+                    if let Some(pixel) = start {
+                        self.pick_pixel(pixel);
+                    }
+                }
+            }
+            region => self.magnify(region),
+        }
+    }
+
+    /// Magnifies a region of the chosen draw's target (or of the attachment shown large): as
+    /// the draw left it, as it was before, and what it changed, by the host's screenshot and
+    /// diff, as an agent would ask for them.
+    pub fn magnify(&mut self, (x, y, w, h): (u32, u32, u32, u32)) {
+        let (Some(capture), Some(draw)) = (self.captures.opened.clone(), self.captures.selected) else { return };
+        let enlarged = self.captures.enlarged.and_then(|index| self.captures.attachments.as_ref()?["attachments"][index]["handle"].as_str().map(str::to_string));
+        let target = enlarged
+            .or_else(|| self.captures.draw.as_ref().and_then(|draw| draw["state"]["targetName"].as_str().map(str::to_string)))
+            .unwrap_or_else(|| "canvas".into());
+        // At most 128 a side, enlarged to about 480 points, never past the host's 2,048.
+        let (w, h) = (w.clamp(1, 128), h.clamp(1, 128));
+        let zoom = (480 / w.max(h)).clamp(1, 32).min(2048 / w.max(h));
+        let seq = self.captures.next_magnifier + 1;
+
+        self.captures.next_magnifier = seq;
+        self.captures.magnifier = Some(panels::captures::Magnifier {
+            seq,
+            draw,
+            target: target.clone(),
+            region: (x, y, w, h),
+            zoom,
+            after: None,
+            before: None,
+            changed: None,
+            summary: None,
+            unchanged: false,
+            showing: panels::captures::Showing::After,
+            hover: None,
+            error: None,
+            place: Default::default(),
+        });
+
+        let shot = |at: i64| json!({ "capture": capture, "at_draw": at, "target": target, "region": { "x": x, "y": y, "w": w, "h": h }, "zoom": zoom, "grid": zoom >= 8 });
+
+        self.ask("screenshot", shot(draw), Purpose::Magnified(seq, false));
+
+        if draw > 0 {
+            self.ask("screenshot", shot(draw - 1), Purpose::Magnified(seq, true));
+        }
+    }
+
+    /// One of the magnifier's pictures arrived; with both, what changed between them.
+    fn magnified(&mut self, seq: u64, before: bool, value: &Value) {
+        let Some(magnifier) = self.captures.magnifier.as_mut().filter(|magnifier| magnifier.seq == seq) else { return };
+        let image = &value["images"][0];
+        let (Some(view), Some(original)) = (image["view"].as_str(), image["original"].as_str()) else { return };
+        let shot = panels::captures::Shot {
+            view: PathBuf::from(view),
+            original: PathBuf::from(original),
+            pixels: ::image::open(original).ok().map(|picture| picture.to_rgba8()),
+        };
+
+        if before {
+            magnifier.before = Some(shot);
+        } else {
+            magnifier.after = Some(shot);
+        }
+
+        let pair = match (&magnifier.before, &magnifier.after) {
+            (Some(before), Some(after)) => Some((before.original.clone(), after.original.clone())),
+            _ => None,
+        };
+
+        if magnifier.draw == 0 && magnifier.after.is_some() {
+            magnifier.summary = Some("The first event: nothing before it to compare with.".into());
+        }
+
+        if let Some((a, b)) = pair {
+            self.ask("diff", json!({ "a": a.display().to_string(), "b": b.display().to_string() }), Purpose::MagnifiedDiff(seq));
+        }
+    }
+
+    /// What changed: the host's heat map, enlarged as the pictures are, with no smoothing.
+    fn magnified_diff(&mut self, seq: u64, value: &Value) {
+        let folder = self.options.home.join("magnifier");
+        let Some(magnifier) = self.captures.magnifier.as_mut().filter(|magnifier| magnifier.seq == seq) else { return };
+
+        let identical = value["data"]["changed"].as_u64() == Some(0) || value["summary"].as_str().is_some_and(|summary| summary.starts_with("No difference"));
+
+        magnifier.summary = if identical {
+            Some(format!("Event {} changed nothing in this region.", magnifier.draw))
+        } else {
+            value["summary"].as_str().and_then(|summary| summary.lines().next()).map(|line| {
+                // "a.png against b.png (20×20): 200 of 400 pixels differ (50.00%)." → from the counts.
+                let counts = line.split_once("): ").map(|(_, counts)| counts.to_string()).unwrap_or_else(|| line.to_string());
+
+                format!("Event {}: {counts}", magnifier.draw)
+            })
+        };
+        magnifier.unchanged = identical;
+
+        let heat = value["images"][0]["original"].as_str().and_then(|path| ::image::open(path).ok());
+
+        if let Some(heat) = heat {
+            let zoom = magnifier.zoom.max(1);
+            let large = ::image::imageops::resize(&heat.to_rgba8(), heat.width() * zoom, heat.height() * zoom, ::image::imageops::FilterType::Nearest);
+            let _ = std::fs::create_dir_all(&folder);
+            let path = folder.join(format!("changed-{seq}.png"));
+
+            if large.save(&path).is_ok() {
+                magnifier.changed = Some(path);
+            }
+        }
     }
 
     /// Times every draw of the open capture on the GPU, for its timeline.
@@ -1515,6 +1650,23 @@ impl Player {
             "video" => self.toggle_video(),
             "mute" => self.toggle_mute(),
             "timeline" => self.measure_capture(),
+            // magnify x y w h: a region of the chosen draw's target, as a drag would.
+            "magnify" => {
+                let numbers: Vec<u32> = rest.split_whitespace().filter_map(|word| word.parse().ok()).collect();
+
+                if let [x, y, w, h] = numbers[..] {
+                    self.magnify((x, y, w, h));
+                }
+            }
+            "showing" => {
+                if let Some(magnifier) = self.captures.magnifier.as_mut() {
+                    magnifier.showing = match rest {
+                        "before" => panels::captures::Showing::Before,
+                        "changed" => panels::captures::Showing::Changed,
+                        _ => panels::captures::Showing::After,
+                    };
+                }
+            }
             "projects" => self.show_projects(),
             "release" => self.leave_fullscreen(),
             "sizes" => self.choosing_size = !self.choosing_size,

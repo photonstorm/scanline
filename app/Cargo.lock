@@ -4921,6 +4921,7 @@ version = "0.0.1"
 dependencies = [
  "cef",
  "gpui",
+ "image",
  "objc2",
  "objc2-foundation",
  "raw-window-handle",

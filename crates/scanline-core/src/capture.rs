@@ -3642,7 +3642,9 @@ pub(crate) async fn replayed(host: &Arc<Host>, params: &Value) -> Result<(Arc<Se
     if !params["target"].is_null() {
         let (target, name) = target_of(host, &handle, params)?;
 
-        args["target"] = target;
+        // The canvas asked for by name is the canvas, even after an event that drew elsewhere;
+        // no target at all means the event's own.
+        args["target"] = if target.is_null() { json!({ "canvas": true }) } else { target };
         what.push_str(&format!(" {name}"));
     }
 
@@ -3773,8 +3775,8 @@ pub async fn attachments(host: &Arc<Host>, params: &Value) -> Result<Value> {
 pub async fn screenshot(host: &Arc<Host>, params: &Value) -> Result<Value> {
     let (session, handle, full, what, meta) = replayed(host, params).await?;
     let region = &params["region"];
-    let (x, y) = (region["x"].as_u64().unwrap_or(0) as u32, region["y"].as_u64().unwrap_or(0) as u32);
-    let original = full.crop(x, y, region["w"].as_u64().map(|w| w as u32).unwrap_or(full.width), region["h"].as_u64().map(|h| h as u32).unwrap_or(full.height));
+    let (x, y) = (whole(&region["x"]).unwrap_or(0) as u32, whole(&region["y"]).unwrap_or(0) as u32);
+    let original = full.crop(x, y, whole(&region["w"]).map(|w| w as u32).unwrap_or(full.width), whole(&region["h"]).map(|h| h as u32).unwrap_or(full.height));
 
     if original.width == 0 || original.height == 0 {
         bail!("The region is empty. The target is {}×{} pixels.", full.width, full.height);
@@ -3828,10 +3830,19 @@ pub async fn screenshot(host: &Arc<Host>, params: &Value) -> Result<Value> {
     Ok(value)
 }
 
+/// A whole number of pixels, however it was written (the command line sends 10.0 for 10).
+fn whole(value: &Value) -> Option<u64> {
+    value.as_u64().or_else(|| value.as_f64().filter(|number| *number >= 0.0).map(|number| number as u64))
+}
+
 pub async fn pixels(host: &Arc<Host>, params: &Value) -> Result<Value> {
-    let (Some(x), Some(y)) = (params["x"].as_u64(), params["y"].as_u64()) else { bail!("pixels needs x and y, in pixels from the top-left of the target.") };
+    // x, y (and w, h), or a region, as the live command takes.
+    let region = &params["region"];
+    let (Some(x), Some(y)) = (whole(&params["x"]).or(whole(&region["x"])), whole(&params["y"]).or(whole(&region["y"]))) else {
+        bail!("pixels needs x and y (or a region), in pixels from the top-left of the target.")
+    };
     let (_, handle, image, what, _) = replayed(host, params).await?;
-    let (w, h) = (params["w"].as_u64().unwrap_or(1).max(1), params["h"].as_u64().unwrap_or(1).max(1));
+    let (w, h) = (whole(&params["w"]).or(whole(&region["w"])).unwrap_or(1).max(1), whole(&params["h"]).or(whole(&region["h"])).unwrap_or(1).max(1));
 
     if w * h > 256 {
         bail!("{w}×{h} is too many pixels to list (the limit is 256). Use screenshot with a region and zoom to look at an area.");

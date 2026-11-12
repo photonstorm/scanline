@@ -229,6 +229,8 @@ That registers the MCP server and installs the seven skills. To try the plugin f
 claude --plugin-dir .
 ```
 
+**What each way costs an agent.** Measured on 12 November 2026: over MCP the 64 tools' definitions are about 17,400 tokens (62,500 characters), sent with every request unless the client defers them (Claude Code's tool search does, listing names alone until a tool is wanted). The command line costs nothing until it is used: `scanline help` is about 1,400 tokens, `scanline help <command>` far less, and a skill (`scanline skill <name>`) is read only when its kind of job comes up. For an agent that can run a shell, the command line and the skills are the cheapest way in; MCP suits a client that cannot.
+
 **Any other agent.** Register a stdio MCP server whose command is `scanline` with the argument `mcp`, and write the skills where the agent loads them from:
 
 ```bash

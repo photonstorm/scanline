@@ -42,6 +42,46 @@ pub struct State {
     /// GPU time by draw, in nanoseconds (profile()), once measured; and whether it is being.
     pub timing: Option<std::collections::HashMap<i64, f64>>,
     pub measuring: bool,
+    /// A box being dragged on the picture, corner to corner, in the target's pixels.
+    pub drag: Option<((u32, u32), (u32, u32))>,
+    /// The region magnified, if one is.
+    pub magnifier: Option<Magnifier>,
+    pub next_magnifier: u64,
+}
+
+/// Which picture of the region the magnifier shows.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Showing {
+    After,
+    Before,
+    Changed,
+}
+
+/// A picture of the region: enlarged (with a pixel grid from 8×) and as read, for its values.
+pub struct Shot {
+    pub view: PathBuf,
+    pub original: PathBuf,
+    pub pixels: Option<image::RgbaImage>,
+}
+
+/// A region of the chosen draw's target, enlarged, as it stood after the draw and before it,
+/// and what the draw changed in it.
+pub struct Magnifier {
+    pub seq: u64,
+    pub draw: i64,
+    pub target: String,
+    pub region: (u32, u32, u32, u32),
+    pub zoom: u32,
+    pub after: Option<Shot>,
+    pub before: Option<Shot>,
+    pub changed: Option<PathBuf>,
+    pub summary: Option<String>,
+    /// The draw changed nothing in the region.
+    pub unchanged: bool,
+    pub showing: Showing,
+    pub hover: Option<(u32, u32)>,
+    pub error: Option<String>,
+    pub place: Rc<Cell<Option<Bounds<Pixels>>>>,
 }
 
 /// A run of events on one target.
@@ -118,6 +158,8 @@ impl State {
             self.enlarged = None;
             self.timing = None;
             self.measuring = false;
+            self.drag = None;
+            self.magnifier = None;
 
             if self.made.as_ref().and_then(|made| made["capture"].as_str()) != Some(capture) {
                 self.made = self.rows.iter().find(|row| row["capture"].as_str() == Some(capture)).cloned();
@@ -271,16 +313,47 @@ impl State {
 
     /// The pixel under a click on the picture, which is fitted inside its box.
     pub fn pixel_at(&self, event: &MouseDownEvent) -> Option<(u32, u32)> {
+        self.pixel_under(event.position, false)
+    }
+
+    /// The pixel under a point of the picture; `clamp` keeps a point past its edge on it, for a
+    /// box dragged out beyond the picture.
+    pub fn pixel_under(&self, position: gpui::Point<Pixels>, clamp: bool) -> Option<(u32, u32)> {
+        let (left, top, scale, width, height) = self.fitting()?;
+        let x = (f32::from(position.x) - left) / scale;
+        let y = (f32::from(position.y) - top) / scale;
+
+        if clamp {
+            return Some((x.clamp(0.0, width - 1.0) as u32, y.clamp(0.0, height - 1.0) as u32));
+        }
+
+        (x >= 0.0 && y >= 0.0 && x < width && y < height).then_some((x as u32, y as u32))
+    }
+
+    /// Where the target sits in the picture's box: its left and top in the window, its scale,
+    /// and its size in pixels.
+    fn fitting(&self) -> Option<(f32, f32, f32, f32, f32)> {
         let bounds = self.picture.get()?;
         let (width, height) = self.target_size()?;
         let (box_w, box_h) = (f32::from(bounds.size.width), f32::from(bounds.size.height));
         let scale = (box_w / width).min(box_h / height);
-        let left = f32::from(bounds.origin.x) + (box_w - width * scale) / 2.0;
-        let top = f32::from(bounds.origin.y) + (box_h - height * scale) / 2.0;
-        let x = (f32::from(event.position.x) - left) / scale;
-        let y = (f32::from(event.position.y) - top) / scale;
 
-        (x >= 0.0 && y >= 0.0 && x < width && y < height).then_some((x as u32, y as u32))
+        Some((f32::from(bounds.origin.x) + (box_w - width * scale) / 2.0, f32::from(bounds.origin.y) + (box_h - height * scale) / 2.0, scale, width, height))
+    }
+
+    /// A box of the target's pixels as a box of the picture's own: left, top, width, height.
+    pub fn box_in_picture(&self, (x, y, w, h): (u32, u32, u32, u32)) -> Option<(f32, f32, f32, f32)> {
+        let bounds = self.picture.get()?;
+        let (left, top, scale, _, _) = self.fitting()?;
+
+        Some((left - f32::from(bounds.origin.x) + x as f32 * scale, top - f32::from(bounds.origin.y) + y as f32 * scale, w as f32 * scale, h as f32 * scale))
+    }
+
+    /// The box dragged so far, as x, y, width, height.
+    pub fn dragged(&self) -> Option<(u32, u32, u32, u32)> {
+        let ((ax, ay), (bx, by)) = self.drag?;
+
+        Some((ax.min(bx), ay.min(by), ax.abs_diff(bx) + 1, ay.abs_diff(by) + 1))
     }
 
     pub fn story(&mut self, capture: &str, pixel: (u32, u32), value: &Value) {
@@ -1009,6 +1082,125 @@ fn timeline(player: &Player, cx: &mut Context<Player>) -> gpui::Div {
         .child(draws)
 }
 
+/// A pixel's value as text, and as a colour for its swatch.
+fn texel(pixels: Option<&image::RgbaImage>, (x, y): (u32, u32)) -> Option<([u8; 4], String)> {
+    let pixel = pixels?.get_pixel_checked(x, y)?.0;
+
+    Some((pixel, format!("({}, {}, {}, {})", pixel[0], pixel[1], pixel[2], pixel[3])))
+}
+
+/// The magnifier: the region dragged on the picture, enlarged with no smoothing (a grid from
+/// 8×), as the draw left it, as it was before the draw, or what the draw changed; the exact
+/// value of the pixel under the pointer, before and after.
+fn magnifier_card(player: &Player, cx: &mut Context<Player>) -> Option<gpui::Div> {
+    let magnifier = player.captures.magnifier.as_ref()?;
+    let (x, y, w, h) = magnifier.region;
+    let showing = magnifier.showing;
+    let picture = match showing {
+        Showing::After => magnifier.after.as_ref().map(|shot| shot.view.clone()),
+        Showing::Before => magnifier.before.as_ref().map(|shot| shot.view.clone()),
+        Showing::Changed => magnifier.changed.clone(),
+    };
+    let tab = |id: &'static str, label: String, which: Showing, ready: bool| {
+        tool_button(id, match which {
+            Showing::After => "eye",
+            Showing::Before => "undo",
+            Showing::Changed => "search",
+        }, label, CYAN, showing == which)
+        .when(!ready, |button| button.opacity(0.45))
+        .on_click(cx.listener(move |this, _, _, cx| {
+            if let Some(magnifier) = this.captures.magnifier.as_mut() {
+                magnifier.showing = which;
+            }
+
+            cx.notify();
+        }))
+    };
+    let place = magnifier.place.clone();
+    let hover = magnifier.hover;
+    let after = hover.and_then(|at| texel(magnifier.after.as_ref().and_then(|shot| shot.pixels.as_ref()), at));
+    let before = hover.and_then(|at| texel(magnifier.before.as_ref().and_then(|shot| shot.pixels.as_ref()), at));
+    let swatch = |rgba: [u8; 4]| div().size(px(14.0)).rounded(px(3.0)).border_1().border_color(rgb(LINE)).bg(rgb(((rgba[0] as u32) << 16) | ((rgba[1] as u32) << 8) | rgba[2] as u32));
+    let height = ((h as f32 / w as f32) * 420.0).clamp(140.0, 420.0);
+
+    Some(
+        card(format!("Magnifier · {} · {w}×{h} at x {x} y {y}, {}×", magnifier.target, magnifier.zoom), CYAN)
+            .child(
+                group()
+                    .child(tab("magnify-after", format!("After event {}", magnifier.draw), Showing::After, magnifier.after.is_some()))
+                    .child(tab("magnify-before", "Before it".into(), Showing::Before, magnifier.before.is_some()))
+                    .child(tab("magnify-changed", "What it changed".into(), Showing::Changed, magnifier.changed.is_some() || magnifier.unchanged))
+                    .child(icon_button("magnify-close", "close", DIM, false).on_click(cx.listener(|this, _, _, cx| {
+                        this.captures.magnifier = None;
+                        cx.notify();
+                    }))),
+            )
+            .child(
+                div()
+                    .id("magnified")
+                    .relative()
+                    .w_full()
+                    .h(px(height))
+                    .rounded(px(6.0))
+                    .overflow_hidden()
+                    .bg(rgb(0x000000))
+                    .border_1()
+                    .border_color(rgb(LINE))
+                    .cursor_crosshair()
+                    .child(canvas(move |bounds, _, _| place.set(Some(bounds)), |_, _, _, _| {}).absolute().size_full())
+                    .on_mouse_move(cx.listener(move |this, event: &gpui::MouseMoveEvent, _, cx| {
+                        let Some(magnifier) = this.captures.magnifier.as_mut() else { return };
+                        let Some(bounds) = magnifier.place.get() else { return };
+                        let (_, _, w, h) = magnifier.region;
+                        let (box_w, box_h) = (f32::from(bounds.size.width), f32::from(bounds.size.height));
+                        let scale = (box_w / w as f32).min(box_h / h as f32);
+                        let left = f32::from(bounds.origin.x) + (box_w - w as f32 * scale) / 2.0;
+                        let top = f32::from(bounds.origin.y) + (box_h - h as f32 * scale) / 2.0;
+                        let px = (f32::from(event.position.x) - left) / scale;
+                        let py = (f32::from(event.position.y) - top) / scale;
+                        let under = (px >= 0.0 && py >= 0.0 && px < w as f32 && py < h as f32).then_some((px as u32, py as u32));
+
+                        if under != magnifier.hover {
+                            magnifier.hover = under;
+                            cx.notify();
+                        }
+                    }))
+                    .child(match (&picture, &magnifier.error) {
+                        (_, Some(error)) => div().p_3().text_xs().text_color(rgb(RED)).child(error.clone()).into_any_element(),
+                        (None, None) if showing == Showing::Changed && magnifier.unchanged => div()
+                            .size_full()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .gap_2()
+                            .child(crate::icons::icon("check", 14.0, rgb(GREEN)))
+                            .child(note(format!("Event {} changed nothing here.", magnifier.draw)))
+                            .into_any_element(),
+                        (Some(path), None) => img(path.clone()).size_full().object_fit(ObjectFit::Contain).into_any_element(),
+                        (None, None) => div().size_full().flex().items_center().justify_center().child(note("Reading the region…")).into_any_element(),
+                    }),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .h(px(20.0))
+                    .text_xs()
+                    .font_family(MONO)
+                    .text_color(rgb(TEXT))
+                    .child(match hover {
+                        Some((hx, hy)) => format!("x {} y {}", x + hx, y + hy),
+                        None => "Point at a pixel for its value".to_string(),
+                    })
+                    .when_some(before.clone(), |row, (rgba, text)| row.child(div().text_color(rgb(DIM)).child("before")).child(swatch(rgba)).child(text))
+                    .when_some(after.clone(), |row, (rgba, text)| row.child(div().text_color(rgb(DIM)).child("after")).child(swatch(rgba)).child(text))
+                    .when(before.as_ref().zip(after.as_ref()).is_some_and(|(b, a)| b.0 != a.0), |row| row.child(div().text_color(rgb(AMBER)).child("changed"))),
+            )
+            .when_some(magnifier.summary.clone(), |card, summary| card.child(note(summary))),
+    )
+}
+
 /// The depth attachment's picture for the chosen draw, if it has one.
 fn depth_picture(state: &State) -> Option<PathBuf> {
     state.attachments.as_ref()?["attachments"]
@@ -1212,10 +1404,19 @@ fn workspace(player: &mut Player, cx: &mut Context<Player>) -> gpui::Div {
         (None, Some(draw)) if state.error.is_some() && depth_picture(state).is_some() => {
             format!("Depth of {} after event {draw} (it has no colour)", state.draw.as_ref().and_then(|draw| draw["state"]["targetName"].as_str()).unwrap_or("the target"))
         }
-        (None, Some(draw)) => format!("{} after event {draw} · click a pixel for its history", state.draw.as_ref().and_then(|draw| draw["state"]["targetName"].as_str()).unwrap_or("the target")),
+        (None, Some(draw)) => format!(
+            "{} after event {draw} · click a pixel for its history, drag a box to magnify it",
+            state.draw.as_ref().and_then(|draw| draw["state"]["targetName"].as_str()).unwrap_or("the target")
+        ),
         _ => String::new(),
     };
     let place = state.picture.clone();
+    // The box being dragged, or the region the magnifier shows, drawn over the picture.
+    let marked = state
+        .dragged()
+        .map(|region| (region, CYAN, true))
+        .or_else(|| state.magnifier.as_ref().filter(|magnifier| Some(magnifier.draw) == selected).map(|magnifier| (magnifier.region, CYAN, false)))
+        .and_then(|(region, colour, live)| state.box_in_picture(region).map(|place| (place, colour, live)));
     let picture = div()
         .id("picture")
         .relative()
@@ -1223,15 +1424,29 @@ fn workspace(player: &mut Player, cx: &mut Context<Player>) -> gpui::Div {
         .on_mouse_down(
             MouseButton::Left,
             cx.listener(|this, event: &MouseDownEvent, _, cx| {
-                if this.captures.enlarged.is_none() {
-                    if let Some(pixel) = this.captures.pixel_at(event) {
-                        this.pick_pixel(pixel);
-                    }
+                if let Some(pixel) = this.captures.pixel_at(event) {
+                    this.captures.drag = Some((pixel, pixel));
                 }
 
                 cx.notify();
             }),
         )
+        .on_mouse_move(cx.listener(|this, event: &gpui::MouseMoveEvent, _, cx| {
+            if event.pressed_button == Some(MouseButton::Left) {
+                if let (Some((start, _)), Some(end)) = (this.captures.drag, this.captures.pixel_under(event.position, true)) {
+                    this.captures.drag = Some((start, end));
+                    cx.notify();
+                }
+            }
+        }))
+        .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| {
+            this.finish_drag();
+            cx.notify();
+        }))
+        .on_mouse_up_out(MouseButton::Left, cx.listener(|this, _, _, cx| {
+            this.finish_drag();
+            cx.notify();
+        }))
         .child(canvas(move |bounds, _, _| place.set(Some(bounds)), |_, _, _, _| {}).absolute().size_full())
         .w_full()
         .h(px(if width >= 760.0 { (width * 0.36).clamp(260.0, 520.0) } else { 240.0 }))
@@ -1251,6 +1466,21 @@ fn workspace(player: &mut Player, cx: &mut Context<Player>) -> gpui::Div {
             (_, Some(error)) => div().p_3().text_xs().text_color(rgb(RED)).child(error.clone()).into_any_element(),
             (Some(path), None) => img(path).size_full().object_fit(ObjectFit::Contain).into_any_element(),
             (None, None) => note(if selected.is_some() { "Replaying to this draw…" } else { "" }).into_any_element(),
+        })
+        // Over the picture, so drawn after it.
+        .when_some(marked, |frame, ((left, top, width, height), colour, live)| {
+            frame.child(
+                div()
+                    .absolute()
+                    .left(px(left))
+                    .top(px(top))
+                    .w(px(width.max(2.0)))
+                    .h(px(height.max(2.0)))
+                    .border_1()
+                    .border_color(tint(colour, if live { 1.0 } else { 0.8 }))
+                    .bg(tint(colour, if live { 0.12 } else { 0.05 }))
+                    .shadow(glow(colour, 0.5)),
+            )
         })
         .when(!caption.is_empty(), |frame| {
             frame.child(div().absolute().left(px(8.0)).top(px(8.0)).px_1p5().py(px(1.0)).rounded(px(4.0)).bg(tint(0x000000, 0.65)).text_xs().text_color(rgb(TEXT)).child(caption))
@@ -1320,6 +1550,7 @@ fn workspace(player: &mut Player, cx: &mut Context<Player>) -> gpui::Div {
         (None, Some(number)) => note(format!("Reading draw {number}…")).into_any_element(),
         (Some(draw), Some(_)) => bound_resources(player, draw, cx).into_any_element(),
     };
+    let magnified = magnifier_card(player, cx);
     let state_card = draw.as_ref().zip(selected).map(|(draw, number)| card(format!("Draw {number}"), PURPLE).when_some(said.clone(), |card, said| card.child(div().text_xs().text_color(rgb(TEXT)).child(said))).child(state_of(draw)));
 
     let body = if width >= 1100.0 {
@@ -1329,16 +1560,16 @@ fn workspace(player: &mut Player, cx: &mut Context<Player>) -> gpui::Div {
             .flex()
             .gap_3()
             .child(div().w(px(310.0)).flex_none().child(navigator(player, tall, cx)))
-            .child(div().flex_1().min_w_0().flex().flex_col().gap_2().child(picture).child(table).children(state_card))
+            .child(div().flex_1().min_w_0().flex().flex_col().gap_2().child(picture).children(magnified).child(table).children(state_card))
             .child(div().w(px((width * 0.3).clamp(320.0, 520.0))).flex_none().flex().flex_col().gap_2().child(attachments_grid(player, 1, cx)).children(worth).children(story))
     } else if width >= 760.0 {
         div()
             .flex()
             .gap_3()
             .child(div().w(px(280.0)).flex_none().child(navigator(player, 560.0, cx)))
-            .child(div().flex_1().min_w_0().flex().flex_col().gap_2().children(worth).child(picture).children(story).child(attachments_grid(player, 2, cx)).child(table).children(state_card))
+            .child(div().flex_1().min_w_0().flex().flex_col().gap_2().children(worth).child(picture).children(magnified).children(story).child(attachments_grid(player, 2, cx)).child(table).children(state_card))
     } else {
-        div().flex().flex_col().gap_2().children(worth).child(navigator(player, 260.0, cx)).child(picture).children(story).child(attachments_grid(player, 2, cx)).child(table).children(state_card)
+        div().flex().flex_col().gap_2().children(worth).child(navigator(player, 260.0, cx)).child(picture).children(magnified).children(story).child(attachments_grid(player, 2, cx)).child(table).children(state_card)
     };
 
     let line = (!player.captures.events.is_empty()).then(|| timeline(player, cx));

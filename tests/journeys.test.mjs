@@ -167,7 +167,9 @@ async function slowFrame (context, page, programs)
 
     const fill = clipped.json.data.gpu_ms;
 
-    assert.ok(fill.with < fill.without * 0.5, `clipped ${fill.with} ms against ${fill.without} ms`);
+    // When the tool finds its readings unsteady (another page using the GPU), it says so, and
+    // only the direction of the change is held to.
+    assert.ok(fill.with < fill.without * (fill.steady ? 0.5 : 1), `clipped ${fill.with} ms against ${fill.without} ms (steady: ${fill.steady})`);
 
     // 3. What does the shader do for each pixel?
     const read = await scanline('shader_analysis', worst.shader);
@@ -240,7 +242,9 @@ async function slowFrameGpu (context, page)
     const clipped = await scanline('experiment', 'scissor_1px', '--frames', 30, '--json');
     const fill = clipped.json.data.gpu_ms;
 
-    assert.ok(fill.with < fill.without * 0.5, `clipped ${fill.with} ms against ${fill.without} ms`);
+    // When the tool finds its readings unsteady (another page using the GPU), it says so, and
+    // only the direction of the change is held to.
+    assert.ok(fill.with < fill.without * (fill.steady ? 0.5 : 1), `clipped ${fill.with} ms against ${fill.without} ms (steady: ${fill.steady})`);
 
     // 3. What does the shader do for each pixel?
     const read = await scanline('shader_analysis', pipeline);

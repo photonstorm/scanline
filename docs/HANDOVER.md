@@ -79,6 +79,8 @@ The new tests compare flat colours and whole numbers (stencil 7, a cleared colou
 
 ### What was run last
 
+On the Mac on 12 November 2026, after the magnifier and the fixes to regions and the canvas target: every group passed, `test:wgsl` to `test:webgpu` (`test:e2e` 57) in one `npm test`, and `test:journeys` to `test:app` run again after the slow-frame journey's timing comparison (held to its size only when the readings are steady, as the e2e one is) failed once while another page shared the GPU; and the app's unit tests (5).
+
 On the Mac on 12 November 2026, after the app's new look, the capture view and `attachments`: every group passed, `test:e2e` (57) and `test:wgsl` to `test:e2e` in one `npm test`, and `test:findings` (54) to `test:app` in a second run once b14 took the clearest of three timing runs (it had failed once while another page shared the GPU); and the app's unit tests (5).
 
 On the Mac on 12 November 2026, after quick captures, `emulate`, pointer lock in the app, sizes, sound and projects: `npm test` as one command passed, every group: the Rust unit tests (41), the type check, `test:wgsl` (10), `test:probe` (52), `test:bugs` (33), `test:e2e` (56), `test:findings` (54), `test:webgpu` (28), `test:journeys` (2), `test:protocol` (16), `test:security` (17, one of them Windows-only) and `test:package` (5), `test:app` (3); and the app's own unit tests (`cargo test` in app/, 5). Runs earlier the same day each failed one GPU timing comparison while another page shared the GPU; those now hold to the direction of a change, not its size, when the tool reports its readings unsteady.

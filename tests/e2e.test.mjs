@@ -864,6 +864,12 @@ describe('a G-buffer', () =>
         assert.deepEqual(await texel('tex_3'), [0, 0, 255, 255], 'normals');
         assert.match((await scanline('view', '--capture', capture, '--view', 'depth', '--at_draw', '3', '--target', 'fbo_2', '--x', '20', '--y', '60')).out, /Depth at \(20, 60\): 0\.5000000/);
 
+        // A region from the command line (it sends 70.0 for 70), and the canvas by name after
+        // an event that drew elsewhere: the canvas, not that event's target.
+        assert.match((await scanline('screenshot', '--capture', capture, '--at_draw', '3', '--target', 'tex_2', '--region', '70,50,20,20', '--zoom', '16')).out, /region x 70 y 50 20×20 pixels/);
+        assert.match((await scanline('pixels', '--capture', capture, '--at_draw', '3', '--target', 'tex_2', '--region', '78,58,4,1')).out, /y 58: \(255, 0, 0, 255\)×2 \(0, 0, 0, 255\)×2/);
+        assert.match((await scanline('screenshot', '--capture', capture, '--at_draw', '1', '--target', 'canvas')).out, /the canvas after event 1: region x 0 y 0 160×120 pixels/);
+
         // Depth alone, larger than the canvas: read at its own size.
         const shadow = await scanline('attachments', '--capture', capture, '--draw', '1', '--json');
 
