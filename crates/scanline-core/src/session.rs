@@ -146,6 +146,8 @@ pub struct State {
     pub next_request: u32,
     /// The context the flight recorder is running on, while it runs.
     pub recorder: Option<ContextRef>,
+    /// A video under way (video(action: "start")), and when it began.
+    pub video: Option<std::time::Instant>,
     /// The browser's name for the probe script it runs in every new document of the page.
     probe_script: Option<String>,
     /// The control strip's protocol session, while its window is open.

@@ -617,6 +617,92 @@ fn runs(numbers: &[u64]) -> String {
 }
 
 /// A recording: its frames, how they differ from one another, and a sheet of small pictures.
+/// A video of the page as it plays. start: the flight recorder keeps the last `frames`
+/// (default 600, ten seconds at sixty a second). stop: the page is frozen, the frames become
+/// a recording and its WebM is written, and the page runs on.
+pub async fn video(host: &Arc<Host>, session: &Arc<Session>, params: &Value) -> Result<Value> {
+    match params["action"].as_str().unwrap_or("") {
+        "start" => {
+            if session.state.lock().unwrap().video.is_some() {
+                bail!("A video is already being recorded. video(action: \"stop\") ends it.");
+            }
+
+            let context = choose_context(session, params).await?;
+            let frames = params["frames"].as_u64().unwrap_or(600).clamp(30, 600);
+
+            session.probe(&context.instance, "record.start", json!({ "context": context.local, "frames": frames }), SHORT).await?;
+
+            {
+                let mut state = session.state.lock().unwrap();
+
+                state.recorder = Some(context.clone());
+                state.video = Some(std::time::Instant::now());
+            }
+
+            Ok(result(
+                format!(
+                    "Recording a video of {}: the last {frames} frames are kept as the page runs. video(action: \"stop\") ends it and writes the file.",
+                    context.handle
+                ),
+                json!({ "recording": true, "frames": frames }),
+            ))
+        }
+        "stop" => {
+            let started = session.state.lock().unwrap().video.take();
+
+            let Some(started) = started else {
+                bail!("No video is being recorded. video(action: \"start\") begins one.");
+            };
+
+            let _busy = session.begin("video", "Freezing the page and keeping its frames");
+            let mut frozen_params = params.clone();
+
+            frozen_params["by"] = json!("video");
+
+            let frozen = debug(host, session, &frozen_params).await;
+            let frozen = match frozen {
+                Ok(frozen) => frozen,
+                Err(error) => {
+                    session.probe_all("resume", json!({}), SHORT).await;
+                    return Err(error);
+                }
+            };
+            let handle =
+                frozen["data"]["recording"].as_str().map(str::to_string).ok_or_else(|| anyhow!("The flight recorder kept no frames, so there is no video."))?;
+
+            session.stage("Making the video");
+
+            let made = recording(host, &json!({ "session": session.id, "recording": handle, "video": true })).await;
+
+            // The page runs on, as it was before the video stopped.
+            session.probe_all("resume", json!({}), SHORT).await;
+
+            let made = made?;
+            let path = made["data"]["video"]["path"].as_str().map(str::to_string);
+            let seconds = started.elapsed().as_secs_f64();
+
+            Ok(result(
+                match &path {
+                    Some(path) => {
+                        format!("The video is {path}: {} frames of {handle} (recorded for {seconds:.0} s). The page runs on.", frozen["data"]["frames"])
+                    }
+                    None => format!(
+                        "{handle} holds the frames, but no video could be made: {}",
+                        made["summary"]
+                            .as_str()
+                            .unwrap_or("")
+                            .lines()
+                            .find(|line| line.contains("video") || line.contains("pictures"))
+                            .unwrap_or("the reason was not given.")
+                    ),
+                },
+                json!({ "video": path, "recording": handle, "capture": frozen["data"]["capture"], "frames": frozen["data"]["frames"], "seconds": seconds }),
+            ))
+        }
+        other => bail!("video takes action: \"start\" or \"stop\", not \"{other}\"."),
+    }
+}
+
 pub async fn recording(host: &Arc<Host>, params: &Value) -> Result<Value> {
     if params["recording"].is_null() {
         let known = host.store.recordings();

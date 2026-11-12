@@ -545,6 +545,17 @@ pub const TOOLS: &[Tool] = &[
         read_only: false,
     },
     Tool {
+        name: "video",
+        description: "A video of the page as it plays. action: \"start\" keeps the last frames (default 600, ten seconds) while it runs; \"stop\" freezes it, writes the frames as a WebM file and a recording, and lets it run on. Returns the file's path.",
+        schema: schema!(
+            r#"["action"]"#,
+            session!(),
+            r#""action": { "type": "string", "enum": ["start", "stop"] }"#,
+            r#""frames": { "type": "integer", "description": "With start: how many of the last frames to keep, 30 to 600. Default 600." }"#,
+        ),
+        read_only: false,
+    },
+    Tool {
         name: "recording",
         description: "A flight recording: the frames kept before Debug was pressed. Says how many events each frame issued, which frames' pictures differ from the one before, and returns a contact sheet of every frame; video: true also writes the frames as a WebM file. With no handle, lists the recordings on disk. capture(recording, frame) makes one frame a capture.",
         schema: schema!(

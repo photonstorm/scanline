@@ -411,6 +411,7 @@ pub async fn status(session: &Arc<Session>) -> Result<Value> {
         "headless": session.headless,
         "display": session.display,
         "app_show": session.state.lock().unwrap().app_show.clone(),
+        "video_seconds": session.state.lock().unwrap().video.map(|started| started.elapsed().as_secs_f64()),
         "owner": session.state.lock().unwrap().owner.clone(),
         "request": session.state.lock().unwrap().request.as_ref().map(|request| json!({ "id": request.id, "instruction": request.instruction })),
         "paused": top["paused"],
