@@ -1,6 +1,6 @@
 # The Scanline app
 
-A design for Scanline as a desktop application: one window holding the game and everything Scanline knows about it, for a person working alone or beside an agent. Written 12 November 2026. Nothing here is built yet, apart from the prototype in stage 0 once it exists.
+A design for Scanline as a desktop application: one window holding the game and everything Scanline knows about it, for a person working alone or beside an agent. Written 12 November 2026. Stage 0, the prototype, is built and passed on the Mac ([prototypes/app](../prototypes/app/README.md); results in [spikes/RESULTS.md](spikes/RESULTS.md), "The desktop app prototype"). Nothing else is built.
 
 ## 1. What it is for
 
@@ -52,7 +52,7 @@ Rejected, with reasons, in the research of 11 November 2026: WKWebView (it is Sa
 ```
 
 - **The host is its own process.** In CEF the Chromium browser process is the application, and Chromium deliberately ends it when the GPU process crashes too often (02-ARCHITECTURE.md, section 2.2). So the app can die; the host must not. When the app dies the host records it as a crash of the session's browser, as it does today, keeps every capture and recording, and relaunches the app at the same page if asked.
-- **The host drives the app's Chromium exactly as it drives a launched Chrome.** Two ways, and stage 0 decides between them:
+- **The host drives the app's Chromium exactly as it drives a launched Chrome.** Two ways were possible; stage 0 showed the first works, so it is the design:
   1. The host starts the app with `--remote-debugging-pipe`, as it starts Chrome now. If CEF honours the switch in its browser process, the host's protocol client works unchanged and the app is, to the host, one more browser binary.
   2. Otherwise the app relays: it calls CEF's `SendDevToolsMessage` and passes the `AddDevToolsMessageObserver` stream back to the host over the control channel. The host's protocol client takes any reader and writer (`scanline-cdp`, `Client::new`), so this is a new transport, not new logic.
   Either way the protocol never listens on a port.
@@ -94,7 +94,15 @@ Rejected, with reasons, in the research of 11 November 2026: WKWebView (it is Sa
 
 **The capture workspace**: the draw list (each draw with the box it changed, and "changed nothing" marked), the target as it stood after the selected draw, and for that draw its state, shaders, uniforms or bind groups with values, bound textures and vertices. Pixel history on click. Compare two captures side by side. The "Worth a look" list first, as in the command line. A capture opens in its own window when wanted, and a capture file (`export`) opens the app when double-clicked.
 
-**Look**: dark and light themes from the system, a dense profiler layout with clear type, and graphs that are drawn, not imaged. A visual direction (applications whose interfaces to learn from) will be added here once chosen.
+**Look**: graphs that are drawn, not imaged, in a dense profiler layout with clear type. The owner's reference, 12 November 2026, is the system monitor TMOG (tmog.org): learn from it, do not copy it.
+
+- A near-black window with panels as rounded cards, each card tinted faintly with its own colour and edged with a thin line of it: frame time green, GPU time blue, memory purple, textures amber, errors red.
+- Segmented meters, like the lights of a hardware level meter, for anything with a ceiling (GPU memory against a budget, frame time against 16.7 ms, draws against the frame's worst), lit segments glowing and unlit ones a dim trace of the same colour.
+- Line graphs with a faint grid, the line glowing, its area filled with a fading tint, and a marker at the current value.
+- A large, light display face for panel titles; a compact face with tabular figures for numbers, so columns of values do not jitter.
+- Tables with alternate rows barely shaded and the selected row in the panel's colour.
+- A sidebar of sections (Live, Resources, Captures, Console, Agent) with icons, the current one highlighted, in place of tabs once there is room; a status bar along the bottom with a health light, the frame number and the session's clock.
+- Dark first. A light theme follows the system later.
 
 ## 7. Agents and the person together
 

@@ -1,0 +1,18 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Workers: does the protocol reach them?</title>
+<style>body { margin: 0; padding: 2em; background: #050608; color: #d8dde4; font: 15px/1.5 -apple-system, sans-serif; }</style>
+<h1>Workers</h1>
+<p>Starts a dedicated worker and a shared worker. The panel's "attached targets" says which ones <code>Target.setAutoAttach</code> reached.</p>
+<pre id="out"></pre>
+<script>
+const out = document.getElementById('out');
+const say = (text) => { out.textContent += text + '\n'; console.log(text); };
+const code = (kind) => URL.createObjectURL(new Blob([`
+    const hello = () => '${kind} worker running';
+    ${kind === 'shared' ? 'onconnect = (e) => e.ports[0].postMessage(hello());' : 'postMessage(hello());'}
+`], { type: 'text/javascript' }));
+new Worker(code('dedicated')).onmessage = (e) => say(e.data);
+const shared = new SharedWorker(code('shared'));
+shared.port.onmessage = (e) => say(e.data);
+</script>

@@ -13,7 +13,7 @@ Read this first, then [DEPARTURES.md](DEPARTURES.md) (what was built and how it 
 - **On the PC the suite has not been run since the four pieces of work in section 1**, which change code both platforms share.
 - Every milestone of the build plan up to 1.0 is worked through, and from the list for after 1.0: the Babylon.js and PlayCanvas adapters, the native-capture profile, assertions for a test run, a recording as a video, and "Send to agent".
 - **Nothing has been compiled or run on Linux.**
-- **A desktop app is designed, not built**: [APP.md](APP.md). One window with the game in an embedded Chromium (CEF) and native panels (GPUI), the host kept as its own process. Its stage 0 prototype comes first.
+- **A desktop app is designed** ([APP.md](APP.md)): one window with the game in an embedded Chromium (CEF) and native panels (GPUI), the host kept as its own process. Its stage 0 prototype ([prototypes/app](../prototypes/app/README.md)) is built and passed on the Mac on 12 November 2026. **On the PC it does not build yet**: `src/mac.rs` and CEF's library loader are macOS only, so test 7 needs a Windows twin of `mac.rs` (the browser's HWND as a child of GPUI's, placed the same way) and the Windows CEF (175 MB), with cmake and ninja.
 - The specification is not in this repository. It is in the `render-debugger/` folder of the `render-debugger-spec` branch of the `v3-gameblocks` repository, which is pushed. Read it there. Do not edit it and do not copy it here.
 
 ## How to work in this repository

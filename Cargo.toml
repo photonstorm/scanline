@@ -1,5 +1,7 @@
 [workspace]
 resolver = "3"
+# The desktop app prototype builds on its own (docs/APP.md, stage 0).
+exclude = ["prototypes"]
 members = [
     "crates/scanline-cdp",
     "crates/scanline-browser",

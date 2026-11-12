@@ -175,3 +175,33 @@ Run-to-run spread of the baseline was 0.02–0.08 ms (1.2 ms for the 10,000-draw
 - The generated wrappers pass `arguments` straight to the native function, so argument counts are exactly what the page gave.
 
 **Not tested.** `record` level (not built yet). An integrated GPU, Windows.
+
+## The desktop app prototype (APP.md, stage 0)
+
+Run on 12 November 2026 on macOS 27.2, Apple M6, a 60 Hz display. The prototype is in [prototypes/app](../../prototypes/app/README.md): GPUI 0.2.2 and CEF 156.0.26 (Chromium 156.0.8078.88) through the `cef` crate 156.4.0, with the browser as a native child view (Alloy style) of the GPUI window, and the protocol in process through `SendDevToolsMessage`. Chrome 157.0.8103.50 for comparison.
+
+**It works.** The owner used it by hand for some time, on the fixtures and on a WebGL game on the web, and found it fast.
+
+| Test | Result |
+|---|---|
+| 1. The view | **Pass by hand on the Mac.** The game sits in the rectangle GPUI lays out for it, at Retina resolution; typing goes to the address bar when it is clicked and to the game when it is. Moving between displays not tried. |
+| 2. The protocol | **Pass, both ways.** In process: `Runtime`, `Page` (including `addScriptToEvaluateOnNewDocument`), `Target.setAutoAttach`, `Emulation`, `Browser.getVersion` and `Page.captureScreenshot` all work, round trips of 4–5 ms with the 4 ms pump. `SystemInfo` is refused ("only supported on the browser target"). **Over a pipe: the app's executable started with `--remote-debugging-pipe` gives the full browser-level protocol on file descriptors 3 and 4, exactly as Chrome does**: Scanline's spike library drove it unchanged, `SystemInfo.getProcessInfo` included, and browser-level auto-attach reached the page and a shared worker. |
+| 3. Timing | **Pass: the same as Chrome.** Mean frame gap and spread over 6 s, window the same size: start page 16.67 ms ± 0.48 (Chrome ± 0.55), three.js WebGL ± 0.50 (± 0.49), three.js WebGPU ± 0.50 (± 0.51); worst gaps 17.8–17.9 ms in both. |
+| 4. Crashing | **As the specification predicted.** Each killed GPU process was replaced and WebGL kept working; at the **sixth** kill Chromium ended the browser process, which is the app, with SIGTRAP. `chrome://gpucrash` does nothing when navigated to over the protocol. |
+| 5. Scrolling | Not measured. The 10,000-row list scrolled smoothly by hand; the window tool could not reach a second copy to measure the frame rate while scrolling. |
+| 6. Cost | First game frame 0.39 s after start. Seven processes, 787 MB resident with a heavy WebGL game loaded (GPU 143 MB, renderer 238 MB, utility 197 MB, the app about 210 MB). The bundle is 582 MB in a debug build: CEF's framework is 327 MB, and each of the six copies of the executable 43 MB (one executable would do, with the helpers linked to it). |
+| 7. Windows | Not run. |
+
+What it decides for the design:
+
+- **The host drives the app over `--remote-debugging-pipe`**, option 1 in APP.md section 4. No relay and no change to the host's protocol client: to the host the app is one more browser binary.
+- **The host stays its own process.** Test 4 shows the app can be taken down by the page's GPU trouble, as Chromium intends.
+- The in-process protocol is still there for the app's own panels if they ever need it, but the panels should go through the host (principle 2).
+
+What it learned on the way:
+
+- GPUI's application class has to be taught Chromium's `CrAppControlProtocol` (`isHandlingSendEvent`, `setHandlingSendEvent:`, and a `sendEvent:` that sets it) before either toolkit starts. Done at run time with the Objective-C runtime; about 60 lines.
+- With `external_message_pump`, every CEF callback arrives on GPUI's main thread. The prototype pumps on a 4 ms timer instead of honouring `OnScheduleMessagePumpWork`; the app proper should honour it.
+- The browser's view is a sibling of GPUI's view in the window's content view, placed by hand each turn of the pump; CEF does not follow GPUI's layout by itself.
+- Two copies sharing a cache directory do not both start: Chromium hands the second to the first.
+- Building needs cmake and ninja (CEF's C++ wrapper) and, unless GPUI compiles its shaders at run time, full Xcode for the Metal compiler.

@@ -1,0 +1,39 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Scanline prototype</title>
+<style>
+    body { margin: 0; height: 100vh; display: grid; place-items: center; background: #050608; color: #d8dde4; font: 15px/1.5 -apple-system, sans-serif; }
+    main { max-width: 34em; }
+    h1 { font-weight: 300; font-size: 28px; color: #4ade80; }
+    a { color: #60a5fa; }
+    canvas { display: block; margin: 1em 0; border-radius: 6px; }
+</style>
+<main>
+    <h1>Scanline prototype</h1>
+    <p>This page runs in the app's embedded Chromium. The spinning square is WebGL, so the frame rate panel has something to count.</p>
+    <canvas id="game" width="480" height="160"></canvas>
+    <p>Try a fixture from the panel on the right, or type an address above.</p>
+</main>
+<script>
+const gl = document.getElementById('game').getContext('webgl');
+const program = gl.createProgram();
+const shader = (type, source) => { const s = gl.createShader(type); gl.shaderSource(s, source); gl.compileShader(s); gl.attachShader(program, s); };
+shader(gl.VERTEX_SHADER, 'attribute vec2 p; uniform float t; void main() { float c = cos(t), s = sin(t); gl_Position = vec4(mat2(c, -s, s, c) * p * vec2(0.33, 1.0), 0.0, 1.0); }');
+shader(gl.FRAGMENT_SHADER, 'precision mediump float; void main() { gl_FragColor = vec4(0.29, 0.87, 0.5, 1.0); }');
+gl.linkProgram(program);
+gl.useProgram(program);
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-0.5, -0.5, 0.5, -0.5, -0.5, 0.5, 0.5, 0.5]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+const t = gl.getUniformLocation(program, 't');
+const frame = (time) => {
+    gl.clearColor(0.02, 0.024, 0.03, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.uniform1f(t, time / 1000);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    requestAnimationFrame(frame);
+};
+requestAnimationFrame(frame);
+console.log('start page running');
+</script>

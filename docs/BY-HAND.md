@@ -227,6 +227,14 @@ node evals/run.mjs --agent 'claude -p --mcp-config /path/to/mcp.json --allowedTo
 - [ ] One answer is written to `evals/results/<today>/b03.txt`, and the line printed says whether it was correct and in how many calls.
 - [ ] Without `--bugs`, all twenty-nine run, one after another, and `scores.json` holds the round.
 
+## The desktop app prototype
+
+[prototypes/app](../prototypes/app/README.md). On the Mac, already done by hand on 12 November 2026: it runs games and is fast. Still to look at:
+
+- Drag the window to another display, and between a Retina and a non-Retina one if there is one: the game stays in its rectangle and sharp.
+- Scroll the 10,000-row list hard while a game runs: the game's frame rate in the panel does not drop.
+- Full screen (the green button): the game's view follows.
+
 ## On Windows
 
 Everything above applies on a PC as well, and none of it has been looked at there: the tests run with no window on screen. Set-up, in PowerShell, from the repository:
