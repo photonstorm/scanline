@@ -9,7 +9,7 @@ Read this first, then [DEPARTURES.md](DEPARTURES.md) (what was built and how it 
 - Everything is on `main` at github.com/photonstorm/scanline.
 - It builds and runs on two machines: the Mac (Apple silicon, Chrome 157, Metal) and the PC (Windows 11, x64, an NVIDIA RTX 3080 Ti, Chrome 157, Direct3D).
 - On the PC every group of the suite passed on the last build: 265 tests in ten groups and 40 Rust unit tests, none failing. They were run a group at a time, some before the last push and the rest straight after it, and not as one `npm test`. Both slow-frame journeys passed with their timing comparison reported and not asserted: see "Things learned the hard way".
-- On the Mac the whole suite passed on the last build: `npm test` as one command, 267 tests in ten groups and 41 Rust unit tests, none failing, with the slow-frame journeys' timing asserted. The Mac's release archive (`dist/scanline-0.0.1-macos-arm64.tar.gz`) was rebuilt from it.
+- On the Mac the whole suite passed on the last build: `npm test` as one command, now eleven groups with `test:app`, none failing (section 1, "What was run last"). The Mac's release archive (`dist/scanline-0.0.1-macos-arm64.tar.gz`) was rebuilt from it.
 - **On the PC the suite has not been run since the four pieces of work in section 1**, which change code both platforms share.
 - Every milestone of the build plan up to 1.0 is worked through, and from the list for after 1.0: the Babylon.js and PlayCanvas adapters, the native-capture profile, assertions for a test run, a recording as a video, and "Send to agent".
 - **Nothing has been compiled or run on Linux.**
@@ -78,6 +78,8 @@ npm test
 The new tests compare flat colours and whole numbers (stencil 7, a cleared colour, 4,800 pixels changed), so they should not need the two-value allowance. If one does, use `assertPixel` in `tests/host.mjs`.
 
 ### What was run last
+
+On the Mac on 12 November 2026, after the Scanline app was built (which changed the host: `display`, who asked, `viewer` and `open_strip` in an app session, the app's exit watcher): `npm test` as one command passed on `20a2c45`, every group, `test:app` (3) and `test:security` (17, one of them Windows-only) included. On the last commits a second run passed every group except one timing comparison in `test:e2e` ("an experiment measures a change and takes it away again", on `fixtures/slow/webgpu.html`), whose readings were not steady; it passed twice when run again on its own, and the groups after it were run and passed.
 
 On the Mac on 11 November 2026, on `86a2795`: `npm test` as one command passed. The Rust unit tests (41), the type check, `test:wgsl` (10), `test:probe` (52), `test:bugs` (33), `test:e2e` (52), `test:findings` (54), `test:webgpu` (28), `test:journeys` (2), `test:protocol` (16), `test:security` (15) and `test:package` (5). About seven minutes of tests.
 
