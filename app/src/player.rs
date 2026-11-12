@@ -120,7 +120,14 @@ fn default_home() -> PathBuf {
 fn to_desktop(source: &std::path::Path, what: &str) -> Option<PathBuf> {
     let desktop = PathBuf::from(std::env::var_os("HOME")?).join("Desktop");
     let extension = source.extension()?.to_string_lossy().to_string();
-    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
+    // The local date and time, as the system's own screenshots are named.
+    let stamp = std::process::Command::new("date")
+        .arg("+%Y-%m-%d at %H.%M.%S")
+        .output()
+        .ok()
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+        .filter(|stamp| !stamp.is_empty())
+        .unwrap_or_else(|| std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|since| since.as_secs().to_string()).unwrap_or_default());
     let target = desktop.join(format!("Scanline {what} {stamp}.{extension}"));
 
     std::fs::copy(source, &target).ok()?;

@@ -164,21 +164,42 @@ pub fn render(player: &mut Player, _window: &mut Window, _cx: &mut Context<Playe
     );
 
     let empty = player.session().is_none();
+    let wide = player.panel_px >= 780.0;
 
     crate::panels::frame(
         "live",
         "Live",
         GREEN,
-        div()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .when(empty, |content| content.child(note("This window has no session, so there is nothing to measure.")))
-            .child(levels)
-            .child(frame_time)
-            .child(times)
-            .child(work)
-            .child(memory)
-            .child(objects),
+        if wide {
+            // Two columns when there is room: timing on the left, work and memory on the right.
+            div()
+                .flex()
+                .gap_2()
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .when(empty, |content| content.child(note("This window has no session, so there is nothing to measure.")))
+                        .child(levels)
+                        .child(frame_time)
+                        .child(times),
+                )
+                .child(div().flex_1().min_w_0().flex().flex_col().gap_2().child(memory).child(work).child(objects))
+        } else {
+            div()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .when(empty, |content| content.child(note("This window has no session, so there is nothing to measure.")))
+                .child(levels)
+                .child(frame_time)
+                .child(times)
+                .child(work)
+                .child(memory)
+                .child(objects)
+        },
     )
 }
