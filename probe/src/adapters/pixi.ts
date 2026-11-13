@@ -11,6 +11,7 @@
 // instruction that follows it.
 
 import { provideEngineState } from '../protocol';
+import { provideWatchable, type Watchable } from '../watch';
 import { G } from '../natives';
 import { adapter as register } from './index';
 import { announce, around, fail, newAdapter, note, short, type Adapter } from './wrap';
@@ -359,6 +360,30 @@ function install (): void
             if (app)
             {
                 apps.push(new G.WeakRef(app));
+                provideWatchable('PixiJS', () =>
+                {
+                    const out: Watchable[] = [];
+
+                    apps.forEach((reference) =>
+                    {
+                        const stage = reference.deref()?.stage;
+                        const walk: Array<[any, string]> = stage ? [[stage, 'stage']] : [];
+
+                        while (walk.length > 0 && out.length < 5000)
+                        {
+                            const [object, path] = walk.shift()!;
+
+                            if (object !== stage)
+                            {
+                                out.push({ path, name: short(object.label ?? '', 60), type: short(object.constructor?.name ?? 'Container', 40), kind: 'sprite', object });
+                            }
+
+                            (object.children ?? []).forEach((child: any, place: number) => walk.push([child, `${path}/${short(child.label || `${child.constructor?.name ?? 'Container'}#${place}`, 60)}`]));
+                        }
+                    });
+
+                    return out;
+                });
             }
 
             announce(adapter);

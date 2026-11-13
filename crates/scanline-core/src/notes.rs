@@ -236,6 +236,10 @@ fn describe(note: &Value) -> (String, Vec<Value>) {
         lines.push(format!("Audio then: {playing} source{} playing; {}. audio(view: \"playing\") reads it now.", if playing == 1 { "" } else { "s" }, levels.join(", ")));
     }
 
+    if let Some(path) = note["clip"]["path"].as_str() {
+        lines.push(format!("The last {:.1} s of sound before it: {path}", note["clip"]["seconds"].as_f64().unwrap_or(0.0)));
+    }
+
     let images = [("marked", "the frame with the person's marks"), ("original", "the frame as it was")]
         .iter()
         .filter_map(|(key, what)| note["pictures"][key].as_str().map(|path| json!({ "view": path, "original": path, "label": what })))
@@ -287,6 +291,11 @@ async fn make(host: &Arc<Host>, session: &Arc<Session>, params: &Value) -> Resul
     };
     let captured_frame = capture.as_ref().map(|taken| taken["data"]["frame"].clone()).unwrap_or(Value::Null);
     let capture = capture.and_then(|taken| taken["data"]["capture"].as_str().map(str::to_string));
+    // The last seconds of sound, when audio is being kept (audio_clip(record: true)).
+    let clip = match crate::audio::clip_bytes(session, 10.0).await {
+        Ok(Some((bytes, about))) => std::fs::write(folder.join("audio.wav"), bytes).ok().map(|_| json!({ "path": folder.join("audio.wav"), "seconds": about["seconds"], "peak": about["peak"] })),
+        _ => None,
+    };
     let request = session.state.lock().unwrap().request.as_ref().map(|request| request.id.clone());
     let made = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |since| since.as_secs());
 
@@ -305,6 +314,7 @@ async fn make(host: &Arc<Host>, session: &Arc<Session>, params: &Value) -> Resul
         "take": take,
         "watches": watches,
         "audio": audio,
+        "clip": clip,
         "request": request,
     });
 

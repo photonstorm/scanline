@@ -12,6 +12,7 @@
 // batch was flushed.
 
 import { provideEngineState } from '../protocol';
+import { provideWatchable, type Watchable } from '../watch';
 import { G } from '../natives';
 import { adapter as register } from './index';
 import { announce, around, fail, newAdapter, note, ownerOf, short, watch, type Adapter } from './wrap';
@@ -336,6 +337,26 @@ function wrapRenderer (adapter: Adapter, renderer: any, version: string): void
     announce(adapter);
 
     const game = renderer.game;
+
+    // Each scene's display list, by scene key and the object's name (or type and place).
+    provideWatchable('Phaser', () =>
+    {
+        const out: Watchable[] = [];
+
+        for (const scene of game?.scene?.scenes ?? [])
+        {
+            const key = short(scene.sys?.settings?.key ?? 'scene', 40);
+
+            (scene.sys?.displayList?.list ?? []).slice(0, 5000).forEach((object: any, place: number) =>
+            {
+                const type = short(object.type ?? 'GameObject', 40);
+
+                out.push({ path: `${key}/${short(object.name || `${type}#${place}`, 60)}`, name: short(object.name ?? '', 60), type, kind: 'sprite', object });
+            });
+        }
+
+        return out;
+    });
 
     provideEngineState('Phaser', () =>
     {

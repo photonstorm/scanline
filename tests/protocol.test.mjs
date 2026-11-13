@@ -9,7 +9,7 @@
 
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, afterEach, before, describe, test } from 'node:test';
@@ -704,4 +704,63 @@ describe('notes (docs/GAME.md, section 6)', () =>
         assert.match((await scanline('note')).out, /A note needs text or marks/);
         assert.match((await scanline('note', 'note_999')).out, /There is no note "note_999"/);
     });
+});
+
+describe('audio clips (docs/GAME.md, A6)', () =>
+{
+    test('a clip of the fixture\'s tone is the tone', async () =>
+    {
+        await scanline('launch', server.url('fixtures/protocol/audio.html'), '--headless');
+        assert.match((await scanline('audio_clip')).out, /Audio is not being kept/);
+        assert.match((await scanline('audio_clip', '--record', 'true')).out, /Keeping the last 10 s of what 1 context plays/);
+        await scanline('eval', 'new Promise((done) => setTimeout(done, 2500))');
+
+        const clip = await scanline('audio_clip', '--seconds', 2, '--json');
+        const file = readFileSync(clip.json.data.path);
+        const rate = file.readUInt32LE(24);
+        const left = [];
+
+        for (let at = 44; at + 4 <= file.length; at += 4)
+        {
+            left.push(file.readInt16LE(at) / 32768);
+        }
+
+        const peak = Math.max(...left.map(Math.abs));
+        let crossings = 0;
+
+        for (let index = 1; index < left.length; index++)
+        {
+            crossings += left[index - 1] < 0 && left[index] >= 0 ? 1 : 0;
+        }
+
+        assert.equal(file.toString('ascii', 0, 4), 'RIFF');
+        assert.ok(Math.abs(left.length / rate - 2) < 0.1, `${left.length / rate} s`);
+        assert.ok(Math.abs(20 * Math.log10(peak) - 20 * Math.log10(0.5)) < 1, `peak ${peak}`);
+        assert.ok(Math.abs(crossings / (left.length / rate) - 440) < 5, `${crossings / (left.length / rate)} Hz`);
+    });
+});
+
+describe('watchable engine objects (docs/GAME.md, W3)', () =>
+{
+    for (const [page, path, line] of [
+        ['three', 'scene0/GreenCube', /«scene0\/GreenCube» \(the three\.js Mesh\): «position\.x» = 0, «position\.y» = [\d.]+/],
+        ['phaser', 'default/Mover', /«default\/Mover» \(the Phaser Rectangle\): «x» = [\d.]+, «y» = [\d.]+/]
+    ])
+    {
+        test(`${page}: the engine's objects are listed and watched with no change to the page`, async () =>
+        {
+            await opened(`fixtures/engines/${page}.html`, 10);
+
+            const listed = await scanline('watchable');
+
+            assert.match(listed.out, new RegExp(`«${path.replace('/', '\\/')}»`), listed.out);
+
+            const watched = await scanline('watch', '--object', path);
+
+            assert.match(watched.out, line, watched.out);
+            await scanline('step', 5);
+            assert.match((await scanline('watches', path)).out, line);
+            assert.match((await scanline('watch', '--object', 'nowhere/Nothing')).out, /Not watched: no object at nowhere\/Nothing/);
+        });
+    }
 });

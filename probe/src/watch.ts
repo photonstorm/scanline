@@ -36,7 +36,7 @@ interface Broken
 interface Watch
 {
     name: string;
-    source: 'expression' | 'page';
+    source: 'expression' | 'page' | 'engine';
     expr?: string;
     kind?: string;
     read: () => unknown;
@@ -463,7 +463,7 @@ function add (watch: Watch): Watch
     return watch;
 }
 
-function blank (name: string, source: 'expression' | 'page', read: () => unknown): Watch
+function blank (name: string, source: 'expression' | 'page' | 'engine', read: () => unknown): Watch
 {
     return {
         name, source, read, props: null, depth: 1, rules: [], frames: [], rows: [], last: null, broken: [], breaking: new G.Set(), error: null, added: currentFrame()
@@ -473,7 +473,49 @@ function blank (name: string, source: 'expression' | 'page', read: () => unknown
 // ---- What a page's objects commonly have ----
 
 const SPRITE = ['x', 'y', 'rotation', 'angle', 'scale.x', 'scale.y', 'scaleX', 'scaleY', 'alpha', 'visible', 'frame.name', 'texture.label', 'body.velocity.x', 'body.velocity.y', 'velocity.x', 'velocity.y', 'vx', 'vy'];
-const OBJECT3D = ['position.x', 'position.y', 'position.z', 'rotation.x', 'rotation.y', 'rotation.z', 'scale.x', 'scale.y', 'scale.z', 'visible'];
+const OBJECT3D = ['position.x', 'position.y', 'position.z', 'rotation.x', 'rotation.y', 'rotation.z', 'scale.x', 'scale.y', 'scale.z', 'scaling.x', 'scaling.y', 'scaling.z', 'localPosition.x', 'localPosition.y', 'localPosition.z', 'visible', 'isVisible', 'enabled'];
+
+// ---- What the engines offer (W3) ----
+
+export interface Watchable { path: string; name: string; type: string; kind: 'sprite' | 'object3d'; object: unknown }
+
+const engines = new G.Map() as Map<string, () => Watchable[]>;
+
+// An engine adapter offers its scene's objects, by a path through the scene.
+export function provideWatchable (engine: string, list: () => Watchable[]): void
+{
+    engines.set(engine, list);
+}
+
+function watchable (filter: string): Array<Watchable & { engine: string }>
+{
+    const wanted = filter.toLowerCase();
+    const out: Array<Watchable & { engine: string }> = [];
+
+    for (const [engine, list] of engines)
+    {
+        let found: Watchable[] = [];
+
+        try
+        {
+            found = list();
+        }
+        catch
+        {
+            continue;
+        }
+
+        for (const item of found)
+        {
+            if (!wanted || item.path.toLowerCase().includes(wanted) || item.type.toLowerCase().includes(wanted))
+            {
+                out.push({ ...item, engine });
+            }
+        }
+    }
+
+    return out;
+}
 
 // The paths of a kind that this object has.
 function present (object: unknown, paths: string[]): string[]
@@ -564,6 +606,58 @@ export function watchSummary (): Record<string, unknown> | null
 export function installWatches (): void
 {
     onFrameCheck(readAll);
+
+    expose('watch.watchable', (args: { filter?: string; limit?: number }) =>
+    {
+        const all = watchable(G.String(args.filter ?? ''));
+        const limit = G.Math.max(1, G.Math.min(1000, args.limit ?? 200));
+
+        return { engines: [...engines.keys()], total: all.length, objects: all.slice(0, limit).map((item) => ({ path: item.path, name: item.name, type: item.type, kind: item.kind, engine: item.engine })) };
+    });
+
+    expose('watch.object', (args: { path: string; name?: string; props?: string[]; rules?: unknown; break?: boolean }) =>
+    {
+        const all = watchable('');
+        const item = all.find((candidate) => candidate.path === args.path);
+
+        if (!item)
+        {
+            const near = watchable(G.String(args.path ?? '').split('/').pop() ?? '').slice(0, 8).map((candidate) => candidate.path);
+
+            return { refused: `no object at ${cut(args.path, 120)}${near.length ? `; near it: ${near.join(', ')}` : ''}` };
+        }
+
+        // Read through a weak reference: watching an object does not keep it alive.
+        const ref = new G.WeakRef(item.object);
+        const watch = blank(cut(args.name ?? item.path, 80), 'engine', () =>
+        {
+            const object = ref.deref();
+
+            if (object === undefined)
+            {
+                throw new G.Error('the object is gone from the scene');
+            }
+
+            return object;
+        });
+
+        watch.kind = `${item.engine} ${item.type}`;
+        watch.props = propsFrom(args.props) ?? present(item.object, item.kind === 'sprite' ? SPRITE : OBJECT3D);
+        watch.rules = rulesFrom(args.rules, args.break === true);
+
+        try
+        {
+            add(watch);
+        }
+        catch (error: any)
+        {
+            return { refused: cut(error?.message ?? error, 200) };
+        }
+
+        watch.last = readValues(watch);
+
+        return describe(watch, 0);
+    });
 
     expose('watch.add', (args: { expr: string; name?: string; props?: string[]; depth?: number; rules?: unknown; break?: boolean }) =>
     {

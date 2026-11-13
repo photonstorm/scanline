@@ -13,6 +13,7 @@ import { disguise, patch } from './masquerade';
 import { declare } from './mods';
 import { G, nAddEventListener, nDefineProperty, nSetTimeout, type Fn } from './natives';
 import { emit, expose } from './transport';
+import { base64 } from './readback';
 
 interface NodeInfo
 {
@@ -78,6 +79,7 @@ const clipped = new G.Set() as Set<string>;
 
 const counter = { node: 0, context: 0, buffer: 0, media: 0, patch: 0 };
 let nativeConnect: Fn | null = null;
+let nativeCreateScript: Fn | null = null;
 let nativeDisconnect: Fn | null = null;
 let installed = false;
 
@@ -578,6 +580,8 @@ function installGraph (): void
 
     if (typeof Base === 'function')
     {
+        nativeCreateScript = typeof Base.prototype.createScriptProcessor === 'function' ? Base.prototype.createScriptProcessor : null;
+
         // Each node made by a context's factory is seen as it is made, so a node that is never
         // connected is still in the graph.
         for (const name of G.Object.getOwnPropertyNames(Base.prototype) as string[])
@@ -706,7 +710,7 @@ function installGraph (): void
 
     declare({
         id: 'audio-graph',
-        what: 'AudioNode connect, disconnect, start and stop, AudioParam automation, a context\'s create functions and decodeAudioData, Response.arrayBuffer, ArrayBuffer.slice, XMLHttpRequest\'s response and HTMLMediaElement.play are wrapped; each audio context has an analyser fed from what reaches its destination',
+        what: 'AudioNode connect, disconnect, start and stop, AudioParam automation, a context\'s create functions and decodeAudioData, Response.arrayBuffer, ArrayBuffer.slice, XMLHttpRequest\'s response and HTMLMediaElement.play are wrapped; each audio context has an analyser fed from what reaches its destination (and, while audio is kept for clips, a recorder after it)',
         why: 'Audio inspection: the graph as the page builds it, where buffers came from, and levels',
         optional: true,
         active: () => contexts.size > 0
@@ -1340,6 +1344,106 @@ export function seeContext (context: unknown): void
     }
 }
 
+// ---- Clips (A6): the last seconds of what each context played ----
+
+interface Recorder { context: string; node: any; sink: any; rate: number; channels: Float32Array[]; at: number; filled: number }
+
+const recorders = new G.Map() as Map<string, Recorder>;
+
+function record (info: ContextInfo, seconds: number): boolean
+{
+    const context = info.ref.deref();
+    const tap = context ? tapOf(context) : null;
+
+    if (!context || !tap || !nativeCreateScript || !nativeConnect || recorders.has(info.id))
+    {
+        return recorders.has(info.id);
+    }
+
+    // The tap (an analyser) passes its input on, so the recorder hears what reaches the
+    // destination. A processor only runs when connected onward: to a gain of 0.
+    const node = nativeCreateScript.call(context, 4096, 2, 2);
+    const sink = new G.GainNode(context, { gain: 0 });
+    const length = G.Math.ceil(context.sampleRate * seconds);
+    const recorder: Recorder = { context: info.id, node, sink, rate: context.sampleRate, channels: [new G.Float32Array(length), new G.Float32Array(length)], at: 0, filled: 0 };
+
+    nodeIds.set(node, '');
+    nodeIds.set(sink, '');
+
+    nAddEventListener.call(node, 'audioprocess', (event: any) =>
+    {
+        const input = event.inputBuffer;
+        const count = input.length;
+
+        for (let channel = 0; channel < 2; channel++)
+        {
+            const from = input.getChannelData(G.Math.min(channel, input.numberOfChannels - 1));
+            const to = recorder.channels[channel];
+
+            for (let index = 0; index < count; index++)
+            {
+                to[(recorder.at + index) % length] = from[index];
+            }
+        }
+
+        recorder.at = (recorder.at + count) % length;
+        recorder.filled = G.Math.min(length, recorder.filled + count);
+    });
+
+    nativeConnect.call(tap, node);
+    nativeConnect.call(node, sink);
+    nativeConnect.call(sink, context.destination);
+    recorders.set(info.id, recorder);
+
+    return true;
+}
+
+function stopRecording (id: string): void
+{
+    const recorder = recorders.get(id);
+
+    if (recorder)
+    {
+        recorders.delete(id);
+
+        try
+        {
+            nativeDisconnect?.call(recorder.node);
+            nativeDisconnect?.call(recorder.sink);
+        }
+        catch
+        {
+            // Gone with its context.
+        }
+    }
+}
+
+// The last `seconds` kept, as 16-bit stereo PCM, oldest first.
+function clipOf (recorder: Recorder, seconds: number): Record<string, unknown>
+{
+    const length = recorder.channels[0].length;
+    const count = G.Math.min(recorder.filled, G.Math.ceil(recorder.rate * seconds));
+    const bytes = new G.Uint8Array(count * 4);
+    const view = new G.DataView(bytes.buffer);
+    let peak = 0;
+
+    for (let index = 0; index < count; index++)
+    {
+        const from = (recorder.at - count + index + length) % length;
+
+        for (let channel = 0; channel < 2; channel++)
+        {
+            const sample = recorder.channels[channel][from];
+            const clamped = G.Math.max(-1, G.Math.min(1, sample));
+
+            peak = G.Math.max(peak, G.Math.abs(sample));
+            view.setInt16(index * 4 + channel * 2, clamped < 0 ? clamped * 32768 : clamped * 32767, true);
+        }
+    }
+
+    return { context: recorder.context, rate: recorder.rate, channels: 2, samples: count, seconds: count / recorder.rate, peak: decibels(peak), pcm: base64(bytes) };
+}
+
 export function labelAudio (object: unknown, label: string): boolean
 {
     if (!object || typeof object !== 'object' || typeof G.AudioNode !== 'function' || !(object instanceof G.AudioNode))
@@ -1387,8 +1491,41 @@ export function installSound (): void
             bufferBytes: bufferRows.reduce((sum, row) => sum + (row.bytes as number), 0),
             elements,
             patches: patches.map((patch) => ({ id: patch.id, mode: patch.mode, node: patch.node, text: patch.text })),
+            recording: [...recorders.values()].map((recorder) => ({ context: recorder.context, seconds: recorder.filled / recorder.rate, of: recorder.channels[0].length / recorder.rate })),
             findings: findings(rows, bufferRows, contextRows)
         };
+    });
+
+    expose('audio.record', (args: { on?: boolean; seconds?: number }) =>
+    {
+        const seconds = G.Math.max(1, G.Math.min(30, args.seconds ?? 10));
+        const recording: string[] = [];
+
+        for (const info of contexts.values())
+        {
+            if (args.on === false)
+            {
+                stopRecording(info.id);
+            }
+            else if (info.kind === 'AudioContext' && record(info, seconds))
+            {
+                recording.push(info.id);
+            }
+        }
+
+        return { recording, seconds };
+    });
+
+    expose('audio.clip', (args: { seconds?: number; context?: string }) =>
+    {
+        const chosen = args.context ? recorders.get(args.context) : recorders.values().next().value;
+
+        if (!chosen)
+        {
+            return { recording: false };
+        }
+
+        return clipOf(chosen, G.Math.max(0.1, G.Math.min(30, args.seconds ?? 10)));
     });
 
     expose('audio.node', async (args: { node: string }) =>

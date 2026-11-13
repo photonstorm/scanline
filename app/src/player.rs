@@ -205,6 +205,8 @@ pub enum Purpose {
     AudioNode,
     /// The takes on disk, for the Game panel's Takes tab.
     Takes,
+    /// A clip of the game's sound, to save to the desktop.
+    Clip,
     /// The frame frozen for a note, and the note sent.
     NoteShot,
     NoteSent,
@@ -411,6 +413,7 @@ impl Player {
         let by = if matches!(
             purpose,
             Purpose::Action(_)
+                | Purpose::Clip
                 | Purpose::NoteShot
                 | Purpose::NoteSent
                 | Purpose::Capture
@@ -590,7 +593,11 @@ impl Player {
                     None => self.say("Could not read the frame for the note.", true),
                 }
             }
-            (Purpose::NoteShot, Err(error)) => self.say(&error, true),
+            (Purpose::NoteShot, Err(error)) | (Purpose::Clip, Err(error)) => self.say(&error, true),
+            (Purpose::Clip, Ok(value)) => match value["data"]["path"].as_str().and_then(|path| to_desktop(std::path::Path::new(path), "clip")) {
+                Some(saved) => self.say(&format!("Saved {}", saved.file_name().map(|name| name.to_string_lossy().to_string()).unwrap_or_default()), false),
+                None => self.say("Could not save the clip to the desktop.", true),
+            },
             (Purpose::NoteSent, Ok(value)) => {
                 let id = value["data"]["note"].as_str().unwrap_or("note").to_string();
 
@@ -2107,6 +2114,16 @@ impl Player {
         self.ask("take", params, purpose);
         self.last.remove("takes");
         self.last.remove("status");
+    }
+
+    /// Keeps the last 10 s of the game's sound, or stops.
+    pub fn keep_audio(&mut self, on: bool) {
+        self.ask("audio_clip", json!({ "record": on }), Purpose::Action("audio_clip"));
+        self.last.remove("audio");
+    }
+
+    pub fn save_clip(&mut self) {
+        self.ask("audio_clip", json!({ "seconds": 10 }), Purpose::Clip);
     }
 
     pub fn select_audio_node(&mut self, node: String) {

@@ -13,6 +13,7 @@
 // passes (shadow maps, scene passes) run from inside them, before the object's draw.
 
 import { addControl, provideEngineState } from '../protocol';
+import { provideWatchable, type Watchable } from '../watch';
 import { G } from '../natives';
 import { adapter as register } from './index';
 import { announce, around, fail, newAdapter, note, ownerOf, short, type Adapter } from './wrap';
@@ -253,6 +254,7 @@ function install (): void
             if (seen.isScene)
             {
                 scenes.push(new G.WeakRef(seen));
+                provideWatchable('three.js', watchables);
 
                 if (scenes.length > 32)
                 {
@@ -279,6 +281,32 @@ function install (): void
             fail(adapter, 'observe', error);
         }
     });
+
+    // Every object of each scene, by a path of names (or type and place where it has none).
+    const watchables = (): Watchable[] =>
+    {
+        const out: Watchable[] = [];
+
+        scenes.forEach((reference, index) =>
+        {
+            const scene = reference.deref();
+            const walk: Array<[any, string]> = scene ? [[scene, scene.name || `scene${index}`]] : [];
+
+            while (walk.length > 0 && out.length < 5000)
+            {
+                const [object, path] = walk.shift()!;
+
+                if (object !== scene)
+                {
+                    out.push({ path, name: short(object.name || '', 60), type: kindOf(object), kind: 'object3d', object });
+                }
+
+                (object.children ?? []).forEach((child: any, place: number) => walk.push([child, `${path}/${short(child.name || `${kindOf(child)}#${place}`, 60)}`]));
+            }
+        });
+
+        return out;
+    };
 
     // The scene graph in outline, and the engine's own counts.
     const state = (): Record<string, unknown> =>

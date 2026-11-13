@@ -20,6 +20,7 @@
 // Both engines (WebGL and WebGPU) draw through these.
 
 import { addControl, provideEngineState } from '../protocol';
+import { provideWatchable, type Watchable } from '../watch';
 import { G } from '../natives';
 import { adapter as register } from './index';
 import { announce, around, fail, newAdapter, note, ownerOf, short, type Adapter } from './wrap';
@@ -263,6 +264,22 @@ function install (): void
                 note(adapter, 'Draws made by a depth renderer, a bounding-box or outline renderer, or a GUI texture are grouped by their pass and not named by mesh.');
                 announce(adapter);
                 provideEngineState('Babylon.js', state);
+                provideWatchable('Babylon.js', () =>
+                {
+                    const out: Watchable[] = [];
+
+                    scenes.forEach((reference, index) =>
+                    {
+                        const scene = reference.deref();
+
+                        for (const node of [...(scene?.meshes ?? []), ...(scene?.transformNodes ?? []), ...(scene?.lights ?? []), ...(scene?.cameras ?? [])].slice(0, 5000))
+                        {
+                            out.push({ path: `scene${index}/${short(node.name || className(node), 60)}#${node.uniqueId ?? ''}`, name: short(node.name ?? '', 60), type: className(node), kind: 'object3d', object: node });
+                        }
+                    });
+
+                    return out;
+                });
             }
 
             adopt(self);

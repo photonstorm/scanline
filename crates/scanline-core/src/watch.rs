@@ -84,6 +84,7 @@ pub(crate) fn watch_line(watch: &Value) -> String {
         })
         .collect();
     let source = match (watch["source"].as_str(), watch["kind"].as_str()) {
+        (Some("engine"), Some(kind)) => format!("the {kind}"),
         (Some("page"), Some(kind)) => format!("the page's {kind}"),
         (Some("page"), None) => "the page's".to_string(),
         _ => "expression".to_string(),
@@ -119,8 +120,28 @@ fn unknown(reply: &Value, name: &str) -> anyhow::Error {
 }
 
 pub async fn watch(session: &Arc<Session>, params: &Value) -> Result<Value> {
-    if params["object"].is_string() {
-        bail!("Watching the engine's own objects by name comes with watchable, which is not built yet. Watch an expression that reaches the object instead, such as watch(expression: \"game.scene.scenes[0].player\").");
+    if let Some(path) = params["object"].as_str() {
+        let asked = json!({ "path": path, "name": params["name"], "props": params["props"], "rules": params["rules"], "break": params["break"] == true });
+        let reply = probe(session, "watch.object", asked.clone()).await?;
+
+        if let Some(why) = reply["refused"].as_str() {
+            bail!("Not watched: {}. watchable() lists what the engine offers.", page_text(why, 400));
+        }
+
+        {
+            let mut state = session.state.lock().unwrap();
+            let name = reply["name"].clone();
+
+            state.watched.retain(|kept| kept["name"] != name);
+            state.watched.push(json!({ "name": name, "object": path, "props": asked["props"], "rules": asked["rules"], "break": asked["break"] }));
+        }
+
+        let props = reply["props"].as_array().map_or(0, Vec::len);
+
+        return Ok(result(
+            format!("Watching {props} propert{} of the engine's object: {}.\nwatches() reads them; unwatch(name: \"{}\") removes it.", if props == 1 { "y" } else { "ies" }, watch_line(&reply), page_text(reply["name"].as_str().unwrap_or(path), 80)),
+            reply,
+        ));
     }
 
     let expression = params["expression"]
@@ -163,6 +184,33 @@ pub async fn watch(session: &Arc<Session>, params: &Value) -> Result<Value> {
     if props == 0 && reply["error"].is_null() {
         lines.push("It has no number, boolean or string properties one level down. depth: 2 or 3 reads deeper, or props names them.".into());
     }
+
+    Ok(result(lines.join("\n"), reply))
+}
+
+pub async fn watchable(session: &Arc<Session>, params: &Value) -> Result<Value> {
+    let reply = probe(session, "watch.watchable", json!({ "filter": params["filter"], "limit": params["limit"].as_u64().unwrap_or(200) })).await?;
+    let engines: Vec<&str> = reply["engines"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+    let objects = reply["objects"].as_array().cloned().unwrap_or_default();
+
+    if engines.is_empty() {
+        return Ok(result(
+            "No engine here offers its objects (three.js, PixiJS, Phaser, Babylon.js and PlayCanvas do, once they have drawn). Watch an expression instead: watch(expression: \"game.player\").",
+            reply,
+        ));
+    }
+
+    let mut lines = vec![format!(
+        "{} object{}{} from {}{}:",
+        reply["total"],
+        if reply["total"] == 1 { "" } else { "s" },
+        params["filter"].as_str().map(|filter| format!(" matching «{}»", page_text(filter, 40))).unwrap_or_default(),
+        engines.join(", "),
+        if objects.len() as u64 > 0 && reply["total"].as_u64().unwrap_or(0) > objects.len() as u64 { format!(", the first {}", objects.len()) } else { String::new() }
+    )];
+
+    lines.extend(objects.iter().take(200).map(|object| format!("  «{}»  {}", page_text(object["path"].as_str().unwrap_or(""), 120), object["type"].as_str().unwrap_or(""))));
+    lines.push("watch(object: \"<path>\") watches one: position, rotation, scale and visibility, or a sprite's x, y, frame and velocity.".into());
 
     Ok(result(lines.join("\n"), reply))
 }
@@ -270,7 +318,12 @@ pub async fn reapply(session: &Arc<Session>) -> Option<String> {
     let mut added = 0;
 
     for asked in &kept {
-        if probe(session, "watch.add", asked.clone()).await.is_ok_and(|reply| reply["refused"].is_null()) {
+        let (method, args) = match asked["object"].as_str() {
+            Some(path) => ("watch.object", json!({ "path": path, "name": asked["name"], "props": asked["props"], "rules": asked["rules"], "break": asked["break"] })),
+            None => ("watch.add", asked.clone()),
+        };
+
+        if probe(session, method, args).await.is_ok_and(|reply| reply["refused"].is_null()) {
             added += 1;
         }
     }

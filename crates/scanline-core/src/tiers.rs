@@ -197,7 +197,7 @@ pub(crate) fn refusal(tiers: &Tiers, method: &str, params: &Value, page: Option<
     let expression = match method {
         "run_until" => params["until"]["expr"].is_string().then_some("run_until with until: {expr}"),
         "capture" => params["when"]["expr"].is_string().then_some("capture with when: {expr}"),
-        "watch" => params["expression"].is_string().then_some("watch with an expression"),
+        "watch" => (params["expression"].is_string() && !params["object"].is_string()).then_some("watch with an expression"),
         _ => None,
     };
 

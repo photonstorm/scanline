@@ -23,6 +23,7 @@
 // Both devices (WebGL 2 and WebGPU) draw through these.
 
 import { addControl, provideEngineState } from '../protocol';
+import { provideWatchable, type Watchable } from '../watch';
 import { G } from '../natives';
 import { adapter as register } from './index';
 import { announce, around, fail, newAdapter, note, ownerOf, short, watch } from './wrap';
@@ -337,6 +338,30 @@ function install (): void
                 note(adapter, 'A draw made without a mesh instance (the full-screen quad of a post effect or a blur) is grouped by its pass and not named by object.');
                 announce(adapter);
                 provideEngineState('PlayCanvas', state);
+                provideWatchable('PlayCanvas', () =>
+                {
+                    const out: Watchable[] = [];
+
+                    apps.forEach((reference) =>
+                    {
+                        const root = reference.deref()?.root;
+                        const walk: Array<[any, string]> = root ? [[root, 'root']] : [];
+
+                        while (walk.length > 0 && out.length < 5000)
+                        {
+                            const [entity, path] = walk.shift()!;
+
+                            if (entity !== root)
+                            {
+                                out.push({ path, name: short(entity.name ?? '', 60), type: 'Entity', kind: 'object3d', object: entity });
+                            }
+
+                            (entity.children ?? []).forEach((child: any, place: number) => walk.push([child, `${path}/${short(child.name || `Entity#${place}`, 60)}`]));
+                        }
+                    });
+
+                    return out;
+                });
             }
 
             adopt(self);

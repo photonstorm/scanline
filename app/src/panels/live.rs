@@ -337,6 +337,7 @@ fn watched(player: &Player, cx: &mut Context<Player>) -> gpui::Div {
         let history = &watch["history"]["values"];
         let broken_any = watch["props"].as_array().into_iter().flatten().any(|prop| prop["broken"] == true);
         let source = match (watch["source"].as_str(), watch["kind"].as_str()) {
+            (Some("engine"), Some(kind)) => kind.to_string(),
             (Some("page"), Some(kind)) => format!("game's {kind}"),
             (Some("page"), None) => "game's".to_string(),
             _ => "expression".to_string(),

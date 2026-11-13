@@ -344,6 +344,91 @@ pub async fn audio_patch(session: &Arc<Session>, params: &Value) -> Result<Value
     Ok(result(format!("{patch}: {what} audio_patch(undo: \"{patch}\") puts it back."), reply))
 }
 
+/// 16-bit PCM as a WAV file.
+pub(crate) fn wav(pcm: &[u8], rate: u32, channels: u16) -> Vec<u8> {
+    let mut out = Vec::with_capacity(44 + pcm.len());
+    let block = channels * 2;
+
+    out.extend_from_slice(b"RIFF");
+    out.extend_from_slice(&(36 + pcm.len() as u32).to_le_bytes());
+    out.extend_from_slice(b"WAVEfmt ");
+    out.extend_from_slice(&16u32.to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&channels.to_le_bytes());
+    out.extend_from_slice(&rate.to_le_bytes());
+    out.extend_from_slice(&(rate * block as u32).to_le_bytes());
+    out.extend_from_slice(&block.to_le_bytes());
+    out.extend_from_slice(&16u16.to_le_bytes());
+    out.extend_from_slice(b"data");
+    out.extend_from_slice(&(pcm.len() as u32).to_le_bytes());
+    out.extend_from_slice(pcm);
+    out
+}
+
+/// The last seconds the game played, from the probe's recorder, as WAV bytes and what they are.
+pub(crate) async fn clip_bytes(session: &Arc<Session>, seconds: f64) -> Result<Option<(Vec<u8>, Value)>> {
+    use base64::Engine;
+
+    let clip = probe(session, "audio.clip", json!({ "seconds": seconds })).await?;
+
+    if clip["recording"] == false {
+        return Ok(None);
+    }
+
+    let pcm = base64::engine::general_purpose::STANDARD.decode(clip["pcm"].as_str().unwrap_or("")).map_err(|error| anyhow!("reading the clip: {error}"))?;
+    let rate = clip["rate"].as_u64().unwrap_or(48_000) as u32;
+    let about = json!({ "context": clip["context"], "seconds": clip["seconds"], "rate": rate, "peak": clip["peak"] });
+
+    Ok(Some((wav(&pcm, rate, 2), about)))
+}
+
+pub async fn audio_clip(host: &Arc<crate::Host>, session: &Arc<Session>, params: &Value) -> Result<Value> {
+    let seconds = params["seconds"].as_f64().unwrap_or(10.0).clamp(0.1, 30.0);
+
+    if let Some(on) = params["record"].as_bool() {
+        let reply = probe(session, "audio.record", json!({ "on": on, "seconds": seconds.max(10.0) })).await?;
+        let recording = reply["recording"].as_array().map_or(0, Vec::len);
+
+        return Ok(result(
+            if !on {
+                "Audio is no longer kept.".to_string()
+            } else if recording == 0 {
+                "Nothing to keep yet: no context sends sound to its destination. Ask again once the game makes a sound.".to_string()
+            } else {
+                format!("Keeping the last {} s of what {recording} context{} play{}. audio_clip() writes them as a WAV file.", reply["seconds"], if recording == 1 { "" } else { "s" }, if recording == 1 { "s" } else { "" })
+            },
+            reply,
+        ));
+    }
+
+    let Some((bytes, about)) = clip_bytes(session, seconds).await? else {
+        bail!("Audio is not being kept. audio_clip(record: true) keeps the last 10 s from then on (while the game runs); ask for a clip after.");
+    };
+    let folder = host.store.root().join("clips");
+
+    std::fs::create_dir_all(&folder).map_err(|error| anyhow!("creating {}: {error}", folder.display()))?;
+
+    let number = std::fs::read_dir(&folder).map(|entries| entries.count()).unwrap_or(0) + 1;
+    let path = folder.join(format!("clip_{number}.wav"));
+
+    std::fs::write(&path, &bytes).map_err(|error| anyhow!("writing {}: {error}", path.display()))?;
+
+    Ok(result(
+        format!(
+            "The last {} s of {}, as the game played it (peak {}): {}",
+            number_text_secs(about["seconds"].as_f64().unwrap_or(0.0)),
+            about["context"].as_str().unwrap_or("?"),
+            decibels(&about["peak"]),
+            path.display()
+        ),
+        json!({ "path": path, "clip": about }),
+    ))
+}
+
+fn number_text_secs(seconds: f64) -> String {
+    format!("{seconds:.1}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -358,6 +443,17 @@ mod tests {
         });
 
         assert_eq!(node_line(&node), "anode_4 BiquadFilter «muffle» (Q 1, frequency 800) [lowpass, muted] → anode_1, anode_6.gain");
+    }
+
+    #[test]
+    fn a_clip_is_a_wav_file() {
+        let file = wav(&[0, 0, 255, 127], 48_000, 2);
+
+        assert_eq!(&file[0..4], b"RIFF");
+        assert_eq!(&file[8..16], b"WAVEfmt ");
+        assert_eq!(u32::from_le_bytes(file[24..28].try_into().unwrap()), 48_000);
+        assert_eq!(u32::from_le_bytes(file[40..44].try_into().unwrap()), 4);
+        assert_eq!(file.len(), 48);
     }
 
     #[test]

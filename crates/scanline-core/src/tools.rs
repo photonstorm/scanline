@@ -395,9 +395,10 @@ pub const TOOLS: &[Tool] = &[
         name: "watch",
         description: "Watch a value or an object in the game: its numbers, booleans and strings are read as each frame ends, kept for 600 frames and checked against rules (numbers stay finite by default). With break: true the game stops on the frame a rule breaks. A page can register its own objects with __scanline.watch(name, object). Values in «» are the page's.",
         schema: schema!(
-            r#"["expression"]"#,
+            "[]",
             session!(),
             r#""expression": { "type": "string", "description": "JavaScript reaching the value or object, such as game.player.body.velocity." }"#,
+            r#""object": { "type": "string", "description": "In place of expression: an engine object's path from watchable()." }"#,
             r#""name": { "type": "string", "description": "Default: the expression." }"#,
             r#""props": { "type": "array", "items": { "type": "string" }, "description": "Dotted paths to read, such as body.velocity.x. Default: every own primitive property." }"#,
             r#""depth": { "type": "integer", "description": "How far into nested objects, 1 to 3. Default 1." }"#,
@@ -405,6 +406,12 @@ pub const TOOLS: &[Tool] = &[
             r#""break": { "type": "boolean", "description": "Stop the game on the frame any rule breaks." }"#
         ),
         read_only: false,
+    },
+    Tool {
+        name: "watchable",
+        description: "The objects the game's engine offers for watching with no change to the page (three.js, PixiJS, Phaser, Babylon.js, PlayCanvas): each one's path through the scene and its type. Names in «» are the page's.",
+        schema: schema!("[]", session!(), r#""filter": { "type": "string", "description": "Part of a path or a type." }"#, r#""limit": { "type": "integer" }"#),
+        read_only: true,
     },
     Tool {
         name: "watches",
@@ -455,6 +462,12 @@ pub const TOOLS: &[Tool] = &[
             r#""undo": { "type": "string", "description": "A patch such as apatch_1." }"#,
             r#""all": { "type": "boolean", "description": "Undo every audio patch." }"#
         ),
+        read_only: false,
+    },
+    Tool {
+        name: "audio_clip",
+        description: "The last seconds of what the game played, as a WAV file: what the person heard. record: true starts keeping the last 10 s (while the game runs), record: false stops. A note carries a clip when audio is being kept.",
+        schema: schema!("[]", session!(), r#""seconds": { "type": "number", "description": "Up to 30. Default 10." }"#, r#""record": { "type": "boolean" }"#),
         read_only: false,
     },
     Tool {

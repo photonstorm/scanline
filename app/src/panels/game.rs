@@ -224,6 +224,22 @@ fn audio_tab(player: &Player, wide: bool, cx: &mut Context<Player>) -> gpui::Div
         return div().child(note("No audio yet: the game has made no audio context and has no audio element."));
     }
 
+    let keeping = audio["recording"].as_array().is_some_and(|recording| !recording.is_empty());
+    let clips = div()
+        .flex()
+        .items_center()
+        .gap_2()
+        .child(group().child(tab_button("audio-keep", "Keep last 10 s", RED, keeping).on_click(cx.listener(move |this, _, _, cx| {
+            this.keep_audio(!keeping);
+            cx.notify();
+        }))))
+        .when(keeping, |row| {
+            row.child(icon_label("audio-clip", "sound", "Save clip", RED).on_click(cx.listener(|this, _, _, cx| {
+                this.save_clip();
+                cx.notify();
+            })))
+        });
+
     let outputs = card("Output", GREEN).children(contexts.iter().map(|context| {
         div()
             .flex()
@@ -239,7 +255,7 @@ fn audio_tab(player: &Player, wide: bool, cx: &mut Context<Player>) -> gpui::Div
                 ),
             ))
             .child(level(&context["level"]))
-    }));
+    })).child(clips);
 
     let findings = audio["findings"].as_array().cloned().unwrap_or_default();
     let worth = (!findings.is_empty() || !patches.is_empty()).then(|| {
