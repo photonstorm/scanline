@@ -24,6 +24,8 @@ dbg.controls.register({ id: 'shadow.bias', type: 'number', min: 0, max: 0.01,
 dbg.views.register({ id: 'bounds', label: 'Sprite bounds', set: (on) => { game.showBounds = on; } });
 
 dbg.mark('level loaded');                               // the debugger can run until a mark
+
+dbg.watch.sprite('player', player, { break: true });    // read each frame; stops if a number goes NaN
 ```
 
 It is a thin wrapper round the `__scanline` global that Scanline defines in the page. The global is the contract; this package only saves the `?.` at each call site. `group(name, fn)` always runs `fn`. `active` says whether the page is inside Scanline: use it to skip building a debug string, never to draw differently.
@@ -39,6 +41,7 @@ It is a thin wrapper round the `__scanline` global that Scanline defines in the 
 | `views.register({ id, label, description, set(on) })` | A debug view the page draws itself. |
 | `uniforms.expose(program, names?)` | Which uniforms are meaningful to override. |
 | `passes.describe([{ name, purpose, targets }])` | The frame's passes, in words. |
+| `watch(name, object, { props, depth, rules, break })` | Scanline reads the object's numbers, booleans and strings as each frame ends, keeps 600 frames of them, and checks rules: `finite` (the default for numbers), `defined`, `range`, `type`, `changes`, `steady`. With `break` the game stops on the frame a rule breaks. `watch.sprite` and `watch.object3d` pick the usual properties. `unwatch(name)` removes one. |
 | `time.deterministic(fn?)` | `{ seed, fixedDt }` in a deterministic session, else `null`. Seed your random source from it. |
 | `time.provide({ pause, resume, step, setScale })` | The engine's own time control. |
 | `checkpoint.provide({ save, restore })` | Save the game's state and put it back. |

@@ -1,0 +1,122 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Watch fixture</title>
+<style>html, body { margin: 0; background: #111; } canvas { display: block; }</style>
+</head>
+<body>
+<canvas id="c" width="320" height="200"></canvas>
+<script>
+// A sprite that moves to the right. On frame 40 its velocity becomes NaN, as a division by
+// zero would make it, and the sprite vanishes: what a watch is for (docs/GAME.md, W1–W5).
+// ?gpu=webgpu draws with WebGPU; otherwise WebGL 2. ?nan=0 keeps it finite.
+
+const query = new URLSearchParams(location.search);
+const breakAt = query.get('nan') === '0' ? Infinity : 40;
+const canvas = document.getElementById('c');
+
+const player = {
+    name: 'player',
+    x: 20,
+    y: 90,
+    rotation: 0,
+    alpha: 1,
+    visible: true,
+    frame: { name: 'run-0' },
+    body: { velocity: { x: 2, y: 0 } }
+};
+
+const game = { player, frame: 0, size: 20 };
+
+window.game = game;
+window.__scanline?.watch.sprite('player', player);
+
+function update ()
+{
+    game.frame++;
+
+    if (game.frame === breakAt)
+    {
+        const time = 0;
+
+        player.body.velocity.x = player.body.velocity.x * time / time;
+    }
+
+    player.x += player.body.velocity.x;
+    player.frame.name = `run-${game.frame % 4}`;
+}
+
+function startWebGL ()
+{
+    const gl = canvas.getContext('webgl2');
+
+    return () =>
+    {
+        gl.disable(gl.SCISSOR_TEST);
+        gl.clearColor(0.07, 0.07, 0.1, 1);
+        gl.clear(gl.COLOR_BUFFER_BIT);
+
+        if (Number.isFinite(player.x) && player.visible)
+        {
+            gl.enable(gl.SCISSOR_TEST);
+            gl.scissor(Math.round(player.x), canvas.height - player.y - game.size, game.size, game.size);
+            gl.clearColor(1, 0.6, 0.1, 1);
+            gl.clear(gl.COLOR_BUFFER_BIT);
+        }
+    };
+}
+
+async function startWebGPU ()
+{
+    const adapter = await navigator.gpu.requestAdapter();
+    const device = await adapter.requestDevice();
+    const context = canvas.getContext('webgpu');
+    const format = navigator.gpu.getPreferredCanvasFormat();
+
+    context.configure({ device, format, alphaMode: 'opaque' });
+
+    const module = device.createShaderModule({ code: `
+        @vertex fn vs (@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
+            let p = array(vec2f(-1, -1), vec2f(3, -1), vec2f(-1, 3));
+            return vec4f(p[i], 0, 1);
+        }
+        @fragment fn fs () -> @location(0) vec4f { return vec4f(1, 0.6, 0.1, 1); }
+    ` });
+    const pipeline = device.createRenderPipeline({ layout: 'auto', vertex: { module, entryPoint: 'vs' }, fragment: { module, entryPoint: 'fs', targets: [{ format }] } });
+
+    return () =>
+    {
+        const encoder = device.createCommandEncoder();
+        const pass = encoder.beginRenderPass({ colorAttachments: [{ view: context.getCurrentTexture().createView(), loadOp: 'clear', storeOp: 'store', clearValue: { r: 0.07, g: 0.07, b: 0.1, a: 1 } }] });
+
+        if (Number.isFinite(player.x) && player.visible)
+        {
+            const x = Math.max(0, Math.min(canvas.width - 1, Math.round(player.x)));
+
+            pass.setPipeline(pipeline);
+            pass.setScissorRect(x, player.y, Math.min(game.size, canvas.width - x), game.size);
+            pass.draw(3);
+        }
+
+        pass.end();
+        device.queue.submit([encoder.finish()]);
+    };
+}
+
+(async () =>
+{
+    const draw = query.get('gpu') === 'webgpu' ? await startWebGPU() : startWebGL();
+
+    function tick ()
+    {
+        update();
+        draw();
+        requestAnimationFrame(tick);
+    }
+
+    requestAnimationFrame(tick);
+})();
+</script>
+</body>
+</html>

@@ -197,6 +197,7 @@ pub(crate) fn refusal(tiers: &Tiers, method: &str, params: &Value, page: Option<
     let expression = match method {
         "run_until" => params["until"]["expr"].is_string().then_some("run_until with until: {expr}"),
         "capture" => params["when"]["expr"].is_string().then_some("capture with when: {expr}"),
+        "watch" => params["expression"].is_string().then_some("watch with an expression"),
         _ => None,
     };
 
@@ -228,6 +229,7 @@ pub(crate) fn refusal(tiers: &Tiers, method: &str, params: &Value, page: Option<
                 "{method} is in the control tier (time, input, hand-off), which this host was started without. Looking, capturing and analysis still work. {HOW}."
             ))
         }
+        "watch_set" if !tiers.control => Some(format!("watch_set changes the game, which is in the control tier, and this host was started without it. watch and watches still read. {HOW}.")),
         "page" if !tiers.control && matches!(params["call"].as_str(), Some("set_control" | "time" | "checkpoint" | "restore")) => Some(format!(
             "page with call: \"{}\" changes the game, which is in the control tier, and this host was started without it. page still reads: state, controls, views, groups, passes, marks. {HOW}.",
             params["call"].as_str().unwrap_or("")

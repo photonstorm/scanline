@@ -116,10 +116,47 @@ export const passes: {
     describe (list: PassDescription[]): void;
 };
 
+export interface WatchRule
+{
+    /** finite: not NaN or ±∞. defined: not undefined or null. range: within min and max. type: of this typeof. changes: differs from the frame before. steady: does not. */
+    rule: 'finite' | 'defined' | 'range' | 'type' | 'changes' | 'steady';
+    /** The property it applies to. Default: every property. */
+    prop?: string;
+    min?: number;
+    max?: number;
+    type?: string;
+    /** Stop the game on the frame this rule breaks. */
+    break?: boolean;
+}
+
+export interface WatchOptions
+{
+    /** Dotted paths to read, such as 'body.velocity.x'. Default: every own number, boolean and string. */
+    props?: string[];
+    /** How far into nested objects, 1 to 3. Default 1. */
+    depth?: number;
+    /** Default: numbers stay finite. */
+    rules?: Array<WatchRule | WatchRule['rule']>;
+    /** Every rule stops the game on the frame it breaks. */
+    break?: boolean;
+}
+
+/** Scanline reads the object's properties as each frame ends, checks them against rules and keeps the last 600 frames. A name used again replaces the object and keeps its history. */
+export const watch: {
+    (name: string, object: object, options?: WatchOptions): void;
+    /** A 2D sprite: x, y, rotation, scale, alpha, visible, its frame and velocity, as it has them. */
+    sprite (name: string, sprite: object, options?: WatchOptions): void;
+    /** A 3D object: position, rotation, scale, visible. */
+    object3d (name: string, object: object, options?: WatchOptions): void;
+};
+
+export function unwatch (name: string): void;
+
 declare const all: {
     active: typeof active; version: typeof version; label: typeof label; group: typeof group; push: typeof push; pop: typeof pop;
     entity: typeof entity; mark: typeof mark; frame: typeof frame; time: typeof time; checkpoint: typeof checkpoint;
     state: typeof state; views: typeof views; controls: typeof controls; uniforms: typeof uniforms; passes: typeof passes;
+    watch: typeof watch; unwatch: typeof unwatch;
 };
 
 export default all;

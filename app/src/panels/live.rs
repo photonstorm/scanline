@@ -1,9 +1,9 @@
 //! Live: frame time, CPU and GPU time, the work each frame does, and GPU memory, from
-//! stats() and memory() as the page runs.
+//! stats() and memory() as the page runs; and the game's own objects, from watches().
 
 use std::collections::VecDeque;
 
-use gpui::{AnyElement, Context, Window, div, prelude::*, px};
+use gpui::{AnyElement, Context, MouseButton, SharedString, Window, div, prelude::*, px, rgb};
 use serde_json::Value;
 
 use crate::player::Player;
@@ -21,6 +21,53 @@ pub struct State {
     pub memory: Value,
     pub warnings: Vec<String>,
     last_frame: u64,
+    /// What watches() last said: each watch, its values and their history.
+    pub watches: Value,
+    /// What the person is typing into, and what they have typed.
+    pub entry: Option<Entry>,
+    pub typed: String,
+    /// New watches stop the game when a rule breaks.
+    pub break_new: bool,
+}
+
+/// A field in the Objects tab that takes typing.
+#[derive(Clone, PartialEq)]
+pub enum Entry {
+    /// An expression to watch.
+    New,
+    /// A new value for a watched property.
+    Value { name: String, prop: String },
+}
+
+/// A watched value as words. NaN, infinities and undefined come as { $: name }.
+pub fn shown(value: &Value) -> String {
+    match value {
+        Value::Object(object) => object.get("$").and_then(Value::as_str).unwrap_or("?").to_string(),
+        Value::String(text) => format!("\"{text}\""),
+        Value::Number(number) => {
+            let number = number.as_f64().unwrap_or(0.0);
+
+            if number.fract() == 0.0 && number.abs() < 1e15 { format!("{number:.0}") } else { format!("{number:.4}").trim_end_matches('0').trim_end_matches('.').to_string() }
+        }
+        other => other.to_string(),
+    }
+}
+
+/// What the person typed, as the value it means: a number, true or false, null, or else words.
+pub fn typed_value(text: &str) -> Value {
+    let text = text.trim();
+
+    match text {
+        "true" => Value::Bool(true),
+        "false" => Value::Bool(false),
+        "null" => Value::Null,
+        _ => text
+            .parse::<f64>()
+            .ok()
+            .filter(|number| number.is_finite())
+            .map(|number| serde_json::json!(number))
+            .unwrap_or_else(|| Value::String(text.trim_matches('"').to_string())),
+    }
 }
 
 fn push(series: &mut VecDeque<f32>, value: f32) {
@@ -184,7 +231,206 @@ pub fn render(player: &mut Player, _window: &mut Window, cx: &mut Context<Player
         }
     };
 
-    let chosen = content(player.tab("live").min(1));
+    let tab = player.tab("live").min(2);
+    let chosen = if tab == 2 { watched(player, cx) } else { content(tab) };
 
-    crate::panels::tabbed(player, "live", "Live", GREEN, &["Performance", "Memory"], cx, chosen)
+    crate::panels::tabbed(player, "live", "Live", GREEN, &["Performance", "Memory", "Objects"], cx, chosen)
+}
+
+/// A series of values scaled to fit 0 to 1, for a small graph. Values that are not numbers
+/// (NaN, undefined) sit at the bottom.
+fn scaled(values: &[Value]) -> Option<Vec<f32>> {
+    let numbers: Vec<Option<f64>> = values.iter().map(Value::as_f64).collect();
+
+    if numbers.iter().all(Option::is_none) || values.iter().any(|value| value.is_string() || value.is_boolean()) {
+        return None;
+    }
+
+    let known: Vec<f64> = numbers.iter().flatten().copied().collect();
+    let low = known.iter().copied().fold(f64::INFINITY, f64::min);
+    let high = known.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let span = if high > low { high - low } else { 1.0 };
+
+    Some(numbers.iter().map(|number| number.map_or(0.0, |number| (0.1 + 0.8 * (number - low) / span) as f32)).collect())
+}
+
+/// The Objects tab: what the game's watches read, frame by frame, with a field to add one and
+/// each value editable in place.
+fn watched(player: &Player, cx: &mut Context<Player>) -> gpui::Div {
+    let live = &player.live;
+    let typing_new = live.entry == Some(Entry::New);
+    let shown_text = if typing_new { format!("{}▏", live.typed) } else { "game.player".to_string() };
+
+    let field = div()
+        .id("watch-field")
+        .track_focus(&player.watch_focus)
+        .flex_1()
+        .min_w_0()
+        .flex()
+        .items_center()
+        .gap_2()
+        .px_2()
+        .h(px(28.0))
+        .rounded(px(6.0))
+        .text_xs()
+        .font_family(MONO)
+        .bg(rgb(FIELD))
+        .border_1()
+        .border_color(if typing_new { tint(CYAN, 0.8) } else { rgb(LINE) })
+        .text_color(if typing_new { rgb(TEXT) } else { rgb(DIM) })
+        .overflow_hidden()
+        .whitespace_nowrap()
+        .cursor_text()
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|this, _, window, cx| {
+                cx.stop_propagation();
+                this.start_watch_entry(Entry::New, String::new(), window, cx);
+            }),
+        )
+        .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| this.type_watch(event, cx)))
+        .child(crate::icons::icon("eye", 12.0, tint(DIM, 1.0)))
+        .child(shown_text);
+
+    let adding = div()
+        .flex()
+        .gap_2()
+        .items_center()
+        .child(field)
+        .child(button("watch-add", "Watch", CYAN).on_click(cx.listener(|this, _, _, cx| {
+            this.commit_watch_entry();
+            cx.notify();
+        })))
+        .child(
+            group().child(
+                tab_button("watch-break", "Stop on break", RED, live.break_new).on_click(cx.listener(|this, _, _, cx| {
+                    this.live.break_new = !this.live.break_new;
+                    cx.notify();
+                })),
+            ),
+        );
+
+    let list = live.watches["watches"].as_array().cloned().unwrap_or_default();
+
+    if player.session().is_none() {
+        return div().flex().flex_col().gap_2().child(note("No session."));
+    }
+
+    if list.is_empty() {
+        return div().flex().flex_col().gap_2().child(adding).child(note(
+            "Nothing watched. Type an expression that reaches an object or a value, such as game.player. A game can add its own with __scanline.watch(name, object).",
+        ));
+    }
+
+    let editing = live.entry.clone();
+    let typed = live.typed.clone();
+
+    let cards = list.iter().enumerate().map(|(index, watch)| {
+        let name = watch["name"].as_str().unwrap_or("").to_string();
+        let history = &watch["history"]["values"];
+        let broken_any = watch["props"].as_array().into_iter().flatten().any(|prop| prop["broken"] == true);
+        let source = match (watch["source"].as_str(), watch["kind"].as_str()) {
+            (Some("page"), Some(kind)) => format!("game's {kind}"),
+            (Some("page"), None) => "game's".to_string(),
+            _ => "expression".to_string(),
+        };
+        let removing = name.clone();
+
+        let title = div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .child(div().flex_none().w(px(3.0)).h(px(12.0)).rounded(px(1.5)).bg(rgb(if broken_any { RED } else { CYAN })))
+            .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_sm().font_weight(gpui::FontWeight::SEMIBOLD).text_color(rgb(TEXT)).child(name.clone()))
+            .child(note(source))
+            .child(icon_button(SharedString::from(format!("unwatch-{index}")), "close", DIM, false).on_click(cx.listener(move |this, _, _, cx| {
+                this.remove_watch(&removing);
+                cx.notify();
+            })));
+
+        let rows = watch["props"].as_array().cloned().unwrap_or_default().into_iter().enumerate().map(|(row, prop)| {
+            let key = prop["prop"].as_str().unwrap_or("").to_string();
+            let broken = prop["broken"] == true;
+            let here = Entry::Value { name: name.clone(), prop: key.clone() };
+            let is_editing = editing.as_ref() == Some(&here);
+            let value_text = if is_editing { format!("{typed}▏") } else { shown(&prop["value"]) };
+            let current = shown(&prop["value"]).trim_matches('"').to_string();
+            let series = history[key.as_str()].as_array().and_then(|values| scaled(values));
+            let colour = if broken { RED } else { CYAN };
+
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .h(px(24.0))
+                .text_xs()
+                .child(div().w(px(130.0)).flex_none().overflow_hidden().whitespace_nowrap().text_color(rgb(DIM)).child(if key.is_empty() { "value".to_string() } else { key.clone() }))
+                .child(
+                    div()
+                        .id(SharedString::from(format!("watch-{index}-{row}")))
+                        .w(px(110.0))
+                        .flex_none()
+                        .px_1p5()
+                        .h(px(20.0))
+                        .flex()
+                        .items_center()
+                        .rounded(px(4.0))
+                        .font_family(MONO)
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .cursor_text()
+                        .text_color(if broken { tint(RED, 1.0) } else { rgb(TEXT) })
+                        .when(is_editing, |cell| cell.bg(rgb(FIELD)).border_1().border_color(tint(CYAN, 0.8)))
+                        .hover(|cell| cell.bg(rgb(RAISED)))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _, window, cx| {
+                                cx.stop_propagation();
+                                this.start_watch_entry(here.clone(), current.clone(), window, cx);
+                            }),
+                        )
+                        .child(value_text),
+                )
+                .child(div().flex_1().min_w_0().children(series.map(|values| graph(values, 1.0, colour, 20.0))))
+        });
+
+        let broken = watch["broken"].as_array().cloned().unwrap_or_default().into_iter().rev().take(3).map(|broken| {
+            let prop = broken["prop"].as_str().unwrap_or("");
+
+            div().text_xs().text_color(tint(RED, 1.0)).child(format!(
+                "Frame {}: {} broke {} ({} → {})",
+                broken["frame"],
+                if prop.is_empty() { "the value" } else { prop },
+                broken["rule"].as_str().unwrap_or("?"),
+                shown(&broken["before"]),
+                shown(&broken["after"])
+            ))
+        });
+
+        let error = watch["error"].as_str().map(|error| div().text_xs().text_color(tint(AMBER, 1.0)).child(format!("Reading it threw: {error}")));
+
+        div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .p_3()
+            .rounded(px(7.0))
+            .bg(rgb(CARD))
+            .border_1()
+            .border_color(if broken_any { tint(RED, 0.5) } else { rgb(LINE) })
+            .child(title)
+            .children(error)
+            .children(rows)
+            .children(broken)
+    });
+
+    let cost = &live.watches["cost"];
+    let footer = note(format!(
+        "{} properties · {:.3} ms a frame{}",
+        cost["props"],
+        cost["ms"].as_f64().unwrap_or(0.0),
+        if cost["thinned"] == true { " · read every other frame" } else { "" }
+    ));
+
+    div().flex().flex_col().gap_2().child(adding).children(cards).child(footer)
 }

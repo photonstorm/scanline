@@ -1344,7 +1344,7 @@ fn handle(session: &Arc<Session>, event: Event) {
                 // What the probe reports, and nothing else. The binding is in the page's own
                 // world, so a page that finds it can call it: it must not be able to queue an
                 // event that reads as the host's (capture_ready, owner_changed) or the person's.
-                kind @ ("annotation" | "context" | "context-lost" | "context-restored" | "mark" | "probe-fault" | "stopped") => {
+                kind @ ("annotation" | "context" | "context-lost" | "context-restored" | "mark" | "probe-fault" | "stopped" | "watch-broken") => {
                     let mut data = payload.clone();
 
                     if let Some(object) = data.as_object_mut() {

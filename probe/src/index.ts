@@ -38,6 +38,7 @@ import { installSeededRandom } from './random';
 import { gpuSamples, gpuWorkDone, installTiming, timingHandlers, timingNotes } from './timing';
 import { installReadback } from './readback';
 import { bindingLeftBehind, emit, expose, installTransport } from './transport';
+import { installWatches } from './watch';
 
 // Per-frame counters: the difference between cumulative totals at consecutive frame ends.
 const FRAMES = 600;
@@ -159,6 +160,7 @@ function boot (): void
     installPolicy();
     installErrors();
     installAudio();
+    installWatches();
 
     setLevel(config.level);
 

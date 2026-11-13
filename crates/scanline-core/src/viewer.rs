@@ -39,7 +39,7 @@ async fn answer_now(host: Arc<Host>, session: Arc<Session>, asked: Value) {
     // strip's. A capture is looked at through this session's browser.
     let outcome = if method == "send_to_agent" {
         Ok(send_to_agent(&session, &params))
-    } else if matches!(method.as_str(), "launch" | "close" | "navigate" | "viewer" | "eval" | "policy") {
+    } else if matches!(method.as_str(), "launch" | "close" | "navigate" | "viewer" | "eval" | "watch" | "policy") {
         Err(anyhow::anyhow!("The viewer does not run {method}."))
     } else {
         params["_by"] = json!(if asked["person"] == true && !UPKEEP.contains(&method.as_str()) { "person" } else { "viewer" });

@@ -428,3 +428,68 @@ describe('engine adapters: every draw resolves to an engine object', () =>
         assert.match(said.out, /This game uses the Canvas renderer, which issues no WebGL or WebGPU draws/);
     });
 });
+
+describe('watches (docs/GAME.md, section 3)', () =>
+{
+    for (const gpu of ['webgl', 'webgpu'])
+    {
+        test(`a velocity that turns NaN stops the game on its frame, in ${gpu}`, async () =>
+        {
+            const launched = await scanline('launch', server.url(`fixtures/protocol/watch.html?gpu=${gpu}`), '--headless', '--paused');
+
+            assert.match(launched.out, /Launched ses_\d+/, launched.out);
+
+            const watched = await scanline('watch', 'game.player.body.velocity', '--break', 'true');
+
+            assert.match(watched.out, /Watching 2 properties: «game\.player\.body\.velocity» \(expression\): «x» = 2, «y» = 0\./, watched.out);
+            assert.match(watched.out, /Rules: finite \(breaks\)\./);
+
+            const ran = await scanline('run_until', '--until', '{"frames": 100}');
+
+            assert.match(ran.out, /Stopped at frame 40: watch «game\.player\.body\.velocity\.x» broke its rule finite: 2 became NaN/, ran.out);
+
+            const read = await scanline('watches', '--history', 5);
+
+            assert.match(read.out, /«player» \(the page's sprite\): «x» = NaN ✗, «y» = 90/, read.out);
+            assert.match(read.out, /«player»\.«body\.velocity\.x» broke finite at frame 40: 2 became NaN/);
+            assert.match(read.out, /«x»: 92, 94, 96, 98, NaN/);
+            assert.match(read.out, /«frame\.name»: «"run-0"», «"run-1"», «"run-2"», «"run-3"», «"run-0"»/);
+
+            // The page's own watch has no break rule: it is told, and the game ran on to the agent's.
+            const events = await scanline('events', '--kinds', '["watch-broken"]', '--json');
+
+            assert.ok(events.json.data.events.some((event) => event.data.name === 'player' && event.data.prop === 'body.velocity.x' && event.data.frame === 40 && event.data.breaks === false));
+
+            // Set from the debugger, the sprite comes back where it was put.
+            const sprite = async () => (await scanline('pixels', 112, 100, '--json')).json.data;
+            const gone = await sprite();
+
+            assert.match((await scanline('watch_set', 'player', 'x', 100)).out, /«player»\.«x» was NaN and is now 100\./);
+            assert.match((await scanline('watch_set', 'player', 'body.velocity.x', 1)).out, /was NaN and is now 1\./);
+            await scanline('step', 2);
+            assert.notDeepEqual(await sprite(), gone, 'the sprite is drawn again');
+            assert.match((await scanline('watches', 'player')).out, /«x» = 102, «y» = 90/);
+
+            // A capture carries the watches' values at its frame.
+            const taken = await scanline('capture');
+
+            assert.match(taken.out, /Watches at this frame \(its data has their last 60 frames\):\n {2}«player» \(the page's sprite\): «x» = 10\d/, taken.out);
+        });
+    }
+
+    test('what cannot be watched or set is refused plainly', async () =>
+    {
+        await opened('fixtures/protocol/watch.html?nan=0', 2);
+
+        assert.match((await scanline('watch', 'game.player.(')).out, /Not watched: the expression does not compile/);
+        assert.match((await scanline('watch_set', 'player', 'frame.name', 3)).out, /«player»\.«frame\.name» was not set: frame\.name is a string, so it takes a string\./);
+        assert.match((await scanline('watch_set', 'nobody', 'x', 3)).out, /There is no watch «nobody»\. Watched: «player»\./);
+
+        // An object's own primitive properties, two levels down.
+        const deep = await scanline('watch', 'game', '--depth', 2, '--name', 'game');
+
+        assert.match(deep.out, /«player\.x» = 2\d, «player\.y» = 90/, deep.out);
+        assert.match((await scanline('unwatch', '--all', 'true')).out, /Removed 2 watches\./);
+        assert.match((await scanline('watches')).out, /Nothing is watched\./);
+    });
+});

@@ -392,6 +392,45 @@ pub const TOOLS: &[Tool] = &[
         read_only: false,
     },
     Tool {
+        name: "watch",
+        description: "Watch a value or an object in the game: its numbers, booleans and strings are read as each frame ends, kept for 600 frames and checked against rules (numbers stay finite by default). With break: true the game stops on the frame a rule breaks. A page can register its own objects with __scanline.watch(name, object). Values in «» are the page's.",
+        schema: schema!(
+            r#"["expression"]"#,
+            session!(),
+            r#""expression": { "type": "string", "description": "JavaScript reaching the value or object, such as game.player.body.velocity." }"#,
+            r#""name": { "type": "string", "description": "Default: the expression." }"#,
+            r#""props": { "type": "array", "items": { "type": "string" }, "description": "Dotted paths to read, such as body.velocity.x. Default: every own primitive property." }"#,
+            r#""depth": { "type": "integer", "description": "How far into nested objects, 1 to 3. Default 1." }"#,
+            r#""rules": { "type": "array", "description": "Each { rule: finite|defined|range|type|changes|steady, prop?, min?, max?, type?, break? }.", "items": { "type": "object" } }"#,
+            r#""break": { "type": "boolean", "description": "Stop the game on the frame any rule breaks." }"#
+        ),
+        read_only: false,
+    },
+    Tool {
+        name: "watches",
+        description: "The watches' current values and the rules they broke, with each property's last frames when history is given.",
+        schema: schema!("[]", session!(), r#""name": { "type": "string" }"#, r#""history": { "type": "integer", "description": "Frames of history, up to 600." }"#),
+        read_only: true,
+    },
+    Tool {
+        name: "unwatch",
+        description: "Remove a watch, or all of them.",
+        schema: schema!("[]", session!(), r#""name": { "type": "string" }"#, r#""all": { "type": "boolean" }"#),
+        read_only: true,
+    },
+    Tool {
+        name: "watch_set",
+        description: "Set a watched number, boolean or string in the game. The game reads it from its next frame.",
+        schema: schema!(
+            r#"["name", "value"]"#,
+            session!(),
+            r#""name": { "type": "string" }"#,
+            r#""prop": { "type": "string", "description": "The property's dotted path. Left out: the watched value itself." }"#,
+            r#""value": { "description": "A number, boolean, string or null." }"#
+        ),
+        read_only: false,
+    },
+    Tool {
         name: "events",
         description: "Events queued for a session since a cursor: crashes, context loss, navigation, warnings. Nothing is lost if you were not listening.",
         schema: schema!("[]", session!(), r#""since": { "type": "integer" }"#, r#""kinds": { "type": "array", "items": { "type": "string" } }"#),

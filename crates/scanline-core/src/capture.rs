@@ -1492,6 +1492,14 @@ pub async fn capture(host: &Arc<Host>, session: &Arc<Session>, params: &Value) -
     // The frame's own final image, as the page drew it.
     let original = decode_grab(&session.probe(&context.instance, "image.grab", json!({ "context": context.local }), Duration::from_secs(20)).await?)?;
 
+    // The watches' values at this frame, with the frames before it (docs/GAME.md, W8).
+    body["watches"] = session
+        .probe(&top, "watch.list", json!({ "history": 60 }), SHORT)
+        .await
+        .ok()
+        .filter(|list| list["watches"].as_array().is_some_and(|watches| !watches.is_empty()))
+        .unwrap_or(Value::Null);
+
     if was_running {
         session.probe_all("resume", json!({}), SHORT).await;
     }
@@ -1714,6 +1722,7 @@ fn unfinished(host: &Arc<Host>, session: &Arc<Session>, handle: &str, body: &Val
         "findings": findings(body, source.tag, &HashMap::new(), &none),
         "counts": counts,
         "blob_bytes": body["blob_bytes"],
+        "watches": body["watches"],
     });
 
     host.store.write_capture(handle, body, &meta, capture_tables)?;
@@ -1890,6 +1899,7 @@ pub(crate) async fn finish(host: &Arc<Host>, session: &Arc<Session>, handle: &st
         "findings": found,
         "counts": counts,
         "blob_bytes": body["blob_bytes"],
+        "watches": body["watches"],
     });
 
     session.stage("Writing");
@@ -2073,6 +2083,11 @@ pub(crate) fn describe_capture(host: &Host, handle: &str, meta: &Value) -> Resul
 
     for note in meta["notes"].as_array().into_iter().flatten() {
         lines.push(format!("Note: {}", page_text(note.as_str().unwrap_or(""), 300)));
+    }
+
+    if let Some(watches) = meta["watches"]["watches"].as_array().filter(|watches| !watches.is_empty()) {
+        lines.push("Watches at this frame (its data has their last 60 frames):".into());
+        lines.extend(watches.iter().map(|watch| format!("  {}", crate::watch::watch_line(watch))));
     }
 
     Ok(result(lines.join("\n"), meta.clone()))

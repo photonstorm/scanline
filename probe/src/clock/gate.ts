@@ -114,6 +114,15 @@ export function onFrameEnd (hook: (stopping: boolean) => void): void
 // this is the first moment the whole frame has been issued.
 const settledHooks: Array<(flag: boolean) => void> = [];
 
+// Checks run as each frame ends, before the frame-end hooks. One that returns words stops the
+// game on this frame, as run_until does: the watches' rules that break.
+const checkHooks: Array<() => string | null> = [];
+
+export function onFrameCheck (hook: () => string | null): void
+{
+    checkHooks.push(hook);
+}
+
 export function onFrameSettled (hook: () => void): void
 {
     settledHooks.push(hook);
@@ -423,9 +432,29 @@ function endFrame (): void
 
     lastFrameStart = frameStart;
 
-    if (!paused)
+    let broke: string | null = null;
+
+    for (const hook of checkHooks)
     {
-        const hit = untilHit(cpu);
+        try
+        {
+            broke = hook() ?? broke;
+        }
+        catch (error: any)
+        {
+            emit('probe-fault', { where: 'frame check', message: String(error?.stack ?? error) });
+        }
+    }
+
+    if (broke !== null && paused && budget > 0)
+    {
+        // Stepping: the step ends here.
+        budget = 0;
+        stopInfo = { reason: 'until', detail: broke };
+    }
+    else if (!paused)
+    {
+        const hit = broke ?? untilHit(cpu);
 
         if (hit !== null)
         {
@@ -438,7 +467,7 @@ function endFrame (): void
     }
     else if (budget === 0)
     {
-        stopInfo = { reason: 'step' };
+        stopInfo = broke !== null ? { reason: 'until', detail: broke } : { reason: 'step' };
     }
 
     const stopping = paused && budget === 0;

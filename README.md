@@ -39,6 +39,7 @@ Every milestone of the build plan up to 1.0 has been worked through on macOS (Ap
 - The control strip: a small window under the game's, in the same browser, that shows the person who is driving, what the agent asked of them, the frame number and whether frames are being recorded, with Debug, Pause and Step buttons.
 - The viewer: a window for the person, in the same browser, with a log of every command the agent runs and what it answered, live graphs of frame time, GPU time, draws and memory, and a capture viewer (the draw list, each event's state and shaders, the target as it stood after any event, zoom and pixel values). It is a client of the same commands the agent has, and nothing in it is a capability the agent lacks. From it the person can send what they have chosen (an event, a pinned pixel, a note) to the agent, as an event with handles.
 - A capture as one file: `export` writes a capture and everything it uses to one `.scanline` file, and `import` reads it into any host, where it answers the same questions and replays.
+- Watches on the game's own objects: `watch` names a value or an object by expression (or the page registers one with `__scanline.watch`), and Scanline reads its numbers, booleans and strings as each frame ends, keeps 600 frames of them, and checks rules (finite, defined, range, type, changes, steady). A rule with `break` stops the game on the frame it broke. `watch_set` changes a value; captures carry the watches' values. The app shows them in Live → Objects, with each value editable in place. See [docs/GAME.md](docs/GAME.md).
 - Tiers: the person decides what a client may do when the host starts. By default patching and `eval` work only on pages served from this machine, and `navigate` keeps to the origin a session was launched on. See [docs/SECURITY.md](docs/SECURITY.md).
 - Skills: seven recipes (the core loop, wrong pixels, a slow frame, memory, working with a person, playing, and writing rendering code that can be debugged by name), held in the binary so they always match it: `scanline skill`, or `help(skill)` over MCP. A test checks that every command a skill names exists.
 - A recording as a video: `recording(video: true)` writes the frames kept before a Debug press as a WebM file, for the person to watch or attach to a report.
@@ -148,6 +149,14 @@ scanline run_until --until '{"expr": "game.scene === \"level2\""}'
 ```
 
 (In a Windows shell: `scanline run_until --until "{'expr': 'game.level === 2'}"`. See "On Windows" below.)
+
+```bash
+scanline watch game.player.body.velocity --break true
+```
+
+```bash
+scanline watches --history 30
+```
 
 ```bash
 scanline request_human "Play until the water flickers, then press Debug"

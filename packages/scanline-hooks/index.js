@@ -42,4 +42,12 @@ export const controls = { register: dbg ? (control) => dbg.controls.register(con
 export const uniforms = { expose: dbg ? (program, names) => dbg.uniforms.expose(program, names) : nothing };
 export const passes = { describe: dbg ? (list) => dbg.passes.describe(list) : nothing };
 
-export default { active, version, label, group, push, pop, entity, mark, frame, time, checkpoint, state, views, controls, uniforms, passes };
+// Watches: Scanline reads the object's properties as each frame ends and checks them against
+// rules (numbers stay finite unless told otherwise). Options: { props, depth, rules, break }.
+export const watch = Object.assign(dbg ? (name, object, options) => dbg.watch(name, object, options) : nothing, {
+    sprite: dbg ? (name, sprite, options) => dbg.watch.sprite(name, sprite, options) : nothing,
+    object3d: dbg ? (name, object, options) => dbg.watch.object3d(name, object, options) : nothing
+});
+export const unwatch = dbg ? (name) => dbg.unwatch(name) : nothing;
+
+export default { active, version, label, group, push, pop, entity, mark, frame, time, checkpoint, state, views, controls, uniforms, passes, watch, unwatch };

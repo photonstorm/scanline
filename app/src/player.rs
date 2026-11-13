@@ -197,6 +197,8 @@ pub enum Purpose {
     PassDepth(String, i64),
     /// A picture of the game for the projects page, by its key.
     Picture(String),
+    /// The watches' values and history, for the Objects tab.
+    Watches,
 }
 
 impl Purpose {
@@ -206,6 +208,7 @@ impl Purpose {
             Purpose::Status => "status",
             Purpose::Stats => "stats",
             Purpose::Memory => "memory",
+            Purpose::Watches => "watches",
             Purpose::Console => "console",
             Purpose::Activity => "activity",
             Purpose::Captures => "captures",
@@ -226,6 +229,8 @@ pub struct Player {
     pub focus: FocusHandle,
     /// The note sent with Send to agent, and whether it has the keyboard.
     pub note_focus: FocusHandle,
+    /// The Objects tab's fields: a new watch, or a watched value being set.
+    pub watch_focus: FocusHandle,
     pub note: String,
     pub noting: bool,
     gpui_view: *mut c_void,
@@ -301,6 +306,7 @@ impl Player {
         Player {
             focus: cx.focus_handle(),
             note_focus: cx.focus_handle(),
+            watch_focus: cx.focus_handle(),
             note: String::new(),
             noting: false,
             gpui_view,
@@ -437,6 +443,10 @@ impl Player {
             self.ask("activity", json!({ "since": since, "limit": 200 }), Purpose::Activity);
         }
 
+        if self.panel == Panel::Live && self.tab("live") == 2 && self.due("watches", Duration::from_millis(250)) {
+            self.ask("watches", json!({ "history": 120 }), Purpose::Watches);
+        }
+
         if self.panel == Panel::Live && self.due("memory", Duration::from_millis(1500)) {
             self.ask("memory", json!({}), Purpose::Memory);
         }
@@ -533,6 +543,7 @@ impl Player {
             (Purpose::Status, Err(_)) => {}
             (Purpose::Stats, Ok(value)) => self.live.stats(&value["data"]),
             (Purpose::Memory, Ok(value)) => self.live.memory(&value),
+            (Purpose::Watches, Ok(value)) => self.live.watches = value["data"].clone(),
             (Purpose::Console, Ok(value)) => self.console.receive(&value["data"]),
             (Purpose::Activity, Ok(value)) => {
                 let session = self.options.session.clone();
@@ -1811,6 +1822,83 @@ impl Player {
 
         cx.stop_propagation();
         cx.notify();
+    }
+
+    /// Starts typing into one of the Objects tab's fields, with what it holds now.
+    pub fn start_watch_entry(&mut self, entry: panels::live::Entry, current: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.live.entry = Some(entry);
+        self.live.typed = current;
+        self.editing = false;
+        self.noting = false;
+        platform::focus(self.gpui_view);
+        window.focus(&self.watch_focus);
+        cx.notify();
+    }
+
+    pub fn type_watch(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
+        let keystroke = &event.keystroke;
+
+        if self.live.entry.is_none() {
+            return;
+        }
+
+        if keystroke.modifiers.platform {
+            match keystroke.key.as_str() {
+                "v" => {
+                    if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+                        self.live.typed.push_str(text.trim());
+                    }
+                }
+                "a" | "backspace" => self.live.typed.clear(),
+                _ => return,
+            }
+        } else {
+            match keystroke.key.as_str() {
+                "enter" => self.commit_watch_entry(),
+                "escape" => {
+                    self.live.entry = None;
+                    self.live.typed.clear();
+                    platform::focus(self.browser_view);
+                }
+                "backspace" => {
+                    self.live.typed.pop();
+                }
+                _ => {
+                    if let Some(text) = &keystroke.key_char {
+                        if self.live.typed.chars().count() < 400 {
+                            self.live.typed.push_str(text);
+                        }
+                    }
+                }
+            }
+        }
+
+        cx.stop_propagation();
+        cx.notify();
+    }
+
+    /// Adds the watch typed, or sets the value typed.
+    pub fn commit_watch_entry(&mut self) {
+        let typed = std::mem::take(&mut self.live.typed);
+
+        match self.live.entry.take() {
+            Some(panels::live::Entry::Value { name, prop }) => {
+                self.ask("watch_set", json!({ "name": name, "prop": prop, "value": panels::live::typed_value(&typed) }), Purpose::Action("watch_set"));
+            }
+            _ if !typed.trim().is_empty() => {
+                self.ask("watch", json!({ "expression": typed.trim(), "break": self.live.break_new }), Purpose::Action("watch"));
+            }
+            _ => {}
+        }
+
+        // Read again at once, not at the next turn.
+        self.last.remove("watches");
+        platform::focus(self.browser_view);
+    }
+
+    pub fn remove_watch(&mut self, name: &str) {
+        self.ask("unwatch", json!({ "name": name }), Purpose::Action("unwatch"));
+        self.last.remove("watches");
     }
 
     pub fn start_noting(&mut self, window: &mut Window, cx: &mut Context<Self>) {

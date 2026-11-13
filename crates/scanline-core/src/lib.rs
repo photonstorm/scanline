@@ -25,6 +25,7 @@ pub mod tiers;
 mod tools;
 mod trace;
 mod viewer;
+mod watch;
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -390,6 +391,10 @@ impl Host {
             "diff" => commands::diff(self, live().ok().as_ref(), &params).await,
             "assert" => check::assert(self, &live()?, &params).await,
             "eval" => commands::eval(&live()?, &params).await,
+            "watch" => watch::watch(&live()?, &params).await,
+            "unwatch" => watch::unwatch(&live()?, &params).await,
+            "watches" => watch::watches(&live()?, &params).await,
+            "watch_set" => watch::watch_set(&live()?, &params).await,
             "events" => commands::events(&self.session(&params)?, &params).await,
             "wait" => commands::wait(&self.session(&params)?, &params).await,
             "help" if params["skill"].is_string() => {

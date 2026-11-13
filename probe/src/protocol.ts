@@ -12,6 +12,7 @@ import { declare } from './mods';
 import { G, isWindow, nDefineProperty, nStringify } from './natives';
 import { entryOf } from './registry';
 import { emit, expose } from './transport';
+import { pageUnwatch, pageWatch } from './watch';
 
 export const PROTOCOL_VERSION = 1;
 
@@ -423,6 +424,15 @@ function build (): object
         controls: forgiving({
             register: safe('controls.register', (control: any) => addControl(control))
         }),
+
+        // ---- Watches (docs/GAME.md, section 3) ----
+
+        watch: G.Object.assign(safe('watch', (name: unknown, object: unknown, options?: unknown) => pageWatch(name, object, options)), {
+            sprite: safe('watch.sprite', (name: unknown, object: unknown, options?: unknown) => pageWatch(name, object, options, 'sprite')),
+            object3d: safe('watch.object3d', (name: unknown, object: unknown, options?: unknown) => pageWatch(name, object, options, 'object3d'))
+        }),
+
+        unwatch: safe('unwatch', (name: unknown) => pageUnwatch(name)),
 
         uniforms: forgiving({
             expose: safe('uniforms.expose', (program: any, names?: unknown) =>
