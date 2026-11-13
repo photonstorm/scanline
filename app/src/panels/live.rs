@@ -37,6 +37,8 @@ pub enum Entry {
     New,
     /// A new value for a watched property.
     Value { name: String, prop: String },
+    /// A value to hold an audio node's parameter at (the Game panel).
+    Param { node: String, param: String },
 }
 
 /// A watched value as words. NaN, infinities and undefined come as { $: name }.

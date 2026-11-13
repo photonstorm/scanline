@@ -1,0 +1,71 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Audio fixture</title>
+<style>html, body { margin: 0; background: #111; } canvas { display: block; }</style>
+</head>
+<body>
+<canvas id="c" width="320" height="200"></canvas>
+<script>
+// A small sound graph with known levels (docs/GAME.md, G3):
+//
+//   oscillator (sine, 440 Hz, amplitude 1) → gain «master» 0.5 → lowpass filter 8 kHz → delay 0.1 s → destination
+//   buffer source (tone.wav, looped) → gain 0 → destination
+//
+// The output is the sine at half amplitude: a peak of -6.02 dBFS and an RMS of -9.03 dBFS.
+// tone.wav is fetched and decoded twice, which is worth a finding. A click resumes the context
+// where the browser started it suspended.
+
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+const context = new AudioContext();
+const oscillator = context.createOscillator();
+const master = context.createGain();
+const filter = context.createBiquadFilter();
+const delay = context.createDelay(1);
+const quiet = context.createGain();
+
+oscillator.frequency.value = 440;
+master.gain.setValueAtTime(0.5, 0);
+filter.type = 'lowpass';
+filter.frequency.value = 8000;
+delay.delayTime.value = 0.1;
+quiet.gain.value = 0;
+
+oscillator.connect(master).connect(filter).connect(delay).connect(context.destination);
+quiet.connect(context.destination);
+oscillator.start();
+
+window.__scanline?.label(master, 'master');
+
+window.sound = { context, expected: { peak: 20 * Math.log10(0.5), rms: 20 * Math.log10(0.5 / Math.SQRT2) }, ready: false };
+
+(async () =>
+{
+    const load = async () => context.decodeAudioData(await (await fetch('tone.wav')).arrayBuffer());
+    const [first] = [await load(), await load()];
+    const source = context.createBufferSource();
+
+    source.buffer = first;
+    source.loop = true;
+    source.connect(quiet);
+    source.start();
+    window.sound.ready = true;
+})();
+
+window.music = new Audio('tone.wav');
+
+addEventListener('pointerdown', () => context.resume());
+
+function tick ()
+{
+    gl.clearColor(0.1, 0.2 + 0.1 * Math.sin(context.currentTime * 4), 0.3, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    requestAnimationFrame(tick);
+}
+
+requestAnimationFrame(tick);
+</script>
+</body>
+</html>

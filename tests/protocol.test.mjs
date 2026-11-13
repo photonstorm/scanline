@@ -493,3 +493,61 @@ describe('watches (docs/GAME.md, section 3)', () =>
         assert.match((await scanline('watches')).out, /Nothing is watched\./);
     });
 });
+
+describe('audio (docs/GAME.md, section 4)', () =>
+{
+    test('the graph, its levels, its buffers and changes to how it sounds', async () =>
+    {
+        const launched = await scanline('launch', server.url('fixtures/protocol/audio.html'), '--headless');
+
+        assert.match(launched.out, /Launched ses_\d+/, launched.out);
+        await scanline('eval', 'new Promise((done) => { const check = () => (window.sound.ready && sound.context.currentTime > 0.5 ? done(true) : setTimeout(check, 50)); check(); })');
+
+        const heard = await scanline('audio', '--json');
+        const summary = heard.json.summary;
+
+        assert.match(summary, /1 context, 7 nodes, 2 playing, 2 buffers/, summary);
+        assert.match(summary, /anode_2 Oscillator \(detune 0, frequency 440\) \[playing, sine\] → anode_3/);
+        assert.match(summary, /anode_3 Gain «master» \(gain 0\.5\) → anode_4/);
+        assert.match(summary, /anode_4 BiquadFilter .*\[lowpass\] → anode_5/);
+        assert.match(summary, /anode_5 Delay \(delayTime 0\.1\) → anode_1/);
+        assert.match(summary, /anode_7 AudioBufferSource .*\[playing, looped, abuf_\d\] → anode_6/);
+        assert.match(summary, /tone\.wav was decoded 2 times/);
+
+        // Within 1 dB of what the fixture computes for a sine at half amplitude.
+        const level = heard.json.data.contexts[0].level;
+
+        assert.ok(Math.abs(level.peak - 20 * Math.log10(0.5)) < 1, `peak ${level.peak}`);
+        assert.ok(Math.abs(level.rms - 20 * Math.log10(0.5 / Math.SQRT2)) < 1, `rms ${level.rms}`);
+
+        const node = await scanline('audio_node', 'anode_3');
+
+        assert.match(node.out, /anode_3 GainNode «master» in actx_1/);
+        assert.match(node.out, /gain = 0\.5 \(default 1, .*\); latest automation: setValueAtTime\(0\.5, 0\)/);
+        assert.match(node.out, /From: anode_2\. To: anode_4\./);
+        assert.match(node.out, /Level now: peak -6\.\d dBFS/);
+
+        // Muted, the game goes silent; undone, it is heard again.
+        assert.match((await scanline('audio_patch', 'anode_2', 'mute')).out, /apatch_1: anode_2 is muted/);
+        await scanline('eval', 'new Promise((done) => setTimeout(done, 300))');
+        assert.equal((await scanline('audio', '--json')).json.data.contexts[0].level.peak, null, 'silent');
+        assert.match((await scanline('audio_patch', '--all', 'true')).out, /Undid 1 audio patch/);
+        await scanline('eval', 'new Promise((done) => setTimeout(done, 300))');
+        assert.ok((await scanline('audio', '--json')).json.data.contexts[0].level.peak > -7, 'heard again');
+
+        // Bypassing the gain doubles the level: about +6 dB.
+        assert.match((await scanline('audio_patch', 'anode_3', 'bypass')).out, /anode_3 is bypassed/);
+        await scanline('eval', 'new Promise((done) => setTimeout(done, 300))');
+        assert.ok(Math.abs((await scanline('audio', '--json')).json.data.contexts[0].level.peak) < 1, 'full scale');
+        await scanline('audio_patch', '--all', 'true');
+
+        const held = await scanline('audio_patch', 'anode_4', 'param', '--param', 'frequency', '--value', 300);
+
+        assert.match(held.out, /anode_4's frequency was 8000 and is now 300/);
+        assert.match((await scanline('audio_patch', 'anode_4', 'param', '--param', 'nothing', '--value', 1)).out, /BiquadFilterNode has no parameter nothing; it has frequency, detune, Q, gain|has no parameter nothing/);
+
+        const buffers = await scanline('audio', 'buffers');
+
+        assert.match(buffers.out, /abuf_1 0\.5 s, 1 ch, \d+ Hz, \d+ KB in memory, decoded from «http:\/\/127\.0\.0\.1:\d+\/fixtures\/protocol\/tone\.wav» \(8 KB file\)/, buffers.out);
+    });
+});

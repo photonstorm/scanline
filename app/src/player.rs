@@ -199,6 +199,9 @@ pub enum Purpose {
     Picture(String),
     /// The watches' values and history, for the Objects tab.
     Watches,
+    /// The game's sound, and the chosen audio node, for the Game panel.
+    Audio,
+    AudioNode,
 }
 
 impl Purpose {
@@ -209,6 +212,8 @@ impl Purpose {
             Purpose::Stats => "stats",
             Purpose::Memory => "memory",
             Purpose::Watches => "watches",
+            Purpose::Audio => "audio",
+            Purpose::AudioNode => "audio-node",
             Purpose::Console => "console",
             Purpose::Activity => "activity",
             Purpose::Captures => "captures",
@@ -260,6 +265,7 @@ pub struct Player {
     pub panel: Panel,
     pub wide: bool,
     pub live: panels::live::State,
+    pub sound: panels::game::State,
     pub resources: panels::resources::State,
     pub captures: panels::captures::State,
     pub console: panels::console::State,
@@ -332,6 +338,7 @@ impl Player {
             panel: Panel::Live,
             wide: false,
             live: Default::default(),
+            sound: Default::default(),
             resources: Default::default(),
             captures: Default::default(),
             console: Default::default(),
@@ -447,6 +454,16 @@ impl Player {
             self.ask("watches", json!({ "history": 120 }), Purpose::Watches);
         }
 
+        if self.panel == Panel::Game && self.due("audio", Duration::from_millis(250)) {
+            self.ask("audio", json!({ "view": "summary" }), Purpose::Audio);
+        }
+
+        if self.panel == Panel::Game && self.sound.selected.is_some() && self.due("audio-node", Duration::from_millis(500)) {
+            let handle = self.sound.selected.clone();
+
+            self.ask("audio_node", json!({ "handle": handle }), Purpose::AudioNode);
+        }
+
         if self.panel == Panel::Live && self.due("memory", Duration::from_millis(1500)) {
             self.ask("memory", json!({}), Purpose::Memory);
         }
@@ -544,6 +561,12 @@ impl Player {
             (Purpose::Stats, Ok(value)) => self.live.stats(&value["data"]),
             (Purpose::Memory, Ok(value)) => self.live.memory(&value),
             (Purpose::Watches, Ok(value)) => self.live.watches = value["data"].clone(),
+            (Purpose::Audio, Ok(value)) => self.sound.audio = value["data"].clone(),
+            (Purpose::AudioNode, Ok(value)) => self.sound.node = value["data"].clone(),
+            (Purpose::AudioNode, Err(_)) => {
+                self.sound.selected = None;
+                self.sound.node = Value::Null;
+            }
             (Purpose::Console, Ok(value)) => self.console.receive(&value["data"]),
             (Purpose::Activity, Ok(value)) => {
                 let session = self.options.session.clone();
@@ -804,6 +827,7 @@ impl Player {
 
         let panel = match shown["show"].as_str().unwrap_or("") {
             "live" => Panel::Live,
+            "game" => Panel::Game,
             "capture" => Panel::Captures,
             "console" => Panel::Console,
             "resources" => Panel::Resources,
@@ -1667,7 +1691,18 @@ impl Player {
             "capture" => self.capture(),
             "screenshot" => self.screenshot(),
             "video" => self.toggle_video(),
-            "mute" => self.toggle_mute(),
+            // mute, mute on, mute off: toggled, or set whatever the game remembered.
+            "mute" => {
+                let wanted = match rest {
+                    "on" => true,
+                    "off" => false,
+                    _ => !self.muted,
+                };
+
+                if wanted != self.muted {
+                    self.toggle_mute();
+                }
+            }
             "timeline" => self.measure_capture(),
             // tab captures 1: a panel's tab by number, from 0.
             "tab" => {
@@ -1707,6 +1742,7 @@ impl Player {
             // size 1080p @2x, size iPhone 15 landscape, size fit
             "size" => self.set_size(Size::from_name(rest)),
             "show" => self.show(match rest {
+                "game" => Panel::Game,
                 "resources" => Panel::Resources,
                 "captures" => Panel::Captures,
                 "experiments" => Panel::Experiments,
@@ -1715,6 +1751,11 @@ impl Player {
                 _ => Panel::Live,
             }),
             "select" => self.select_resource(rest.to_string()),
+            // audio anode_3: choose an audio node in the Game panel.
+            "audio" => {
+                self.show(Panel::Game);
+                self.select_audio_node(rest.to_string());
+            }
             "kind" => self.show_kind(rest.to_string()),
             "back" => {
                 self.resources.selected = None;
@@ -1882,6 +1923,13 @@ impl Player {
         let typed = std::mem::take(&mut self.live.typed);
 
         match self.live.entry.take() {
+            Some(panels::live::Entry::Param { node, param }) => {
+                if let Some(value) = typed.trim().parse::<f64>().ok().filter(|value| value.is_finite()) {
+                    self.ask("audio_patch", json!({ "handle": node, "mode": "param", "param": param, "value": value }), Purpose::Action("audio_patch"));
+                    self.last.remove("audio");
+                    self.last.remove("audio-node");
+                }
+            }
             Some(panels::live::Entry::Value { name, prop }) => {
                 self.ask("watch_set", json!({ "name": name, "prop": prop, "value": panels::live::typed_value(&typed) }), Purpose::Action("watch_set"));
             }
@@ -1894,6 +1942,35 @@ impl Player {
         // Read again at once, not at the next turn.
         self.last.remove("watches");
         platform::focus(self.browser_view);
+    }
+
+    pub fn select_audio_node(&mut self, node: String) {
+        self.sound.selected = Some(node);
+        self.sound.node = Value::Null;
+        self.last.remove("audio-node");
+    }
+
+    /// Mutes, solos or bypasses a node, or puts it back if it already is.
+    pub fn toggle_audio_patch(&mut self, node: &str, mode: &str) {
+        let existing = self.sound.audio["patches"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|patch| patch["node"] == node && patch["mode"] == mode)
+            .and_then(|patch| patch["id"].as_str())
+            .map(str::to_string);
+
+        match existing {
+            Some(patch) => self.ask("audio_patch", json!({ "undo": patch }), Purpose::Action("audio_patch")),
+            None => self.ask("audio_patch", json!({ "handle": node, "mode": mode }), Purpose::Action("audio_patch")),
+        }
+
+        self.last.remove("audio");
+    }
+
+    pub fn undo_audio_patches(&mut self) {
+        self.ask("audio_patch", json!({ "all": true }), Purpose::Action("audio_patch"));
+        self.last.remove("audio");
     }
 
     pub fn remove_watch(&mut self, name: &str) {

@@ -431,6 +431,33 @@ pub const TOOLS: &[Tool] = &[
         read_only: false,
     },
     Tool {
+        name: "audio",
+        description: "The game's sound: each Web Audio context with its state and output level, the graph of nodes with their parameters and connections, what is playing, every buffer with its size and the file it was decoded from, the audio and video elements, and findings (a suspended context, a node connected to nothing, a gain above 1, clipping, a file decoded twice). Labels and addresses in «» are the page's.",
+        schema: schema!("[]", session!(), r#""view": { "type": "string", "enum": ["summary", "graph", "playing", "buffers", "elements"], "description": "Default summary." }"#),
+        read_only: true,
+    },
+    Tool {
+        name: "audio_node",
+        description: "One audio node: its parameters with range and recent automation, its settings, what feeds it and where it goes, and its level now.",
+        schema: schema!(r#"["handle"]"#, session!(), r#""handle": { "type": "string", "description": "A node such as anode_3." }"#),
+        read_only: true,
+    },
+    Tool {
+        name: "audio_patch",
+        description: "Change how the game sounds, to hear the difference: mute a node, solo it (other sources in its context muted), bypass it (its input goes straight to its outputs), or hold a parameter at a value. undo puts one back; all: true puts them all back.",
+        schema: schema!(
+            "[]",
+            session!(),
+            r#""handle": { "type": "string" }"#,
+            r#""mode": { "type": "string", "enum": ["mute", "solo", "bypass", "param"] }"#,
+            r#""param": { "type": "string", "description": "For param: its name, such as gain or frequency." }"#,
+            r#""value": { "type": "number" }"#,
+            r#""undo": { "type": "string", "description": "A patch such as apatch_1." }"#,
+            r#""all": { "type": "boolean", "description": "Undo every audio patch." }"#
+        ),
+        read_only: false,
+    },
+    Tool {
         name: "events",
         description: "Events queued for a session since a cursor: crashes, context loss, navigation, warnings. Nothing is lost if you were not listening.",
         schema: schema!("[]", session!(), r#""since": { "type": "integer" }"#, r#""kinds": { "type": "array", "items": { "type": "string" } }"#),

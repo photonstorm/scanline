@@ -9,6 +9,7 @@
 //! - `images` lists files written for this result; `view` is the one sized for an agent.
 
 mod analysis;
+mod audio;
 mod capture;
 mod check;
 mod commands;
@@ -395,6 +396,9 @@ impl Host {
             "unwatch" => watch::unwatch(&live()?, &params).await,
             "watches" => watch::watches(&live()?, &params).await,
             "watch_set" => watch::watch_set(&live()?, &params).await,
+            "audio" => audio::audio(&live()?, &params).await,
+            "audio_node" => audio::audio_node(&live()?, &params).await,
+            "audio_patch" => audio::audio_patch(&live()?, &params).await,
             "events" => commands::events(&self.session(&params)?, &params).await,
             "wait" => commands::wait(&self.session(&params)?, &params).await,
             "help" if params["skill"].is_string() => {

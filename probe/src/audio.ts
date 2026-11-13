@@ -5,6 +5,7 @@ import { isPaused, onPauseChange } from './clock/gate';
 import { disguise } from './masquerade';
 import { declare } from './mods';
 import { G, nDefineProperty } from './natives';
+import { seeContext } from './sound';
 
 // Weak references: the probe must not keep a page's audio context alive.
 const contexts: Array<WeakRef<any>> = [];
@@ -13,6 +14,7 @@ const suspendedByUs = new WeakSet<object>();
 function track (context: any): void
 {
     contexts.push(new G.WeakRef(context));
+    seeContext(context);
 
     if (isPaused())
     {

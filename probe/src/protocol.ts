@@ -13,6 +13,7 @@ import { G, isWindow, nDefineProperty, nStringify } from './natives';
 import { entryOf } from './registry';
 import { emit, expose } from './transport';
 import { pageUnwatch, pageWatch } from './watch';
+import { labelAudio } from './sound';
 
 export const PROTOCOL_VERSION = 1;
 
@@ -299,6 +300,11 @@ function build (): object
         {
             const entry = entryOf(object);
             const label = text(name, 200);
+
+            if (labelAudio(object, label))
+            {
+                return;
+            }
 
             if (entry)
             {

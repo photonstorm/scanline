@@ -4,6 +4,7 @@ pub mod agent;
 pub mod captures;
 pub mod console;
 pub mod experiments;
+pub mod game;
 pub mod live;
 pub mod resources;
 
@@ -15,6 +16,7 @@ use crate::theme::*;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Panel {
     Live,
+    Game,
     Resources,
     Captures,
     Experiments,
@@ -23,11 +25,12 @@ pub enum Panel {
 }
 
 impl Panel {
-    const ALL: [Panel; 6] = [Panel::Live, Panel::Resources, Panel::Captures, Panel::Experiments, Panel::Console, Panel::Agent];
+    const ALL: [Panel; 7] = [Panel::Live, Panel::Game, Panel::Resources, Panel::Captures, Panel::Experiments, Panel::Console, Panel::Agent];
 
     fn icon(self) -> &'static str {
         match self {
             Panel::Live => "live",
+            Panel::Game => "sound",
             Panel::Resources => "resources",
             Panel::Captures => "capture",
             Panel::Experiments => "experiments",
@@ -39,6 +42,7 @@ impl Panel {
     fn name(self) -> &'static str {
         match self {
             Panel::Live => "Live",
+            Panel::Game => "Game",
             Panel::Resources => "Resources",
             Panel::Captures => "Captures",
             Panel::Experiments => "Experiment",
@@ -50,6 +54,7 @@ impl Panel {
     fn colour(self) -> u32 {
         match self {
             Panel::Live => GREEN,
+            Panel::Game => CYAN,
             Panel::Resources => AMBER,
             Panel::Captures => PURPLE,
             Panel::Experiments => ORANGE,
@@ -121,6 +126,7 @@ pub fn rail(player: &mut Player, cx: &mut Context<Player>) -> impl IntoElement {
 pub fn render(player: &mut Player, window: &mut Window, cx: &mut Context<Player>) -> AnyElement {
     match player.panel {
         Panel::Live => live::render(player, window, cx),
+        Panel::Game => game::render(player, window, cx),
         Panel::Resources => resources::render(player, window, cx),
         Panel::Captures => captures::render(player, window, cx),
         Panel::Experiments => experiments::render(player, window, cx),
@@ -148,6 +154,7 @@ pub fn header(name: &'static str, title: &str, colour: u32) -> gpui::Div {
 fn icon_of(id: &str) -> &'static str {
     match id {
         id if id.starts_with("live") => "live",
+        id if id.starts_with("game") => "sound",
         id if id.starts_with("resource") => "resources",
         id if id.starts_with("capture") => "capture",
         id if id.starts_with("experiment") => "experiments",

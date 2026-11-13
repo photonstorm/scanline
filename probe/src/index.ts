@@ -39,6 +39,7 @@ import { gpuSamples, gpuWorkDone, installTiming, timingHandlers, timingNotes } f
 import { installReadback } from './readback';
 import { bindingLeftBehind, emit, expose, installTransport } from './transport';
 import { installWatches } from './watch';
+import { installSound } from './sound';
 
 // Per-frame counters: the difference between cumulative totals at consecutive frame ends.
 const FRAMES = 600;
@@ -159,6 +160,7 @@ function boot (): void
     installPointerLock();
     installPolicy();
     installErrors();
+    installSound();
     installAudio();
     installWatches();
 
