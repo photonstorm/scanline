@@ -146,7 +146,11 @@ Each milestone ends with its commands, the app's part, tests and the docs. The o
 
 Each milestone is committed when its tests pass, and the app is rebuilt and installed for the owner.
 
-## 9. Not in this plan
+## 9. Where it stands
+
+All six milestones were built on 13 November 2026 and each one's "done when" passes in `tests/protocol.test.mjs`. What stops short of the requirements above is listed in [DEPARTURES.md](DEPARTURES.md), "Scanline for games".
+
+## 10. Not in this plan
 
 - Stepping through JavaScript: the browser's own debugger does this; Scanline does not replace it.
 - Network inspection beyond what a deterministic session records.

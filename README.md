@@ -237,7 +237,7 @@ The first run, with `--update` added to `assert`, saves the baseline. After that
 
 The binary is also an MCP server: `scanline mcp`, on stdio. The tools are the same commands with a `gfx_` prefix: `gfx_launch`, `gfx_step`, `gfx_pixels` and so on. `gfx_help` returns the workflow and the skills, and matches the binary exactly.
 
-`scanline mcp --lean` (or `SCANLINE_MCP=lean`, which `serve --http` honours too) offers two tools in their place: `gfx(command, args)` runs any command, and `gfx_help(command)` gives a command's parameters when they are wanted, from the same schemas. An agent then pays about 430 tokens for the tools where the full set costs some 17,400, and one more call the first time it needs a command's parameters. A misspelt command is answered with the nearest one.
+`scanline mcp --lean` (or `SCANLINE_MCP=lean`, which `serve --http` honours too) offers two tools in their place: `gfx(command, args)` runs any command, and `gfx_help(command)` gives a command's parameters when they are wanted, from the same schemas. An agent then pays about 430 tokens for the tools where the full set costs some 20,100, and one more call the first time it needs a command's parameters. A misspelt command is answered with the nearest one.
 
 **Claude Code.** This repository is a plugin and a marketplace of one. With `scanline` on your `PATH`:
 
@@ -255,7 +255,7 @@ That registers the MCP server and installs the seven skills. To try the plugin f
 claude --plugin-dir .
 ```
 
-**What each way costs an agent.** Measured on 12 November 2026: over MCP the 64 tools' definitions are about 17,400 tokens (62,500 characters), sent with every request unless the client defers them (Claude Code's tool search does, listing names alone until a tool is wanted). The command line costs nothing until it is used: `scanline help` is about 1,400 tokens, `scanline help <command>` far less, and a skill (`scanline skill <name>`) is read only when its kind of job comes up. `scanline mcp --lean` brings MCP down to about 640 tokens with its instructions. For an agent that can run a shell, the command line and the skills are the cheapest way in; for one that cannot, lean MCP, unless its client defers tools as Claude Code does.
+**What each way costs an agent.** Measured on 13 November 2026: over MCP the 77 tools' definitions are about 20,100 tokens (72,200 characters), sent with every request unless the client defers them (Claude Code's tool search does, listing names alone until a tool is wanted). The command line costs nothing until it is used: `scanline help` is about 1,400 tokens, `scanline help <command>` far less, and a skill (`scanline skill <name>`) is read only when its kind of job comes up. `scanline mcp --lean` brings MCP down to about 640 tokens with its instructions. For an agent that can run a shell, the command line and the skills are the cheapest way in; for one that cannot, lean MCP, unless its client defers tools as Claude Code does.
 
 **Any other agent.** Register a stdio MCP server whose command is `scanline` with the argument `mcp`, and write the skills where the agent loads them from:
 

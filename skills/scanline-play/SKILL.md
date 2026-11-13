@@ -65,6 +65,14 @@ After each code change: `gfx_replay_run(run: "run_N")`. The page reloads and the
 
 The replay compares frame fingerprints with the original and says where they first differ. If your change alters what is drawn, a difference from that point on is your change showing. A difference before it means the run has drifted: check that the session is deterministic and that the game does not read the wall clock or the network. In a deterministic session the network's responses are kept with the run and given back on the same frames.
 
+## Takes: runs with names
+
+`gfx_take(action: "start", name: "door-glitch")`, play, then `gfx_take(action: "stop")` keeps a run under a name, in a file anyone can play: a person records one in the app (Game › Takes) and tells you its name. `gfx_take(action: "play", name: "door-glitch", then: "capture")` reloads, plays it to its end and captures there; `until_mark` stops at a page mark, and a watch with `break: true` stops it on the frame a value goes wrong. `gfx_takes()` lists them.
+
+## Watch what the game holds
+
+`gfx_watch(expression: "game.player.body.velocity", break: true)` reads a value or an object's properties as each frame ends and stops the game on the frame a number becomes NaN or infinite (other rules: defined, range, type, changes, steady). `gfx_watchable()` lists what the engine offers with no change to the page; `gfx_watch(object: "<path>")` watches one. `gfx_watches(history: 60)` gives the frames before.
+
 ## When a person plays better than you
 
 Some games you will not get through. `gfx_request_human(instruction: "Play to the second boss, then press Debug")` hands the input over; in a deterministic session their run can be saved and replayed like yours. See `scanline-with-a-person`.

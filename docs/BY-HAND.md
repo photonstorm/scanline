@@ -255,6 +255,15 @@ node evals/run.mjs --agent 'claude -p --mcp-config /path/to/mcp.json --allowedTo
 10. **A capture file.** `scanline export --capture cap_1 --path ~/Desktop/frame.scanline`, then double-click the file in the Finder: a window opens on its Captures panel with that capture. With a window already open, double-click it again: that window imports it and shows it.
 11. **An agent's session.** `scanline launch <url> --display app` from a terminal opens a window too, and `scanline viewer --show capture --capture cap_1 --draw 2` turns its panel to that draw.
 
+### The game-debugging panels (13 November 2026)
+
+Built and checked through the host and pictures of the app's own window; nobody has yet used them with a mouse.
+
+12. **Objects.** On `fixtures/protocol/watch.html` (served as above), Live › Objects. Type `game.player` in the field and Watch: a card with x, y, the frame name and the velocity, each with a small graph that moves. Run: at frame 40 the velocity turns NaN and goes red. Click x's value, type `100`, Return: the sprite comes back where you put it. Stop on break, then add `game.player.body.velocity` and reload: the game stops on frame 40 by itself.
+13. **Audio.** On https://adventure.sixfingerpunch.com, Game › Audio. The meters move with the sound; the graph lists the mix, reverbs and the ambient loops, with a green dot on what plays. M on a playing source: it falls silent; M again: back. S on one: only it is heard. B on a filter: the sound brightens. Click a gain node and change its gain: louder or quieter at once. Undo all: as it was. The findings card names the 55 MB music buffer once the music starts. Keep last 10 s, play a while, Save clip: a WAV on the desktop that sounds like what you heard.
+14. **Takes.** On `fixtures/protocol/menu.html`, Game › Takes, Record. Click Start, choose a level with ↓ and Return, walk right with → past the door. Stop and keep: the take is listed. Click its name and rename it. Play: the page reloads and walks to the same place by itself. Play + capture: the same, then the capture opens. In a terminal, `scanline take play <name>` does the same for an agent.
+15. **Notes.** On any game, Note in the toolbar (or ⇧⌘N): the game freezes and its frame fills the panel. Draw with each tool (Pen, Arrow, Box, Ring, Pin) and each colour; a Pin asks for its words as you type; Undo and Clear. Type a line in the field, Send to agent. In a terminal, `scanline notes` lists it and `scanline note <id>` gives its words, the marked picture (open it: your marks on the frame), its capture and its take.
+
 ## The desktop app prototype
 
 [prototypes/app](../prototypes/app/README.md). On the Mac, already done by hand on 12 November 2026: it runs games and is fast. Still to look at:
