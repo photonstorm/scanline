@@ -1315,7 +1315,7 @@ fn attachments_grid(player: &Player, columns: usize, cx: &mut Context<Player>) -
     grid
 }
 
-fn workspace(player: &mut Player, cx: &mut Context<Player>) -> gpui::Div {
+fn workspace(player: &mut Player, tab: usize, cx: &mut Context<Player>) -> gpui::Div {
     let state = &player.captures;
     let capture = state.opened.clone().unwrap_or_default();
     let count = state.events.len();
@@ -1559,28 +1559,29 @@ fn workspace(player: &mut Player, cx: &mut Context<Player>) -> gpui::Div {
     let magnified = magnifier_card(player, cx);
     let state_card = draw.as_ref().zip(selected).map(|(draw, number)| card(format!("Draw {number}"), PURPLE).when_some(said.clone(), |card, said| card.child(div().text_xs().text_color(rgb(TEXT)).child(said))).child(state_of(draw)));
 
-    let body = if width >= 1100.0 {
-        let tall = 640.0;
-
-        div()
+    // One tab at a time beside the navigator: the frame, the bindings, the state, or the
+    // timeline over the whole width.
+    let navigator_width = if width >= 1100.0 { 310.0 } else { 270.0 };
+    let tall = if width >= 1100.0 { 640.0 } else { 520.0 };
+    let side = width >= 760.0;
+    let main = match tab {
+        0 if width >= 1100.0 => div()
             .flex()
             .gap_3()
-            .child(div().w(px(310.0)).flex_none().child(navigator(player, tall, cx)))
-            .child(div().flex_1().min_w_0().flex().flex_col().gap_2().child(picture).children(magnified).child(table).children(state_card))
-            .child(div().w(px((width * 0.3).clamp(320.0, 520.0))).flex_none().flex().flex_col().gap_2().child(attachments_grid(player, 1, cx)).children(worth).children(story))
-    } else if width >= 760.0 {
-        div()
-            .flex()
-            .gap_3()
-            .child(div().w(px(280.0)).flex_none().child(navigator(player, 560.0, cx)))
-            .child(div().flex_1().min_w_0().flex().flex_col().gap_2().children(worth).child(picture).children(magnified).children(story).child(attachments_grid(player, 2, cx)).child(table).children(state_card))
+            .child(div().flex_1().min_w_0().flex().flex_col().gap_2().child(picture).children(magnified))
+            .child(div().w(px((width * 0.28).clamp(300.0, 480.0))).flex_none().flex().flex_col().gap_2().child(attachments_grid(player, 1, cx)).children(story)),
+        0 => div().flex().flex_col().gap_2().child(picture).children(magnified).children(story).child(attachments_grid(player, 2, cx)),
+        1 => div().flex().flex_col().gap_2().child(table),
+        2 => div().flex().flex_col().gap_2().children(worth).children(state_card),
+        _ => div().flex().flex_col().gap_2().children((!player.captures.events.is_empty()).then(|| timeline(player, cx))).child(picture),
+    };
+    let body = if side {
+        div().flex().gap_3().child(div().w(px(navigator_width)).flex_none().child(navigator(player, tall, cx))).child(div().flex_1().min_w_0().child(main))
     } else {
-        div().flex().flex_col().gap_2().children(worth).child(navigator(player, 260.0, cx)).child(picture).children(magnified).children(story).child(attachments_grid(player, 2, cx)).child(table).children(state_card)
+        div().flex().flex_col().gap_2().child(navigator(player, 220.0, cx)).child(main)
     };
 
-    let line = (!player.captures.events.is_empty()).then(|| timeline(player, cx));
-
-    div().flex().flex_col().gap_2().child(header).child(note_field).when(loading, |content| content.child(note("Reading…"))).children(line).child(body)
+    div().flex().flex_col().gap_2().child(header).child(note_field).when(loading, |content| content.child(note("Reading…"))).child(body)
 }
 
 /// A recording: its contact sheet, what the host says of it, and its frames, any of which
@@ -1656,13 +1657,14 @@ fn recording(player: &mut Player, cx: &mut Context<Player>) -> gpui::Div {
 }
 
 pub fn render(player: &mut Player, _window: &mut Window, cx: &mut Context<Player>) -> AnyElement {
-    let content = if player.captures.opened.is_some() {
-        workspace(player, cx)
-    } else if player.captures.recording.is_some() {
-        recording(player, cx)
-    } else {
-        list_of_captures(player, cx)
-    };
+    if player.captures.opened.is_some() {
+        let tab = player.tab("captures").min(3);
+        let content = workspace(player, tab, cx);
+
+        return crate::panels::tabbed(player, "captures", "Captures", PURPLE, &["Frame", "Bindings", "State", "Timeline"], cx, content);
+    }
+
+    let content = if player.captures.recording.is_some() { recording(player, cx) } else { list_of_captures(player, cx) };
 
     crate::panels::frame("captures", "Captures", PURPLE, content)
 }

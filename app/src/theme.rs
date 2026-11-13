@@ -87,6 +87,26 @@ pub fn icon_button(id: impl Into<SharedString>, name: &'static str, colour: u32,
         .child(crate::icons::icon(name, 15.0, if on { tint(colour, 1.0) } else { tint(TEXT, 0.82) }))
 }
 
+/// A tab in a strip: a word, lit in its colour when chosen.
+pub fn tab_button(id: impl Into<SharedString>, label: impl Into<SharedString>, colour: u32, on: bool) -> Stateful<Div> {
+    let id: SharedString = id.into();
+
+    div()
+        .id(id)
+        .flex()
+        .flex_none()
+        .items_center()
+        .h(px(24.0))
+        .px_2p5()
+        .rounded(px(5.0))
+        .text_xs()
+        .cursor_pointer()
+        .text_color(if on { tint(colour, 1.0) } else { tint(TEXT, 0.7) })
+        .when(on, |tab| tab.bg(tint(colour, 0.2)).font_weight(FontWeight::SEMIBOLD))
+        .hover(move |style| style.bg(tint(colour, 0.12)))
+        .child(label.into())
+}
+
 /// A button with an icon and a word, for a segment or a toolbar. `on` lights it.
 pub fn tool_button(id: impl Into<SharedString>, name: &'static str, label: impl Into<SharedString>, colour: u32, on: bool) -> Stateful<Div> {
     let id: SharedString = id.into();

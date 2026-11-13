@@ -287,6 +287,8 @@ pub struct Player {
     pub fullscreen: bool,
     /// The game has the pointer (its stand-in lock): the cursor is held until Esc.
     pub pointer_held: bool,
+    /// The tab chosen in each panel that has tabs, by the panel's id.
+    pub tabs: HashMap<&'static str, usize>,
 }
 
 impl Player {
@@ -344,7 +346,17 @@ impl Player {
             picture_due: None,
             fullscreen: false,
             pointer_held: false,
+            tabs: HashMap::new(),
         }
+    }
+
+    /// The tab chosen in a panel (0 until one is chosen).
+    pub fn tab(&self, panel: &str) -> usize {
+        self.tabs.get(panel).copied().unwrap_or(0)
+    }
+
+    pub fn set_tab(&mut self, panel: &'static str, index: usize) {
+        self.tabs.insert(panel, index);
     }
 
     pub fn session(&self) -> Option<&str> {
@@ -1646,6 +1658,21 @@ impl Player {
             "video" => self.toggle_video(),
             "mute" => self.toggle_mute(),
             "timeline" => self.measure_capture(),
+            // tab captures 1: a panel's tab by number, from 0.
+            "tab" => {
+                let mut words = rest.split_whitespace();
+
+                if let (Some(panel), Some(index)) = (words.next(), words.next().and_then(|word| word.parse::<usize>().ok())) {
+                    let panel: &'static str = match panel {
+                        "live" => "live",
+                        "captures" => "captures",
+                        "experiments" => "experiments",
+                        _ => "game",
+                    };
+
+                    self.set_tab(panel, index);
+                }
+            }
             // magnify x y w h: a region of the chosen draw's target, as a drag would.
             "magnify" => {
                 let numbers: Vec<u32> = rest.split_whitespace().filter_map(|word| word.parse().ok()).collect();

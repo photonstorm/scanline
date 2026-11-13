@@ -280,27 +280,22 @@ pub fn render(player: &mut Player, _window: &mut Window, cx: &mut Context<Player
             })))
     });
 
-    let content = if wide {
-        div()
-            .flex()
-            .gap_2()
-            .child(
-                div().flex_1().min_w_0().flex().flex_col().gap_2().children(editing).child(view_card).child(state_card).child(measure_card).child(force_card),
-            )
-            .child(div().flex_1().min_w_0().flex().flex_col().gap_2().child(programs_card).child(textures_card))
-    } else {
-        div()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .children(editing)
-            .child(view_card)
-            .child(force_card)
-            .child(state_card)
-            .child(programs_card)
-            .child(textures_card)
-            .child(measure_card)
+    let content = move |tab: usize| -> gpui::Div {
+        match tab {
+            // Views: how the frame is drawn, and what is in force.
+            0 if wide => div()
+                .flex()
+                .gap_2()
+                .child(div().flex_1().min_w_0().flex().flex_col().gap_2().child(view_card).child(state_card))
+                .child(div().flex_1().min_w_0().flex().flex_col().gap_2().children(editing).child(force_card)),
+            0 => div().flex().flex_col().gap_2().children(editing).child(view_card).child(state_card).child(force_card),
+            1 => div().flex().flex_col().gap_2().child(programs_card),
+            2 => div().flex().flex_col().gap_2().child(textures_card),
+            _ => div().flex().flex_col().gap_2().child(measure_card).child(force_card),
+        }
     };
 
-    crate::panels::frame("experiments", "Experiments", ORANGE, content)
+    let chosen = content(player.tab("experiments").min(3));
+
+    crate::panels::tabbed(player, "experiments", "Experiments", ORANGE, &["Views", "Programs", "Textures", "Cost"], cx, chosen)
 }

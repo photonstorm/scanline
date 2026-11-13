@@ -71,7 +71,7 @@ fn number(value: &Value) -> f64 {
     value.as_f64().unwrap_or(0.0)
 }
 
-pub fn render(player: &mut Player, _window: &mut Window, _cx: &mut Context<Player>) -> AnyElement {
+pub fn render(player: &mut Player, _window: &mut Window, cx: &mut Context<Player>) -> AnyElement {
     let live = &player.live;
     let stats = &live.last;
     let interval = number(&stats["intervalMs"]["mean"]);
@@ -166,40 +166,25 @@ pub fn render(player: &mut Player, _window: &mut Window, _cx: &mut Context<Playe
     let empty = player.session().is_none();
     let wide = player.panel_px >= 780.0;
 
-    crate::panels::frame(
-        "live",
-        "Live",
-        GREEN,
-        if wide {
-            // Two columns when there is room: timing on the left, work and memory on the right.
-            div()
+    let content = move |tab: usize| -> gpui::Div {
+        let empty_note = empty.then(|| note("No session."));
+
+        match (tab, wide) {
+            // Performance: the meters and the frame's time, then work.
+            (0, true) => div()
                 .flex()
                 .gap_2()
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .gap_2()
-                        .when(empty, |content| content.child(note("No session.")))
-                        .child(levels)
-                        .child(frame_time)
-                        .child(times),
-                )
-                .child(div().flex_1().min_w_0().flex().flex_col().gap_2().child(memory).child(work).child(objects))
-        } else {
-            div()
-                .flex()
-                .flex_col()
-                .gap_2()
-                .when(empty, |content| content.child(note("No session.")))
-                .child(levels)
-                .child(frame_time)
-                .child(times)
-                .child(work)
-                .child(memory)
-                .child(objects)
-        },
-    )
+                .children(empty_note)
+                .child(div().flex_1().min_w_0().flex().flex_col().gap_2().child(levels).child(frame_time))
+                .child(div().flex_1().min_w_0().flex().flex_col().gap_2().child(times).child(work)),
+            (0, false) => div().flex().flex_col().gap_2().children(empty_note).child(levels).child(frame_time).child(times).child(work),
+            // Memory: GPU memory and the objects that hold it.
+            (_, true) => div().flex().gap_2().children(empty_note).child(div().flex_1().min_w_0().child(memory)).child(div().flex_1().min_w_0().child(objects)),
+            (_, false) => div().flex().flex_col().gap_2().children(empty_note).child(memory).child(objects),
+        }
+    };
+
+    let chosen = content(player.tab("live").min(1));
+
+    crate::panels::tabbed(player, "live", "Live", GREEN, &["Performance", "Memory"], cx, chosen)
 }

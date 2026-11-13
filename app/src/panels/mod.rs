@@ -157,6 +157,26 @@ fn icon_of(id: &str) -> &'static str {
     }
 }
 
+/// A panel with tabs: its header with the tab strip at the right, then the chosen tab's
+/// content, made by the caller for `player.tab(id)`.
+pub fn tabbed(player: &Player, id: &'static str, title: &str, colour: u32, tabs: &[&'static str], cx: &mut Context<Player>, content: gpui::Div) -> AnyElement {
+    let current = player.tab(id).min(tabs.len().saturating_sub(1));
+    let strip = group().children(tabs.iter().enumerate().map(|(index, name)| {
+        tab_button(gpui::SharedString::from(format!("{id}-tab-{index}")), *name, colour, index == current).on_click(cx.listener(move |this, _, _, cx| {
+            this.set_tab(id, index);
+            cx.notify();
+        }))
+    }));
+
+    div()
+        .size_full()
+        .flex()
+        .flex_col()
+        .child(header(icon_of(id), title, colour).child(div().flex_1()).child(strip))
+        .child(div().id(id).flex_1().min_h_0().flex().flex_col().gap_2().p_3().overflow_y_scroll().child(content))
+        .into_any_element()
+}
+
 /// A panel's frame: its header, then its content, scrolling under it.
 pub fn frame(id: &'static str, title: &str, colour: u32, content: impl IntoElement) -> AnyElement {
     div()
