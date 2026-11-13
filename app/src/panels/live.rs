@@ -39,6 +39,8 @@ pub enum Entry {
     Value { name: String, prop: String },
     /// A value to hold an audio node's parameter at (the Game panel).
     Param { node: String, param: String },
+    /// A take's new name (the Game panel).
+    Rename { name: String },
 }
 
 /// A watched value as words. NaN, infinities and undefined come as { $: name }.

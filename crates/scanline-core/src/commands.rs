@@ -414,6 +414,8 @@ pub async fn status(session: &Arc<Session>) -> Result<Value> {
         "headless": session.headless,
         "display": session.display,
         "app_show": session.state.lock().unwrap().app_show.clone(),
+        // A take being recorded: its name and the frame it began on.
+        "take": session.state.lock().unwrap().take.as_ref().map(|take| json!({ "name": take["name"], "start": take["start"], "from": take["from"] })),
         "video_seconds": session.state.lock().unwrap().video.map(|started| started.elapsed().as_secs_f64()),
         "emulated": session.state.lock().unwrap().emulated.clone(),
         "owner": session.state.lock().unwrap().owner.clone(),

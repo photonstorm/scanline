@@ -26,6 +26,7 @@ fn positional(command: &str) -> &'static [&'static str] {
         "unwatch" | "watches" => &["name"],
         "watch_set" => &["name", "prop", "value"],
         "audio" => &["view"],
+        "take" => &["action", "name"],
         "audio_node" => &["handle"],
         "audio_patch" => &["handle", "mode"],
         "resources" => &["kind"],

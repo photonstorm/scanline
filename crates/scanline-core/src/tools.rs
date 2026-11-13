@@ -458,6 +458,29 @@ pub const TOOLS: &[Tool] = &[
         read_only: false,
     },
     Tool {
+        name: "take",
+        description: "Named recordings of input, played back to the same frame. start begins recording (input from the person or from you), stop keeps it as a take, play loads the page again and plays it, then pauses or captures or screenshots where it ends. A take plays from the page's load, or from a checkpoint the page saved where it began. Stops early at to_frame, at a mark, or where a watch's breaking rule breaks.",
+        schema: schema!(
+            r#"["action"]"#,
+            session!(),
+            r#""action": { "type": "string", "enum": ["start", "stop", "play", "remove", "rename"] }"#,
+            r#""name": { "type": "string", "description": "Letters, digits, - _ and . Default for start: take_N." }"#,
+            r#""from": { "type": "string", "enum": ["load", "checkpoint"], "description": "For start. Default: a checkpoint when the page offers one and it is past frame 0." }"#,
+            r#""then": { "type": "string", "enum": ["pause", "capture", "screenshot"], "description": "For play: what to do where it ends." }"#,
+            r#""to_frame": { "type": "integer", "description": "For play: stop at this frame." }"#,
+            r#""until_mark": { "type": "string", "description": "For play: stop where the page makes this mark." }"#,
+            r#""speed": { "type": "string", "enum": ["fast", "real"], "description": "For play. Default fast." }"#,
+            r#""to": { "type": "string", "description": "For rename: the new name." }"#
+        ),
+        read_only: false,
+    },
+    Tool {
+        name: "takes",
+        description: "The takes on disk, newest first: name, frames, input, where each plays from, and the page it was recorded on.",
+        schema: schema!("[]"),
+        read_only: true,
+    },
+    Tool {
         name: "events",
         description: "Events queued for a session since a cursor: crashes, context loss, navigation, warnings. Nothing is lost if you were not listening.",
         schema: schema!("[]", session!(), r#""since": { "type": "integer" }"#, r#""kinds": { "type": "array", "items": { "type": "string" } }"#),

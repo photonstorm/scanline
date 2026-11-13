@@ -169,6 +169,10 @@ pub struct State {
     /// Patches asked to outlast a reload: the command that made each, its arguments, and
     /// the handle it has now ("" while it has not been made again).
     pub kept_patches: Vec<(String, Value, String)>,
+    /// Watches added by expression, as they were asked for, to add again after a reload.
+    pub watched: Vec<Value>,
+    /// A take being recorded: its name, the frame it began on, and where it plays from.
+    pub take: Option<Value>,
     /// States the page saved through the page protocol: the handle shown, the state as the
     /// page gave it, and the frame it was saved at.
     /// Whether the person can mark the frozen frame just now: after their Debug press,

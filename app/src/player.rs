@@ -202,6 +202,8 @@ pub enum Purpose {
     /// The game's sound, and the chosen audio node, for the Game panel.
     Audio,
     AudioNode,
+    /// The takes on disk, for the Game panel's Takes tab.
+    Takes,
 }
 
 impl Purpose {
@@ -214,6 +216,7 @@ impl Purpose {
             Purpose::Watches => "watches",
             Purpose::Audio => "audio",
             Purpose::AudioNode => "audio-node",
+            Purpose::Takes => "takes",
             Purpose::Console => "console",
             Purpose::Activity => "activity",
             Purpose::Captures => "captures",
@@ -454,7 +457,11 @@ impl Player {
             self.ask("watches", json!({ "history": 120 }), Purpose::Watches);
         }
 
-        if self.panel == Panel::Game && self.due("audio", Duration::from_millis(250)) {
+        if self.panel == Panel::Game && self.tab("game") == 1 && self.due("takes", Duration::from_millis(1000)) {
+            self.ask("takes", json!({}), Purpose::Takes);
+        }
+
+        if self.panel == Panel::Game && self.tab("game") == 0 && self.due("audio", Duration::from_millis(250)) {
             self.ask("audio", json!({ "view": "summary" }), Purpose::Audio);
         }
 
@@ -562,6 +569,7 @@ impl Player {
             (Purpose::Memory, Ok(value)) => self.live.memory(&value),
             (Purpose::Watches, Ok(value)) => self.live.watches = value["data"].clone(),
             (Purpose::Audio, Ok(value)) => self.sound.audio = value["data"].clone(),
+            (Purpose::Takes, Ok(value)) => self.sound.takes = value["data"].clone(),
             (Purpose::AudioNode, Ok(value)) => self.sound.node = value["data"].clone(),
             (Purpose::AudioNode, Err(_)) => {
                 self.sound.selected = None;
@@ -1930,6 +1938,14 @@ impl Player {
                     self.last.remove("audio-node");
                 }
             }
+            Some(panels::live::Entry::Rename { name }) => {
+                let to = typed.trim().to_string();
+
+                if !to.is_empty() && to != name {
+                    self.ask("take", json!({ "action": "rename", "name": name, "to": to }), Purpose::Action("take"));
+                    self.last.remove("takes");
+                }
+            }
             Some(panels::live::Entry::Value { name, prop }) => {
                 self.ask("watch_set", json!({ "name": name, "prop": prop, "value": panels::live::typed_value(&typed) }), Purpose::Action("watch_set"));
             }
@@ -1942,6 +1958,25 @@ impl Player {
         // Read again at once, not at the next turn.
         self.last.remove("watches");
         platform::focus(self.browser_view);
+    }
+
+    /// Records, keeps, plays or removes a take; `take` is its name and, for play, what then.
+    pub fn take_action(&mut self, action: &str, take: Option<(String, &str)>) {
+        let mut params = json!({ "action": action });
+
+        if let Some((name, then)) = take {
+            params["name"] = json!(name);
+
+            if action == "play" {
+                params["then"] = json!(then);
+            }
+        }
+
+        let purpose = if action == "play" && params["then"] == "capture" { Purpose::Capture } else { Purpose::Action("take") };
+
+        self.ask("take", params, purpose);
+        self.last.remove("takes");
+        self.last.remove("status");
     }
 
     pub fn select_audio_node(&mut self, node: String) {

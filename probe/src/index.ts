@@ -33,7 +33,7 @@ import { installInputRecorder } from './input';
 import { installInventory } from './inventory';
 import { installMasquerade } from './masquerade';
 import { currentWarnings, declare, modifications } from './mods';
-import { G, isWindow } from './natives';
+import { G, isWindow, nextTask } from './natives';
 import { installSeededRandom } from './random';
 import { gpuSamples, gpuWorkDone, installTiming, timingHandlers, timingNotes } from './timing';
 import { installReadback } from './readback';
@@ -266,6 +266,10 @@ function boot (): void
 
     // Frames stopped between two of them for a moment, for the host to hand the page a
     // network response at a known frame. Not a pause: nothing waiting on the page is told.
+    // One turn of the event loop, on the probe's own channel, which a pause does not hold:
+    // what the page does with a response handed to it is done by the time this answers.
+    expose('turn', () => new G.Promise((done: (value: boolean) => void) => nextTask(() => done(true))));
+
     expose('net.hold', () => hold());
     expose('net.release', () => letGo());
 

@@ -551,3 +551,113 @@ describe('audio (docs/GAME.md, section 4)', () =>
         assert.match(buffers.out, /abuf_1 0\.5 s, 1 ch, \d+ Hz, \d+ KB in memory, decoded from «http:\/\/127\.0\.0\.1:\d+\/fixtures\/protocol\/tone\.wav» \(8 KB file\)/, buffers.out);
     });
 });
+
+describe('takes (docs/GAME.md, section 5)', () =>
+{
+    // Click Start, choose a level, then walk right for `walk` frames.
+    async function playThrough (level, walk)
+    {
+        await scanline('input', '--events', '[{"pointer": "down", "x": 160, "y": 100}, {"pointer": "up", "x": 160, "y": 100}]');
+        await scanline('step', 3);
+
+        for (let index = 1; index < level; index++)
+        {
+            await scanline('input', '--events', '[{"key": "ArrowDown", "press": true}]');
+            await scanline('step', 2);
+        }
+
+        await scanline('input', '--events', '[{"key": "Enter", "press": true}]');
+        await scanline('step', 3);
+        await scanline('input', '--events', '[{"key": "ArrowRight", "down": true}]');
+        await scanline('step', walk);
+        await scanline('input', '--events', '[{"key": "ArrowRight", "down": false}]');
+        await scanline('step', 5);
+    }
+
+    const state = async () => (await scanline('eval', 'JSON.stringify([game.scene, game.level, game.player.x])', '--json')).json.data.value;
+
+    test('a take through a menu plays back to the same frame, ten times running', async () =>
+    {
+        await scanline('launch', server.url('fixtures/protocol/menu.html'), '--headless', '--paused', '--deterministic', 'true');
+        await scanline('step', 5);
+
+        const started = await scanline('take', 'start', 'door-walk');
+
+        assert.match(started.out, /Recording take «door-walk» from frame 5\. It plays from the page's load, with the input before frame 5 too/, started.out);
+        await playThrough(1, 100);
+
+        const kept = await scanline('take', 'stop');
+
+        assert.match(kept.out, /Take «door-walk»: frames 5–\d+ \(\d+ frames\) with .*key presses?, .*playing from the page's load\./, kept.out);
+
+        const end = await state();
+
+        assert.match(end, /\["play",1,2\d\d\]/, end);
+
+        for (let time = 0; time < 10; time++)
+        {
+            const played = await scanline('take', 'play', 'door-walk');
+
+            assert.match(played.out, /Played take «door-walk» to frame \d+\. Paused\./, played.out);
+            assert.match(played.out, /All \d+ fingerprints along the way match the original/);
+            assert.equal(await state(), end, `play ${time + 1} reached the same place`);
+        }
+
+        // Stopped early: at the page's mark, and with a capture where it ends.
+        const marked = await scanline('take', 'play', 'door-walk', '--until_mark', 'door', '--then', 'capture');
+
+        assert.match(marked.out, /Stopped the replay of take «door-walk» at frame \d+ of \d+: the page marked «door» at frame \d+\. Paused\./, marked.out);
+        assert.match(marked.out, /cap_\d+: frame \d+/);
+
+        assert.match((await scanline('takes')).out, /door-walk {2}frames 5–\d+, .*from load, deterministic/);
+        assert.match((await scanline('take', 'rename', 'door-walk', '--to', 'walk')).out, /Take «door-walk» is now «walk»\./);
+        assert.match((await scanline('take', 'play', 'nothing')).out, /There is no take "nothing"\. Takes: walk\./);
+        assert.match((await scanline('take', 'start', '../x')).out, /cannot be a take's name/);
+        assert.match((await scanline('take', 'remove', 'walk')).out, /Removed take «walk»\./);
+    });
+
+    test('a take stops where a watch breaks, with the watch added again after the reload', async () =>
+    {
+        await scanline('launch', server.url('fixtures/protocol/menu.html'), '--headless', '--paused', '--deterministic', 'true');
+        await scanline('take', 'start', 'level-two');
+        await playThrough(2, 100);
+        await scanline('take', 'stop');
+        await scanline('watch', 'game.player', '--name', 'hero', '--break', 'true');
+
+        const played = await scanline('take', 'play', 'level-two');
+
+        assert.match(played.out, /Stopped the replay of take «level-two» at frame \d+ of \d+: watch «hero» broke its rule finite on «v?x» at frame \d+\. Paused\./, played.out);
+        assert.match(played.out, /1 of 1 watch was added again after the reload/);
+        assert.match((await scanline('watches', 'hero')).out, /«vx» = NaN ✗/);
+        await scanline('take', 'remove', 'level-two');
+    });
+
+    test('a take that begins part way plays from the checkpoint the page saved', async () =>
+    {
+        await scanline('launch', server.url('fixtures/protocol/menu.html?checkpoint=1'), '--headless', '--paused');
+        await playThrough(1, 20);
+
+        const started = await scanline('take', 'start', 'from-here');
+
+        assert.match(started.out, /The page saved a checkpoint at frame \d+; the take plays from there\./, started.out);
+        await scanline('input', '--events', '[{"key": "ArrowRight", "down": true}]');
+        await scanline('step', 30);
+        await scanline('input', '--events', '[{"key": "ArrowRight", "down": false}]');
+        await scanline('step', 5);
+        assert.match((await scanline('take', 'stop')).out, /playing from the checkpoint saved at frame \d+\./);
+
+        const end = await state();
+
+        // Somewhere else entirely, then back.
+        await scanline('input', '--events', '[{"key": "ArrowRight", "down": true}]');
+        await scanline('step', 40);
+        await scanline('input', '--events', '[{"key": "ArrowRight", "down": false}]');
+        assert.notEqual(await state(), end);
+
+        const played = await scanline('take', 'play', 'from-here');
+
+        assert.match(played.out, /Played take «from-here» from its checkpoint \(saved at frame \d+\) for 35 frames\./, played.out);
+        assert.equal(await state(), end);
+        await scanline('take', 'remove', 'from-here');
+    });
+});

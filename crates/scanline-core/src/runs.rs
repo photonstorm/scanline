@@ -68,7 +68,7 @@ async fn prints(session: &Arc<Session>, after: u64) -> (u64, Vec<Value>) {
 
 /// An input row as the page recorded it, as an event `step` can send. None for rows that
 /// are not replayed: focus changes, and key repeats, which the held key produces again.
-fn event_of(row: &Value) -> Option<Value> {
+pub(crate) fn event_of(row: &Value) -> Option<Value> {
     let kind = row[2].as_str()?;
     let number = |index: usize| row[index].as_f64().unwrap_or(0.0);
 
@@ -108,8 +108,8 @@ fn event_of(row: &Value) -> Option<Value> {
     }
 }
 
-/// Keeps the session's input since the page loaded, and its frame fingerprints, as a run.
-pub async fn save_run(host: &Arc<Host>, session: &Arc<Session>) -> Result<Value> {
+/// The session's input since the page loaded, and its frame fingerprints, as a run (without its handle).
+pub(crate) async fn collect(session: &Arc<Session>) -> Result<Value> {
     let top = session.top()?;
     let status = session.probe(&top, "status", json!({}), SHORT).await?;
     let mut rows: Vec<Value> = Vec::new();
@@ -135,16 +135,10 @@ pub async fn save_run(host: &Arc<Host>, session: &Arc<Session>) -> Result<Value>
     // What the page was given from the network, and on which frame (deterministic sessions).
     let network: Vec<Value> = session.state.lock().unwrap().net_log.clone();
     let (every, taken) = prints(session, 0).await;
-    let frame = status["frame"].as_u64().unwrap_or(0);
 
-    std::fs::create_dir_all(dir(host)).with_context(|| format!("creating {}", dir(host).display()))?;
-
-    let handle = format!("run_{}", known(host).last().and_then(|last| last[4..].parse::<u32>().ok()).unwrap_or(0) + 1);
-
-    let run = json!({
-        "run": handle,
+    Ok(json!({
         "url": session.url(),
-        "frames": frame,
+        "frames": status["frame"].as_u64().unwrap_or(0),
         "deterministic": status["deterministic"],
         "print_every": every,
         "events": events,
@@ -152,16 +146,14 @@ pub async fn save_run(host: &Arc<Host>, session: &Arc<Session>) -> Result<Value>
         "dropped": dropped,
         "profile": session.profile.name(),
         "network": network,
-    });
+    }))
+}
 
-    let path = dir(host).join(format!("{handle}.json"));
-
-    std::fs::write(&path, serde_json::to_vec(&run)?).with_context(|| format!("writing {}", path.display()))?;
-
-    // What was done, in a line: how many of each kind of input.
+/// What a run's input was, in words: how many of each kind.
+pub(crate) fn input_words(events: &[Value]) -> String {
     let mut kinds: Vec<((&str, &str), usize)> = Vec::new();
 
-    for row in &events {
+    for row in events {
         let kind = match row[2].as_str().unwrap_or("") {
             "keydown" => ("key press", "key presses"),
             "mousemove" => ("mouse move", "mouse moves"),
@@ -178,14 +170,38 @@ pub async fn save_run(host: &Arc<Host>, session: &Arc<Session>) -> Result<Value>
         }
     }
 
+    if kinds.is_empty() {
+        "no input".to_string()
+    } else {
+        kinds.iter().map(|((one, many), count)| format!("{count} {}", if *count == 1 { one } else { many })).collect::<Vec<_>>().join(", ")
+    }
+}
+
+/// Keeps the session's input since the page loaded, and its frame fingerprints, as a run.
+pub async fn save_run(host: &Arc<Host>, session: &Arc<Session>) -> Result<Value> {
+    let mut run = collect(session).await?;
+    let events: Vec<Value> = run["events"].as_array().cloned().unwrap_or_default();
+    let network: Vec<Value> = run["network"].as_array().cloned().unwrap_or_default();
+    let every = run["print_every"].as_u64().unwrap_or(0);
+    let taken: Vec<Value> = run["prints"].as_array().cloned().unwrap_or_default();
+    let frame = run["frames"].as_u64().unwrap_or(0);
+    let dropped = run["dropped"].as_u64().unwrap_or(0);
+    let status = json!({ "deterministic": run["deterministic"] });
+
+    std::fs::create_dir_all(dir(host)).with_context(|| format!("creating {}", dir(host).display()))?;
+
+    let handle = format!("run_{}", known(host).last().and_then(|last| last[4..].parse::<u32>().ok()).unwrap_or(0) + 1);
+
+    run["run"] = json!(handle);
+
+    let path = dir(host).join(format!("{handle}.json"));
+
+    std::fs::write(&path, serde_json::to_vec(&run)?).with_context(|| format!("writing {}", path.display()))?;
+
     let mut lines = vec![format!(
         "{handle}: the {frame} frames since {} loaded, with {}.",
         page_text(&session.url(), 80),
-        if kinds.is_empty() {
-            "no input".to_string()
-        } else {
-            kinds.iter().map(|((one, many), count)| format!("{count} {}", if *count == 1 { one } else { many })).collect::<Vec<_>>().join(", ")
-        }
+        input_words(&events)
     )];
 
     if status["deterministic"].is_null() {
@@ -241,6 +257,31 @@ pub async fn replay_run(host: &Arc<Host>, session: &Arc<Session>, params: &Value
         )
     })?;
     let run = load(host, handle)?;
+
+    replay(session, &run, handle, params).await
+}
+
+/// Why a replay should stop now: a watch's breaking rule broke, or the page made the mark asked for,
+/// since the event cursor `since`.
+pub(crate) fn stop_reason(session: &Session, since: u64, mark: Option<&str>) -> Option<String> {
+    let state = session.state.lock().unwrap();
+
+    state.events.iter().filter(|event| event.cursor > since).find_map(|event| match event.kind.as_str() {
+        "watch-broken" if event.data["breaks"] == true => Some(format!(
+            "watch «{}» broke its rule {} on «{}» at frame {}",
+            page_text(event.data["name"].as_str().unwrap_or(""), 60),
+            event.data["rule"].as_str().unwrap_or("?"),
+            page_text(event.data["prop"].as_str().unwrap_or(""), 60),
+            event.data["frame"]
+        )),
+        "mark" if mark.is_some() && event.data["name"].as_str() == mark => Some(format!("the page marked «{}» at frame {}", page_text(mark.unwrap_or(""), 60), event.data["frame"])),
+        _ => None,
+    })
+}
+
+/// Reloads the page and gives `run`'s input again, frame for frame, checking as it goes. Stops
+/// early at `to_frame`, or where a watch's breaking rule broke or the page marked `until_mark`.
+pub(crate) async fn replay(session: &Arc<Session>, run: &Value, handle: &str, params: &Value) -> Result<Value> {
     let total = run["frames"].as_u64().unwrap_or(0);
     let target = params["to_frame"].as_u64().unwrap_or(total).min(total);
     let mut notes = Vec::new();
@@ -273,6 +314,11 @@ pub async fn replay_run(host: &Arc<Host>, session: &Arc<Session>, params: &Value
         notes.push(said);
     }
 
+    // And watches, so a rule that breaks can stop the replay.
+    if let Some(said) = crate::watch::reapply(session).await {
+        notes.push(said);
+    }
+
     let top = session.top()?;
     let status = session.probe(&top, "status", json!({}), SHORT).await?;
 
@@ -291,6 +337,11 @@ pub async fn replay_run(host: &Arc<Host>, session: &Arc<Session>, params: &Value
     let events: Vec<(u64, Value)> = run["events"].as_array().into_iter().flatten().filter_map(|row| Some((row[0].as_u64()?, event_of(row)?))).collect();
     let expected: Vec<&Value> = run["prints"].as_array().into_iter().flatten().collect();
     let every = run["print_every"].as_u64().unwrap_or(0);
+
+    // What stops a replay early besides to_frame: a watch's rule that breaks, or a mark the page makes.
+    let watched_from = session.state.lock().unwrap().event_seq;
+    let until_mark = params["until_mark"].as_str().map(str::to_string);
+    let mut stopped_by: Option<String> = None;
 
     let mut frame = status["frame"].as_u64().unwrap_or(0);
     let mut next_event = events.iter().position(|(at, _)| *at >= frame).unwrap_or(events.len());
@@ -367,6 +418,11 @@ pub async fn replay_run(host: &Arc<Host>, session: &Arc<Session>, params: &Value
         }
 
         frame = now;
+
+        if let Some(why) = stop_reason(session, watched_from, until_mark.as_deref()) {
+            stopped_by = Some(why);
+            break;
+        }
     }
 
     // The network goes back to being the network.
@@ -389,7 +445,10 @@ pub async fn replay_run(host: &Arc<Host>, session: &Arc<Session>, params: &Value
             ));
         }
         None => {
-            lines.push(format!("Replayed {handle} to frame {frame}{}. Paused.", if target < total { format!(" of {total}") } else { String::new() }));
+            lines.push(match &stopped_by {
+                Some(why) => format!("Stopped the replay of {handle} at frame {frame} of {total}: {why}. Paused."),
+                None => format!("Replayed {handle} to frame {frame}{}. Paused.", if target < total { format!(" of {total}") } else { String::new() }),
+            });
             lines.push(if matched > 0 {
                 format!("All {matched} fingerprints along the way match the original: the same picture and the same draws at each. The page is where it was.")
             } else if expected.is_empty() {
@@ -425,6 +484,7 @@ pub async fn replay_run(host: &Arc<Host>, session: &Arc<Session>, params: &Value
             "frames": total,
             "matched": matched,
             "diverged": diverged,
+            "stopped_by": stopped_by,
             "events": next_event,
             "notes": notes,
         }),

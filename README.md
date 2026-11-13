@@ -41,6 +41,7 @@ Every milestone of the build plan up to 1.0 has been worked through on macOS (Ap
 - A capture as one file: `export` writes a capture and everything it uses to one `.scanline` file, and `import` reads it into any host, where it answers the same questions and replays.
 - Watches on the game's own objects: `watch` names a value or an object by expression (or the page registers one with `__scanline.watch`), and Scanline reads its numbers, booleans and strings as each frame ends, keeps 600 frames of them, and checks rules (finite, defined, range, type, changes, steady). A rule with `break` stops the game on the frame it broke. `watch_set` changes a value; captures carry the watches' values. The app shows them in Live → Objects, with each value editable in place. See [docs/GAME.md](docs/GAME.md).
 - Audio: `audio` shows each Web Audio context with its output level in dBFS, the graph of nodes as the game built it (parameters, automation, connections), what is playing, every buffer with its decoded size and the file it came from, the audio and video elements, and findings (a suspended context, a node connected to nothing, a gain above 1 on the way out, clipping, a file decoded twice, a buffer of tens of megabytes). `audio_node` has one node and its level; `audio_patch` mutes, solos or bypasses a node or holds a parameter, to hear the difference. The app's Game panel shows it all, with meters and M, S and B switches on each node.
+- Takes: named recordings of input. `take(action: "start")` records from that frame (the person's input or the agent's), `stop` keeps it in `<home>/takes`, and `play` loads the page again and plays it to the same frame, then pauses, captures or screenshots there. It can stop early at a frame, at a mark, or where a watch's breaking rule breaks. Where the page offers checkpoints, a take begun part way plays from the checkpoint it saved. A person can record one in the app (Game → Takes) and hand its name to the agent.
 - Tiers: the person decides what a client may do when the host starts. By default patching and `eval` work only on pages served from this machine, and `navigate` keeps to the origin a session was launched on. See [docs/SECURITY.md](docs/SECURITY.md).
 - Skills: seven recipes (the core loop, wrong pixels, a slow frame, memory, working with a person, playing, and writing rendering code that can be debugged by name), held in the binary so they always match it: `scanline skill`, or `help(skill)` over MCP. A test checks that every command a skill names exists.
 - A recording as a video: `recording(video: true)` writes the frames kept before a Debug press as a WebM file, for the person to watch or attach to a report.
@@ -161,6 +162,10 @@ scanline watches --history 30
 
 ```bash
 scanline audio playing
+```
+
+```bash
+scanline take play door-glitch --then capture
 ```
 
 ```bash

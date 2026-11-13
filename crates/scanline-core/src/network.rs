@@ -122,15 +122,18 @@ pub(crate) fn next_frame(session: &Session, after: u64) -> Option<u64> {
 }
 
 /// Lets the page's event loop turn, so that what it does with a response is done before
-/// the next frame. The probe's frame gate does not hold a message channel.
+/// the next frame. A message channel of the page's own would be held while it is paused,
+/// so the turn is the probe's (`turn`), on a channel of its own.
 async fn settle(session: &Session) {
-    let turn = "new Promise((done) => { const channel = new MessageChannel(); channel.port1.onmessage = () => done(1); channel.port2.postMessage(0); })";
-
     for _ in 0..3 {
-        let _ = session
-            .client
-            .send_with_timeout("Runtime.evaluate", json!({ "expression": turn, "awaitPromise": true }), Some(session.page.as_str()), Duration::from_secs(2))
-            .await;
+        let turned = match session.top() {
+            Ok(top) => session.probe(&top, "turn", json!({}), Duration::from_secs(2)).await.is_ok(),
+            Err(_) => false,
+        };
+
+        if !turned {
+            tokio::time::sleep(Duration::from_millis(4)).await;
+        }
     }
 
     tokio::time::sleep(Duration::from_millis(8)).await;

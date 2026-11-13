@@ -128,15 +128,20 @@ pub async fn watch(session: &Arc<Session>, params: &Value) -> Result<Value> {
         .filter(|text| !text.trim().is_empty())
         .ok_or_else(|| anyhow!("watch needs expression: JavaScript that reaches the value or object, such as \"game.player.body.velocity\"."))?;
 
-    let reply = probe(
-        session,
-        "watch.add",
-        json!({ "expr": expression, "name": params["name"], "props": params["props"], "depth": params["depth"], "rules": params["rules"], "break": params["break"] == true }),
-    )
-    .await?;
+    let asked = json!({ "expr": expression, "name": params["name"], "props": params["props"], "depth": params["depth"], "rules": params["rules"], "break": params["break"] == true });
+    let reply = probe(session, "watch.add", asked.clone()).await?;
 
     if let Some(why) = reply["refused"].as_str() {
         bail!("Not watched: {why}.");
+    }
+
+    // Kept, to be added again when the page is loaded again (a replay, a take).
+    {
+        let mut state = session.state.lock().unwrap();
+        let name = reply["name"].clone();
+
+        state.watched.retain(|kept| kept["name"] != name);
+        state.watched.push(json!({ "name": name, "expr": asked["expr"], "props": asked["props"], "depth": asked["depth"], "rules": asked["rules"], "break": asked["break"] }));
     }
 
     let props = reply["props"].as_array().map_or(0, Vec::len);
@@ -171,6 +176,16 @@ pub async fn unwatch(session: &Arc<Session>, params: &Value) -> Result<Value> {
     }
 
     let reply = probe(session, "watch.remove", json!({ "name": name, "all": all })).await?;
+
+    {
+        let mut state = session.state.lock().unwrap();
+
+        if all {
+            state.watched.clear();
+        } else {
+            state.watched.retain(|kept| kept["name"] != name);
+        }
+    }
 
     if reply["unknown"] == true {
         return Err(unknown(&reply, name));
@@ -242,6 +257,25 @@ pub async fn watches(session: &Arc<Session>, params: &Value) -> Result<Value> {
     ));
 
     Ok(result(lines.join("\n"), reply))
+}
+
+/// Adds the session's expression watches again, after the page was loaded again. Says how many.
+pub async fn reapply(session: &Arc<Session>) -> Option<String> {
+    let kept = session.state.lock().unwrap().watched.clone();
+
+    if kept.is_empty() {
+        return None;
+    }
+
+    let mut added = 0;
+
+    for asked in &kept {
+        if probe(session, "watch.add", asked.clone()).await.is_ok_and(|reply| reply["refused"].is_null()) {
+            added += 1;
+        }
+    }
+
+    Some(format!("{added} of {} watch{} added again after the reload.", kept.len(), if kept.len() == 1 { " was" } else { "es were" }))
 }
 
 pub async fn watch_set(session: &Arc<Session>, params: &Value) -> Result<Value> {

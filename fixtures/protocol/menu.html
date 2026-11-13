@@ -1,0 +1,124 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Menu fixture</title>
+<style>html, body { margin: 0; background: #111; } canvas { display: block; }</style>
+</head>
+<body>
+<canvas id="c" width="320" height="200"></canvas>
+<script>
+// A game with a menu, for takes (docs/GAME.md, G4): click Start (the box from 100,80 to 220,120),
+// choose a level with ArrowDown and Enter, then hold ArrowRight to walk to the door at x 200,
+// where the page marks "door". On level 2 the walk breaks at x 150: the velocity becomes NaN.
+// ?checkpoint=1 offers checkpoints (save and restore of the whole game).
+
+const query = new URLSearchParams(location.search);
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+const held = new Set();
+
+const game = { scene: 'menu', choice: 0, level: 0, player: { x: 20, y: 150, vx: 0 }, marked: false };
+
+window.game = game;
+
+addEventListener('keydown', (event) =>
+{
+    held.add(event.code);
+
+    if (game.scene === 'select' && event.code === 'ArrowDown')
+    {
+        game.choice = (game.choice + 1) % 3;
+    }
+    else if (game.scene === 'select' && event.code === 'Enter')
+    {
+        game.scene = 'play';
+        game.level = game.choice + 1;
+    }
+});
+
+addEventListener('keyup', (event) => held.delete(event.code));
+
+canvas.addEventListener('pointerdown', (event) =>
+{
+    const box = canvas.getBoundingClientRect();
+    const x = event.clientX - box.left;
+    const y = event.clientY - box.top;
+
+    if (game.scene === 'menu' && x >= 100 && x <= 220 && y >= 80 && y <= 120)
+    {
+        game.scene = 'select';
+    }
+});
+
+if (query.get('checkpoint') === '1')
+{
+    window.__scanline?.checkpoint.provide({
+        save: () => JSON.parse(JSON.stringify(game)),
+        restore: (state) => { Object.assign(game, state); game.player = { ...state.player }; held.clear(); }
+    });
+}
+
+window.__scanline?.watch.sprite('player', { get x () { return game.player.x; }, get y () { return game.player.y; }, body: { velocity: { get x () { return game.player.vx; } } } });
+
+function rect (x, y, w, h, r, g, b)
+{
+    if (!Number.isFinite(x))
+    {
+        return;
+    }
+
+    gl.scissor(Math.round(x), canvas.height - Math.round(y) - h, w, h);
+    gl.clearColor(r, g, b, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+}
+
+function tick ()
+{
+    if (game.scene === 'play')
+    {
+        game.player.vx = held.has('ArrowRight') ? 2 : 0;
+
+        if (game.level === 2 && game.player.x > 150)
+        {
+            game.player.vx = game.player.vx * 0 / 0;
+        }
+
+        game.player.x += game.player.vx;
+
+        if (game.player.x > 200 && !game.marked)
+        {
+            game.marked = true;
+            window.__scanline?.mark('door');
+        }
+    }
+
+    gl.disable(gl.SCISSOR_TEST);
+    gl.clearColor(0.07, 0.07, 0.1, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.enable(gl.SCISSOR_TEST);
+
+    if (game.scene === 'menu')
+    {
+        rect(100, 80, 120, 40, 0.2, 0.6, 0.3);
+    }
+    else if (game.scene === 'select')
+    {
+        for (let index = 0; index < 3; index++)
+        {
+            rect(110, 40 + index * 40, 100, 30, index === game.choice ? 0.9 : 0.3, 0.3, 0.3);
+        }
+    }
+    else
+    {
+        rect(200, 130, 20, 40, 0.5, 0.35, 0.2);
+        rect(game.player.x, game.player.y, 12, 20, 1, 0.6, 0.1);
+    }
+
+    requestAnimationFrame(tick);
+}
+
+requestAnimationFrame(tick);
+</script>
+</body>
+</html>

@@ -18,6 +18,8 @@ pub struct State {
     /// The node chosen, and what audio_node() said of it.
     pub selected: Option<String>,
     pub node: Value,
+    /// What takes() last said.
+    pub takes: Value,
 }
 
 fn number(value: f64) -> String {
@@ -297,14 +299,117 @@ fn audio_tab(player: &Player, wide: bool, cx: &mut Context<Player>) -> gpui::Div
     }
 }
 
+/// Takes: record the input from here, and play a take back to where it ended.
+fn takes_tab(player: &Player, cx: &mut Context<Player>) -> gpui::Div {
+    if player.session().is_none() {
+        return div().child(note("No session."));
+    }
+
+    let recording = player.status["take"].clone();
+    let frame = player.status["frame"].as_u64().unwrap_or(0);
+    let editing = player.live.entry.clone();
+    let typed = player.live.typed.clone();
+
+    let control = if recording.is_object() {
+        card("Recording", RED)
+            .child(row(
+                recording["name"].as_str().unwrap_or("take").to_string(),
+                format!("frames {}–{frame} · plays from {}", recording["start"], recording["from"].as_str().unwrap_or("load")),
+            ))
+            .child(div().flex().child(icon_label("take-stop", "pause", "Stop and keep", RED).on_click(cx.listener(|this, _, _, cx| {
+                this.take_action("stop", None);
+                cx.notify();
+            }))))
+    } else {
+        card("Record", RED)
+            .child(note("Records the input from now: yours or the agent's. Stop keeps it as a take anyone can play by name."))
+            .child(div().flex().child(icon_label("take-start", "video", "Record", RED).on_click(cx.listener(|this, _, _, cx| {
+                this.take_action("start", None);
+                cx.notify();
+            }))))
+    };
+
+    let list = player.sound.takes["takes"].as_array().cloned().unwrap_or_default();
+    let rows = list.iter().enumerate().map(|(index, take)| {
+        let name = take["take"].as_str().unwrap_or("").to_string();
+        let here = Entry::Rename { name: name.clone() };
+        let is_editing = editing.as_ref() == Some(&here);
+        let (play, capture, remove, rename) = (name.clone(), name.clone(), name.clone(), name.clone());
+
+        div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .px_2()
+            .h(px(40.0))
+            .rounded(px(5.0))
+            .hover(|row| row.bg(rgb(RAISED)))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("take-name-{index}")))
+                            .text_xs()
+                            .font_family(MONO)
+                            .cursor_text()
+                            .text_color(rgb(TEXT))
+                            .when(is_editing, |cell| cell.bg(rgb(FIELD)).border_1().border_color(tint(CYAN, 0.8)).px_1())
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |this, _, window, cx| {
+                                    cx.stop_propagation();
+                                    this.start_watch_entry(Entry::Rename { name: rename.clone() }, rename.clone(), window, cx);
+                                }),
+                            )
+                            .child(if is_editing { format!("{typed}▏") } else { name.clone() }),
+                    )
+                    .child(div().overflow_hidden().whitespace_nowrap().text_size(px(10.5)).text_color(rgb(DIM)).child(format!(
+                        "frames {}–{} · {} · from {}{}",
+                        take["start"],
+                        take["end"],
+                        take["input"].as_str().unwrap_or(""),
+                        take["from"].as_str().unwrap_or("load"),
+                        if take["deterministic"] == true { " · exact" } else { "" }
+                    ))),
+            )
+            .child(
+                group()
+                    .child(tab_button(SharedString::from(format!("take-play-{index}")), "Play", GREEN, false).on_click(cx.listener(move |this, _, _, cx| {
+                        this.take_action("play", Some((play.clone(), "pause")));
+                        cx.notify();
+                    })))
+                    .child(tab_button(SharedString::from(format!("take-capture-{index}")), "Play + capture", PURPLE, false).on_click(cx.listener(move |this, _, _, cx| {
+                        this.take_action("play", Some((capture.clone(), "capture")));
+                        cx.notify();
+                    }))),
+            )
+            .child(icon_button(SharedString::from(format!("take-remove-{index}")), "close", DIM, false).on_click(cx.listener(move |this, _, _, cx| {
+                this.take_action("remove", Some((remove.clone(), "")));
+                cx.notify();
+            })))
+    });
+
+    div()
+        .flex()
+        .flex_col()
+        .gap_2()
+        .child(control)
+        .child(card(format!("Takes · {}", list.len()), GREEN).when(list.is_empty(), |card| card.child(note("None yet."))).children(rows))
+}
+
 pub fn render(player: &mut Player, _window: &mut Window, cx: &mut Context<Player>) -> AnyElement {
     let wide = player.panel_px >= 780.0;
+    let tab = player.tab("game").min(1);
     // The parameters' values take typing through this, which holds the keyboard while one is edited.
     let content = div()
         .id("game-keys")
         .track_focus(&player.watch_focus)
         .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| this.type_watch(event, cx)))
-        .child(audio_tab(player, wide, cx));
+        .child(if tab == 1 { takes_tab(player, cx) } else { audio_tab(player, wide, cx) });
 
-    crate::panels::tabbed(player, "game", "Game", CYAN, &["Audio"], cx, div().child(content))
+    crate::panels::tabbed(player, "game", "Game", CYAN, &["Audio", "Takes"], cx, div().child(content))
 }
