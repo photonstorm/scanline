@@ -6,6 +6,7 @@ pub mod console;
 pub mod experiments;
 pub mod game;
 pub mod live;
+pub mod note;
 pub mod resources;
 
 use gpui::{AnyElement, Context, IntoElement, Window, div, prelude::*, px, rgb};
@@ -124,6 +125,11 @@ pub fn rail(player: &mut Player, cx: &mut Context<Player>) -> impl IntoElement {
 }
 
 pub fn render(player: &mut Player, window: &mut Window, cx: &mut Context<Player>) -> AnyElement {
+    // A note being marked holds the panel until it is sent or put aside.
+    if player.marking.is_some() {
+        return note::render(player, window, cx);
+    }
+
     match player.panel {
         Panel::Live => live::render(player, window, cx),
         Panel::Game => game::render(player, window, cx),

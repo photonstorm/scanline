@@ -316,6 +316,22 @@ fn rename(host: &Arc<Host>, params: &Value) -> Result<Value> {
     Ok(result(format!("Take «{name}» is now «{to}»."), json!({ "take": to })))
 }
 
+/// Keeps a run from the page's load as a take of this name (a note's way back to its frame).
+pub(crate) fn keep(host: &Host, name: &str, mut run: Value) -> Result<String> {
+    let made = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |since| since.as_secs());
+
+    run["take"] = json!(name);
+    run["from"] = json!("load");
+    run["start"] = json!(0);
+    run["checkpoint"] = Value::Null;
+    run["made"] = json!(made);
+
+    std::fs::create_dir_all(dir(host)).with_context(|| format!("creating {}", dir(host).display()))?;
+    std::fs::write(path_of(host, name)?, serde_json::to_vec(&run)?).context("writing the take")?;
+
+    Ok(name.to_string())
+}
+
 pub fn takes(host: &Arc<Host>) -> Result<Value> {
     let all = names(host);
 

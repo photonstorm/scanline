@@ -52,6 +52,7 @@ actions!(
         ShowExperiments,
         ShowConsole,
         ShowAgent,
+        TakeNote,
         ToggleWide,
         SlowDown,
         SpeedUp,
@@ -204,6 +205,9 @@ pub enum Purpose {
     AudioNode,
     /// The takes on disk, for the Game panel's Takes tab.
     Takes,
+    /// The frame frozen for a note, and the note sent.
+    NoteShot,
+    NoteSent,
 }
 
 impl Purpose {
@@ -269,6 +273,8 @@ pub struct Player {
     pub wide: bool,
     pub live: panels::live::State,
     pub sound: panels::game::State,
+    /// A note being marked: the frozen frame and what is drawn on it.
+    pub marking: Option<panels::note::Marking>,
     pub resources: panels::resources::State,
     pub captures: panels::captures::State,
     pub console: panels::console::State,
@@ -342,6 +348,7 @@ impl Player {
             wide: false,
             live: Default::default(),
             sound: Default::default(),
+            marking: None,
             resources: Default::default(),
             captures: Default::default(),
             console: Default::default(),
@@ -404,6 +411,8 @@ impl Player {
         let by = if matches!(
             purpose,
             Purpose::Action(_)
+                | Purpose::NoteShot
+                | Purpose::NoteSent
                 | Purpose::Capture
                 | Purpose::Import
                 | Purpose::Shot
@@ -570,6 +579,32 @@ impl Player {
             (Purpose::Watches, Ok(value)) => self.live.watches = value["data"].clone(),
             (Purpose::Audio, Ok(value)) => self.sound.audio = value["data"].clone(),
             (Purpose::Takes, Ok(value)) => self.sound.takes = value["data"].clone(),
+            (Purpose::NoteShot, Ok(value)) => {
+                let path = value["images"][0]["original"].as_str().or(value["images"][0]["view"].as_str()).map(PathBuf::from);
+
+                match path.as_ref().and_then(|path| png_size(path).map(|size| (path.clone(), size))) {
+                    Some((path, size)) => {
+                        self.marking = Some(panels::note::Marking::new(path, size));
+                        self.say("Frozen. Mark what is wrong, say what it is, and send it.", false);
+                    }
+                    None => self.say("Could not read the frame for the note.", true),
+                }
+            }
+            (Purpose::NoteShot, Err(error)) => self.say(&error, true),
+            (Purpose::NoteSent, Ok(value)) => {
+                let id = value["data"]["note"].as_str().unwrap_or("note").to_string();
+
+                self.marking = None;
+                self.live.entry = None;
+                self.say(&format!("Sent {id} to the agent."), false);
+            }
+            (Purpose::NoteSent, Err(error)) => {
+                if let Some(marking) = self.marking.as_mut() {
+                    marking.sending = false;
+                }
+
+                self.say(&error, true);
+            }
             (Purpose::AudioNode, Ok(value)) => self.sound.node = value["data"].clone(),
             (Purpose::AudioNode, Err(_)) => {
                 self.sound.selected = None;
@@ -1759,6 +1794,31 @@ impl Player {
                 _ => Panel::Live,
             }),
             "select" => self.select_resource(rest.to_string()),
+            // note; mark arrow 200 60 120 95 (or rect/ellipse x y w h, pen x y x y…, text x y words); words …; send-note
+            "note" => self.start_note(),
+            "mark" => {
+                if let Some(marking) = self.marking.as_mut() {
+                    let mut words = rest.split_whitespace();
+                    let tool = words.next().unwrap_or("");
+                    let numbers: Vec<f64> = rest.split_whitespace().skip(1).filter_map(|word| word.parse().ok()).collect();
+                    let colour = marking.colour;
+                    let mark = match (tool, numbers.as_slice()) {
+                        ("arrow", [ax, ay, bx, by, ..]) => Some(json!({ "tool": "arrow", "from": [ax, ay], "to": [bx, by], "colour": colour })),
+                        ("rect" | "ellipse", [x, y, w, h, ..]) => Some(json!({ "tool": tool, "x": x, "y": y, "w": w, "h": h, "colour": colour })),
+                        ("pen", points) if points.len() >= 4 => Some(json!({ "tool": "pen", "points": points.chunks_exact(2).map(|pair| json!([pair[0], pair[1]])).collect::<Vec<_>>(), "colour": colour })),
+                        ("text", [x, y, ..]) => Some(json!({ "tool": "text", "x": x, "y": y, "text": rest.split_whitespace().skip(3).collect::<Vec<_>>().join(" "), "colour": colour })),
+                        _ => None,
+                    };
+
+                    marking.marks.extend(mark);
+                }
+            }
+            "words" => {
+                if let Some(marking) = self.marking.as_mut() {
+                    marking.text = rest.to_string();
+                }
+            }
+            "send-note" => self.send_note(),
             // audio anode_3: choose an audio node in the Game panel.
             "audio" => {
                 self.show(Panel::Game);
@@ -1922,8 +1982,76 @@ impl Player {
             }
         }
 
+        self.mirror_note_typing();
         cx.stop_propagation();
         cx.notify();
+    }
+
+    /// What is typed for a note goes into it as it is typed.
+    fn mirror_note_typing(&mut self) {
+        let typed = self.live.typed.clone();
+
+        if let Some(marking) = self.marking.as_mut() {
+            match self.live.entry {
+                Some(panels::live::Entry::NoteText) => marking.text = typed,
+                Some(panels::live::Entry::Pin { index }) => {
+                    if let Some(mark) = marking.marks.get_mut(index) {
+                        mark["text"] = json!(typed);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Freezes the game and opens its frame for marking.
+    pub fn start_note(&mut self) {
+        if self.session().is_none() || self.marking.is_some() {
+            return;
+        }
+
+        self.ask("pause", json!({}), Purpose::Action("pause"));
+        self.ask("screenshot", json!({ "max_edge": 4096 }), Purpose::NoteShot);
+    }
+
+    pub fn mark_down(&mut self, position: gpui::Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(marking) = self.marking.as_mut() else { return };
+        let Some(at) = marking.at(position) else { return };
+
+        // Leaving the words: what was typed stays.
+        if matches!(self.live.entry, Some(panels::live::Entry::NoteText | panels::live::Entry::Pin { .. })) {
+            self.live.entry = None;
+        }
+
+        if let Some(index) = marking.down(at) {
+            self.start_watch_entry(panels::live::Entry::Pin { index }, String::new(), window, cx);
+        }
+    }
+
+    pub fn send_note(&mut self) {
+        let Some(marking) = self.marking.as_mut() else { return };
+
+        if marking.sending {
+            return;
+        }
+
+        marking.up();
+
+        let sent = marking.sent();
+
+        if sent["text"].as_str().unwrap_or("").is_empty() && marking.marks.is_empty() {
+            self.say("Mark the frame or say what is wrong first.", true);
+            return;
+        }
+
+        marking.sending = true;
+        self.live.entry = None;
+        self.ask("note", sent, Purpose::NoteSent);
+    }
+
+    pub fn cancel_note(&mut self) {
+        self.marking = None;
+        self.live.entry = None;
     }
 
     /// Adds the watch typed, or sets the value typed.
@@ -1938,6 +2066,8 @@ impl Player {
                     self.last.remove("audio-node");
                 }
             }
+            // The note's words are kept as they are typed; Enter only stops typing.
+            Some(panels::live::Entry::NoteText | panels::live::Entry::Pin { .. }) => {}
             Some(panels::live::Entry::Rename { name }) => {
                 let to = typed.trim().to_string();
 
@@ -2070,6 +2200,16 @@ impl Player {
         window.focus(&self.focus);
         cx.notify();
     }
+}
+
+/// A PNG's size, from its header.
+fn png_size(path: &std::path::Path) -> Option<(f32, f32)> {
+    let bytes = std::fs::read(path).ok()?;
+    let word = |at: usize| Some(u32::from_be_bytes(bytes.get(at..at + 4)?.try_into().ok()?));
+
+    (bytes.get(12..16)? == b"IHDR").then_some(())?;
+
+    Some((word(16)? as f32, word(20)? as f32))
 }
 
 /// The panel's width as the person last dragged it.
@@ -2516,6 +2656,10 @@ impl Player {
                             })),
                     ),
             )
+            .child(icon_label("note", "edit", "Note", AMBER).h(px(30.0)).on_click(cx.listener(|this, _, _, cx| {
+                this.start_note();
+                cx.notify();
+            })))
             .when_some(request, |bar, _| {
                 bar.child(icon_label("debug", "flag", "Debug", RED).h(px(30.0)).shadow(glow(RED, 0.5)).on_click(cx.listener(|this, _, _, cx| {
                     this.debug();
@@ -2703,6 +2847,7 @@ fn menus(cx: &mut App, recent: &[String]) {
                 MenuItem::action("Screenshot", Screenshot),
                 MenuItem::action("Record", ToggleVideo),
                 MenuItem::action("Debug", Debug),
+                MenuItem::action("Note…", TakeNote),
             ],
         },
         Menu {
@@ -2746,6 +2891,7 @@ fn bind(cx: &mut App) {
         KeyBinding::new("cmd-shift-v", ToggleVideo, None),
         KeyBinding::new("cmd-\\", ToggleWide, None),
         KeyBinding::new("cmd-shift-m", ToggleMute, None),
+        KeyBinding::new("cmd-shift-n", TakeNote, None),
         KeyBinding::new("cmd-shift-h", ShowProjects, None),
         KeyBinding::new("cmd-shift-e", ChooseSize, None),
     ]);
@@ -2779,6 +2925,7 @@ fn bind(cx: &mut App) {
     cx.on_action(|_: &ToggleVideo, cx| with_current(cx, |this, _| this.toggle_video()));
     cx.on_action(|_: &ShowConsole, cx| with_current(cx, |this, _| this.show(Panel::Console)));
     cx.on_action(|_: &ShowAgent, cx| with_current(cx, |this, _| this.show(Panel::Agent)));
+    cx.on_action(|_: &TakeNote, cx| with_current(cx, |this, _| this.start_note()));
     // Wide: three quarters of the window for the panels, or back to the person's own width.
     cx.on_action(|_: &ToggleWide, cx| with_current(cx, |this, _| this.toggle_wide()));
     cx.on_action(|_: &ToggleMute, cx| with_current(cx, |this, _| this.toggle_mute()));

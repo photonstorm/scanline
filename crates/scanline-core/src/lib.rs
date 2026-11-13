@@ -17,6 +17,7 @@ mod handoff;
 mod inventory;
 mod keys;
 mod network;
+mod notes;
 mod page;
 mod patch;
 mod runs;
@@ -371,6 +372,9 @@ impl Host {
             "take" if matches!(params["action"].as_str(), Some("remove" | "rename")) => takes::take(self, &self.session(&params).or_else(|_| live())?, &params).await,
             "take" => takes::take(self, &live()?, &params).await,
             "takes" => takes::takes(self),
+            "note" if params["id"].is_string() => notes::note(self, None, &params).await,
+            "note" => notes::note(self, Some(&live()?), &params).await,
+            "notes" => notes::notes(self),
             "captures" => capture::captures(self, &params),
             "export" => capture::export(self, &params).await,
             "import" => capture::import(self, &params),

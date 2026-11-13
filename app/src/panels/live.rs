@@ -41,6 +41,9 @@ pub enum Entry {
     Param { node: String, param: String },
     /// A take's new name (the Game panel).
     Rename { name: String },
+    /// A note's words, and the words for one of its pins (the Note panel).
+    NoteText,
+    Pin { index: usize },
 }
 
 /// A watched value as words. NaN, infinities and undefined come as { $: name }.

@@ -661,3 +661,47 @@ describe('takes (docs/GAME.md, section 5)', () =>
         await scanline('take', 'remove', 'from-here');
     });
 });
+
+describe('notes (docs/GAME.md, section 6)', () =>
+{
+    test('a note reaches the agent with the marked frame, a capture, a take, the watches and the audio', async () =>
+    {
+        await scanline('launch', server.url('fixtures/protocol/watch.html?nan=0'), '--headless', '--paused');
+        await scanline('step', 30);
+
+        const cursor = (await scanline('events', '--json')).json.data.next;
+        const marks = [
+            { tool: 'ellipse', x: 70, y: 80, w: 40, h: 40, colour: 'yellow' },
+            { tool: 'arrow', from: [200, 60], to: [120, 95] },
+            { tool: 'text', x: 250, y: 100, text: 'it should be here' }
+        ];
+        const made = await scanline('note', '--text', 'the sprite stops short', '--marks', JSON.stringify(marks), '--json');
+
+        assert.equal(made.code, 0, made.out);
+
+        const id = made.json.data.note;
+
+        assert.match(made.json.summary, /note_\d+, from the person at frame 30 of «.*watch\.html\?nan=0»: «the sprite stops short»/);
+        assert.match(made.json.summary, /a yellow ring round 90,100, 40×40; a red arrow from 200,60 pointing at 120,95/);
+        assert.match(made.json.summary, /Pin 1 at 250,100: «it should be here»/);
+        assert.match(made.json.summary, /Capture: cap_\d+, of frame 31/);
+        assert.match(made.json.summary, /Watch: «player» \(the page's sprite\): «x» = 80/);
+
+        assert.equal(made.json.images.length, 2, 'the frame with the marks and without');
+
+        // The agent hears of it, and can read it again.
+        const heard = await scanline('wait', '--kinds', '["note"]', '--cursor', cursor, '--json');
+
+        assert.equal(heard.json.data.events[0].data.note, id);
+        assert.match((await scanline('note', id)).out, /«the sprite stops short»/);
+        assert.match((await scanline('notes')).out, new RegExp(`${id} {2}frame 30 {2}«the sprite stops short» {2}cap_\\d+`));
+
+        // Its take reaches the same frame again.
+        await scanline('step', 20);
+        assert.match((await scanline('take', 'play', id)).out, new RegExp(`Played take «${id}» to frame 30\\. Paused\\.`));
+        assert.match((await scanline('watches', 'player')).out, /«x» = 80/);
+
+        assert.match((await scanline('note')).out, /A note needs text or marks/);
+        assert.match((await scanline('note', 'note_999')).out, /There is no note "note_999"/);
+    });
+});

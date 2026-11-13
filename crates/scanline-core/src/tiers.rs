@@ -230,6 +230,7 @@ pub(crate) fn refusal(tiers: &Tiers, method: &str, params: &Value, page: Option<
             ))
         }
         "take" if !tiers.control && params["action"] == "play" => Some(format!("take(action: \"play\") reloads the page and gives it input, which is in the control tier, and this host was started without it. Recording and listing takes still work. {HOW}.")),
+        "note" if !tiers.control && !params["id"].is_string() => Some(format!("Making a note pauses the game, which is in the control tier, and this host was started without it. note(id) and notes still read. {HOW}.")),
         "audio_patch" if !tiers.control => Some(format!("audio_patch changes how the game sounds, which is in the control tier, and this host was started without it. audio and audio_node still read. {HOW}.")),
         "watch_set" if !tiers.control => Some(format!("watch_set changes the game, which is in the control tier, and this host was started without it. watch and watches still read. {HOW}.")),
         "page" if !tiers.control && matches!(params["call"].as_str(), Some("set_control" | "time" | "checkpoint" | "restore")) => Some(format!(
