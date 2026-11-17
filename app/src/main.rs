@@ -31,6 +31,16 @@ mod projects;
 mod theme;
 
 fn main() {
+    // On Windows GPUI draws through DirectComposition by default, in a layer above all of the
+    // window's child windows: above Chromium's, which the game area's backdrop then hid. Drawn
+    // into the window itself instead, Chromium's view is above GPUI's drawing, as it is on the
+    // Mac (docs/DEPARTURES.md, "The app on Windows").
+    #[cfg(windows)]
+    // SAFETY: nothing else is running yet to read the environment at the same time.
+    unsafe {
+        std::env::set_var("GPUI_DISABLE_DIRECT_COMPOSITION", "1");
+    }
+
     let argv: Vec<String> = std::env::args().collect();
     let helper = argv.iter().any(|arg| arg.starts_with("--type="));
     let piped = argv.iter().any(|arg| arg == "--remote-debugging-pipe");

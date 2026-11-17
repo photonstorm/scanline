@@ -266,7 +266,7 @@ Built and checked through the host and pictures of the app's own window; nobody 
 
 ### The app on Windows (17 November 2026)
 
-Built and tested on the PC through the host and pictures of its own window, which leave out the game area; nobody has looked at it there. Build it with `npm run app` (it is then `app\target\Scanline\Scanline.exe`), and work through 1 to 15 above with Ctrl for ⌘ (Ctrl+L, Ctrl+Shift+C). These are about Windows itself:
+Built and tested on the PC through the host and pictures of its own window, which leave out the game area. The owner's first look found that area black while the game played (GPUI's drawing was above Chromium's window). That was put right the same day and checked by a copy of the screen; nothing else has been looked at. Build it with `npm run app` (it is then `app\target\Scanline\Scanline.exe`), and work through 1 to 15 above with Ctrl for ⌘ (Ctrl+L, Ctrl+Shift+C). These are about Windows itself:
 
 16. **The game is on screen.** Double-click `Scanline.exe` in Explorer. No console window appears, for the app or for the host it starts. The window opens on the start page, and its ring of bars turns in the dark area left of the panels, sharp, filling it. The window and the taskbar show Scanline's icon.
 17. **Its place, at every scale.** Resize the window, drag the divider, and maximise it: the game follows its area and nothing is drawn over the toolbar or the panels. Move the window to a display with another scale (Settings › Display, 100% and 150%) or change the scale while it is open: the game stays in its area, sharp.
