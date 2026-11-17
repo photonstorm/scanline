@@ -153,7 +153,77 @@ pub fn local_stamp() -> Option<String> {
     Some(format!("{:04}-{:02}-{:02} at {:02}.{:02}.{:02}", now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute, now.wSecond))
 }
 
-/// Not built on Windows: pictures of the window are a macOS aid for now.
-pub fn snapshot(_view: *mut c_void, _path: &std::path::Path) -> bool {
-    false
+/// Writes a PNG of the window `view` is (its client area, as the window itself draws it, with
+/// Direct3D's content). False if the system would not give one.
+pub fn snapshot(view: *mut c_void, path: &std::path::Path) -> bool {
+    use windows_sys::Win32::Graphics::Gdi::{
+        BI_RGB, BITMAPINFO, BITMAPINFOHEADER, CreateCompatibleBitmap, CreateCompatibleDC, DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDC, GetDIBits, ReleaseDC,
+        SelectObject,
+    };
+    use windows_sys::Win32::Storage::Xps::{PW_CLIENTONLY, PrintWindow};
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetClientRect;
+
+    // PW_RENDERFULLCONTENT: what Direct3D and DirectComposition draw, not only GDI's part.
+    const RENDER_FULL_CONTENT: u32 = 2;
+
+    if view.is_null() {
+        return false;
+    }
+
+    let window = view as HWND;
+
+    unsafe {
+        let mut rect = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+
+        if GetClientRect(window, &mut rect) == 0 {
+            return false;
+        }
+
+        let (width, height) = (rect.right - rect.left, rect.bottom - rect.top);
+
+        if width <= 0 || height <= 0 {
+            return false;
+        }
+
+        let screen = GetDC(window);
+        let memory = CreateCompatibleDC(screen);
+        let bitmap = CreateCompatibleBitmap(screen, width, height);
+        let previous = SelectObject(memory, bitmap);
+        let printed = PrintWindow(window, memory, PW_CLIENTONLY | RENDER_FULL_CONTENT) != 0;
+
+        // The bitmap is read once it is no longer selected into a device context.
+        SelectObject(memory, previous);
+
+        let mut info: BITMAPINFO = std::mem::zeroed();
+
+        info.bmiHeader = BITMAPINFOHEADER {
+            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: width,
+            // Negative: rows from the top down.
+            biHeight: -height,
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: BI_RGB,
+            ..std::mem::zeroed()
+        };
+
+        let mut pixels = vec![0u8; width as usize * height as usize * 4];
+        let read = GetDIBits(screen, bitmap, 0, height as u32, pixels.as_mut_ptr().cast(), &mut info, DIB_RGB_COLORS) == height;
+
+        DeleteObject(bitmap);
+        DeleteDC(memory);
+        ReleaseDC(window, screen);
+
+        if !printed || !read {
+            return false;
+        }
+
+        // Blue, green, red and an unused byte, to red, green, blue and opaque.
+        for pixel in pixels.chunks_exact_mut(4) {
+            pixel.swap(0, 2);
+            pixel[3] = 255;
+        }
+
+        image::save_buffer(path, &pixels, width as u32, height as u32, image::ColorType::Rgba8).is_ok()
+    }
 }

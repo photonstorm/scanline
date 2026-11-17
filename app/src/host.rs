@@ -87,7 +87,13 @@ fn keep(home: PathBuf, requests: Receiver<(u64, String)>, replies: Arc<Mutex<Vec
 
         std::thread::spawn(move || {
             let reply = (|| -> Result<Value, String> {
-                let (reader, mut writer) = crate::channel::dial(&home).map_err(|_| "The Scanline host is not running.".to_string())?;
+                let (reader, mut writer) = crate::channel::dial(&home).map_err(|error| {
+                    if crate::channel::no_host(&error) {
+                        "The Scanline host is not running.".to_string()
+                    } else {
+                        format!("The Scanline host did not answer: {error}.")
+                    }
+                })?;
 
                 connected.store(true, Ordering::Relaxed);
                 writer.write_all(format!("{line}\n").as_bytes()).map_err(|_| "The connection to the host was lost.".to_string())?;

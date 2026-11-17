@@ -40,8 +40,29 @@ pub fn dial(home: &Path) -> std::io::Result<(Reader, Writer)> {
     let runtime = std::fs::read_to_string(home.join("runtime.json"))?;
     let runtime: serde_json::Value = serde_json::from_str(&runtime).map_err(std::io::Error::other)?;
     let name = runtime["pipe"].as_str().ok_or_else(|| std::io::Error::other("runtime.json names no pipe"))?;
-    let pipe = std::fs::OpenOptions::new().read(true).write(true).open(name)?;
-    let reader = pipe.try_clone()?;
 
-    Ok((Box::new(reader), Box::new(pipe)))
+    // The host offers one instance of the pipe at a time, and the window asks it several
+    // things at once: between the host taking one client and offering the pipe to the next,
+    // every instance is in use. That is "busy", not "nobody there" (the host's own dial waits
+    // the same way, crates/scanline/src/control.rs).
+    const PIPE_BUSY: i32 = 231;
+
+    for _ in 0..40 {
+        match std::fs::OpenOptions::new().read(true).write(true).open(name) {
+            Ok(pipe) => {
+                let reader = pipe.try_clone()?;
+
+                return Ok((Box::new(reader), Box::new(pipe)));
+            }
+            Err(error) if error.raw_os_error() == Some(PIPE_BUSY) => std::thread::sleep(std::time::Duration::from_millis(25)),
+            Err(error) => return Err(error),
+        }
+    }
+
+    Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "the host's pipe stayed busy for a second"))
+}
+
+/// Whether a failure to dial means there is no host, rather than one that did not answer.
+pub fn no_host(error: &std::io::Error) -> bool {
+    error.kind() == std::io::ErrorKind::NotFound
 }
