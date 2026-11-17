@@ -126,15 +126,10 @@ fn default_home() -> PathBuf {
 
 /// A copy of a file the host wrote, on the person's desktop, named for when it was made.
 fn to_desktop(source: &std::path::Path, what: &str) -> Option<PathBuf> {
-    let desktop = PathBuf::from(std::env::var_os("HOME")?).join("Desktop");
+    let desktop = platform::desktop()?;
     let extension = source.extension()?.to_string_lossy().to_string();
     // The local date and time, as the system's own screenshots are named.
-    let stamp = std::process::Command::new("date")
-        .arg("+%Y-%m-%d at %H.%M.%S")
-        .output()
-        .ok()
-        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
-        .filter(|stamp| !stamp.is_empty())
+    let stamp = platform::local_stamp()
         .unwrap_or_else(|| std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|since| since.as_secs().to_string()).unwrap_or_default());
     let target = desktop.join(format!("Scanline {what} {stamp}.{extension}"));
 
@@ -1589,7 +1584,7 @@ impl Player {
         }
 
         if let Some(browser) = created {
-            self.browser_view = browser.host().map(|host| host.window_handle()).unwrap_or(std::ptr::null_mut());
+            self.browser_view = browser.host().map(|host| platform::from_cef(host.window_handle())).unwrap_or(std::ptr::null_mut());
             self.browser = Some(browser);
             self.apply_mute();
             changed = true;
@@ -1887,7 +1882,7 @@ impl Player {
             width: bounds.map(|b| f32::from(b.size.width) as i32).unwrap_or(800),
             height: bounds.map(|b| f32::from(b.size.height) as i32).unwrap_or(600),
         };
-        let info = cef::WindowInfo { runtime_style: cef::RuntimeStyle::ALLOY, ..Default::default() }.set_as_child(self.content_view, &rect);
+        let info = cef::WindowInfo { runtime_style: cef::RuntimeStyle::ALLOY, ..Default::default() }.set_as_child(platform::to_cef(self.content_view), &rect);
         let mut client = browser::client();
 
         cef::browser_host_create_browser(

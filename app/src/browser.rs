@@ -144,12 +144,18 @@ wrap_client! {
     }
 }
 
+/// The system's own event behind a key event: a pointer on macOS, a Win32 message on Windows.
+#[cfg(windows)]
+type OsKeyEvent<'a> = Option<&'a mut cef::sys::MSG>;
+#[cfg(not(windows))]
+type OsKeyEvent<'a> = *mut u8;
+
 wrap_keyboard_handler! {
     pub struct ScanlineKeys;
 
     impl KeyboardHandler {
         // Esc always gives the pointer and the screen back. The page still sees the key.
-        fn on_pre_key_event(&self, browser: Option<&mut Browser>, event: Option<&KeyEvent>, _os_event: *mut u8, _is_keyboard_shortcut: Option<&mut std::os::raw::c_int>) -> std::os::raw::c_int {
+        fn on_pre_key_event(&self, browser: Option<&mut Browser>, event: Option<&KeyEvent>, _os_event: OsKeyEvent<'_>, _is_keyboard_shortcut: Option<&mut std::os::raw::c_int>) -> std::os::raw::c_int {
             if let (Some(browser), Some(event)) = (browser, event) {
                 if event.windows_key_code == 0x1B && event.type_ == KeyEventType::RAWKEYDOWN {
                     release(browser);

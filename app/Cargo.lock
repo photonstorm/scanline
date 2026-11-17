@@ -4920,6 +4920,7 @@ name = "scanline-app"
 version = "0.0.1"
 dependencies = [
  "cef",
+ "embed-resource",
  "gpui",
  "image",
  "objc2",

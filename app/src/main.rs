@@ -10,6 +10,10 @@
 //! - **A launcher** (anything else, such as a click on the Dock): asks the host for a session
 //!   in the app, which starts a player, and leaves.
 
+// A window, not a console: on Windows a console program opened from Explorer brings a console
+// window with it, and so would each of Chromium's helpers.
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 mod browser;
 mod channel;
 mod code;

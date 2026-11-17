@@ -80,6 +80,16 @@ pub fn content_view(gpui_view: *mut c_void) -> *mut c_void {
     }
 }
 
+/// A view as CEF names one: a plain pointer on macOS.
+pub fn from_cef(handle: cef::sys::cef_window_handle_t) -> *mut c_void {
+    handle
+}
+
+/// A plain pointer to a view, as CEF names one.
+pub fn to_cef(view: *mut c_void) -> cef::sys::cef_window_handle_t {
+    view
+}
+
 /// Place `view` in its parent at a rectangle given from the parent's top left, in points.
 pub fn place(view: *mut c_void, x: f64, y: f64, width: f64, height: f64) {
     if view.is_null() {
@@ -209,6 +219,21 @@ pub fn hold_pointer(hold: bool) {
             CGDisplayShowCursor(CGMainDisplayID());
         }
     }
+}
+
+/// The person's desktop.
+pub fn desktop() -> Option<std::path::PathBuf> {
+    Some(std::path::PathBuf::from(std::env::var_os("HOME")?).join("Desktop"))
+}
+
+/// The local date and time as the system's own screenshots are named: 2026-11-12 at 14.03.27.
+pub fn local_stamp() -> Option<String> {
+    std::process::Command::new("date")
+        .arg("+%Y-%m-%d at %H.%M.%S")
+        .output()
+        .ok()
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+        .filter(|stamp| !stamp.is_empty())
 }
 
 /// Writes a PNG of the window `view` is in. False if the system would not give one.

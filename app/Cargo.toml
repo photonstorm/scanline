@@ -16,7 +16,8 @@ path = "src/main.rs"
 
 [dependencies]
 cef = "=156.4.0"
-gpui = { version = "=0.2.2", features = ["runtime_shaders"] }
+# GPUI's own Windows manifest is left out: the app has its own (build.rs).
+gpui = { version = "=0.2.2", default-features = false, features = ["font-kit", "wayland", "x11", "runtime_shaders"] }
 raw-window-handle = "0.6"
 serde = { version = "1", features = ["derive"] }
 # Already in the build through GPUI: the magnifier reads the pixels of what it shows.
@@ -27,10 +28,17 @@ serde_json = "1"
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
+    "Win32_System_Com",
+    "Win32_System_SystemInformation",
     "Win32_UI_HiDpi",
     "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
+
+# Already in the build through GPUI: compiles the app's manifest in (build.rs).
+[target.'cfg(windows)'.build-dependencies]
+embed-resource = "3.0"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6.3"

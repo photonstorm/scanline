@@ -147,9 +147,14 @@ pub fn find_app() -> Result<PathBuf> {
     let mut candidates = Vec::new();
 
     // The command line inside the app's bundle (Scanline.app/Contents/MacOS/scanline-cli) uses its own app.
+    // Not when this binary is itself called scanline: file names ignore case on Windows and on
+    // most Macs, so "Scanline" beside it would be this binary again.
     if let Ok(me) = std::env::current_exe() {
-        if let Some(folder) = me.parent() {
-            candidates.push(folder.join(if cfg!(windows) { "Scanline.exe" } else { "Scanline" }));
+        let named = if cfg!(windows) { "Scanline.exe" } else { "Scanline" };
+        let mine = me.file_name().is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case(named));
+
+        if let (Some(folder), false) = (me.parent(), mine) {
+            candidates.push(folder.join(named));
         }
     }
 
@@ -167,10 +172,12 @@ pub fn find_app() -> Result<PathBuf> {
         }
     }
 
+    let looked = if cfg!(windows) { "no Scanline.exe in %LOCALAPPDATA%\\Programs\\Scanline" } else { "no Scanline.app in /Applications or ~/Applications" };
+
     candidates
         .into_iter()
         .find(|path| path.exists())
-        .ok_or_else(|| anyhow!("The Scanline app is not installed: no Scanline.app in /Applications or ~/Applications. Install it, set SCANLINE_APP to it, or launch with display: \"window\"."))
+        .ok_or_else(|| anyhow!("The Scanline app is not installed: {looked}. Install it, set SCANLINE_APP to it, or launch with display: \"window\"."))
 }
 
 /// Where a Chromium can be found on this machine.

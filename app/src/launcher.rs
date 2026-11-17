@@ -72,6 +72,18 @@ fn call(home: &Path, method: &str, mut params: Value) -> Result<Value, String> {
     }
 }
 
+/// On Windows a file opened from Explorer is a path on the command line: the capture files
+/// there are opened, and the rest is left for the address.
+#[cfg(windows)]
+pub fn run(argv: &[String]) {
+    let capture = |arg: &String| Path::new(arg).extension().is_some_and(|extension| extension.eq_ignore_ascii_case("scanline")) && Path::new(arg).is_file();
+    let files: Vec<PathBuf> = argv.iter().skip(1).filter(|arg| capture(arg)).map(PathBuf::from).collect();
+    let rest: Vec<String> = argv.iter().enumerate().filter(|(at, arg)| *at == 0 || !capture(arg)).map(|(_, arg)| arg.clone()).collect();
+
+    open(&rest, &files);
+}
+
+#[cfg(not(windows))]
 pub fn run(argv: &[String]) {
     // Capture files opened from the Finder arrive as an event once the application has
     // started, not on the command line: GPUI is started, without a window, to hear them.
@@ -134,7 +146,21 @@ fn open(argv: &[String], files: &[PathBuf]) {
     // No host: the command line starts one (any command does), and it is waited for.
     if crate::channel::dial(&home).is_err() {
         let scanline = command_line(&me);
-        let started = Command::new(&scanline).arg("sessions").env("SCANLINE_APP", &me).stdout(Stdio::null()).stderr(Stdio::piped()).output();
+        let mut command = Command::new(&scanline);
+
+        command.arg("sessions").env("SCANLINE_APP", &me).stdout(Stdio::null()).stderr(Stdio::piped());
+
+        // The command line is a console program: from a window it would open a console of its own.
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+            command.creation_flags(CREATE_NO_WINDOW);
+        }
+
+        let started = command.output();
 
         if let Err(error) = started {
             alert(

@@ -19,6 +19,16 @@ pub fn content_view(gpui_view: *mut c_void) -> *mut c_void {
     gpui_view
 }
 
+/// A window as CEF names one (its own HWND type), as a plain pointer.
+pub fn from_cef(handle: cef::sys::cef_window_handle_t) -> *mut c_void {
+    handle.0 as *mut c_void
+}
+
+/// A plain pointer to a window, as CEF names one.
+pub fn to_cef(view: *mut c_void) -> cef::sys::cef_window_handle_t {
+    cef::sys::HWND(view as *mut _)
+}
+
 /// The window's scale: physical pixels to one of GPUI's.
 fn scale(window: HWND) -> f64 {
     let dpi = unsafe { GetDpiForWindow(window) };
@@ -113,6 +123,34 @@ pub fn hold_pointer(hold: bool) {
             windows_sys::Win32::UI::WindowsAndMessaging::ShowCursor(if hold { 0 } else { 1 });
         }
     }
+}
+
+/// The person's desktop, wherever Windows keeps it (OneDrive moves it, for one).
+pub fn desktop() -> Option<std::path::PathBuf> {
+    use windows_sys::Win32::System::Com::CoTaskMemFree;
+    use windows_sys::Win32::UI::Shell::{FOLDERID_Desktop, KF_FLAG_DEFAULT, SHGetKnownFolderPath};
+
+    unsafe {
+        let mut path: *mut u16 = std::ptr::null_mut();
+        let found = SHGetKnownFolderPath(&FOLDERID_Desktop, KF_FLAG_DEFAULT as _, std::ptr::null_mut(), &mut path) == 0 && !path.is_null();
+        let desktop = found.then(|| {
+            let length = (0..).take_while(|&at| *path.add(at) != 0).count();
+
+            std::path::PathBuf::from(String::from_utf16_lossy(std::slice::from_raw_parts(path, length)))
+        });
+
+        CoTaskMemFree(path as *const c_void);
+        desktop
+    }
+}
+
+/// The local date and time as the Mac names its screenshots: 2026-11-12 at 14.03.27.
+pub fn local_stamp() -> Option<String> {
+    let mut now: windows_sys::Win32::Foundation::SYSTEMTIME = unsafe { std::mem::zeroed() };
+
+    unsafe { windows_sys::Win32::System::SystemInformation::GetLocalTime(&mut now) };
+
+    Some(format!("{:04}-{:02}-{:02} at {:02}.{:02}.{:02}", now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute, now.wSecond))
 }
 
 /// Not built on Windows: pictures of the window are a macOS aid for now.
