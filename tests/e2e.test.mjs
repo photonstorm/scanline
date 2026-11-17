@@ -862,7 +862,8 @@ describe('a G-buffer', () =>
 
         assert.deepEqual(await texel('tex_2'), [255, 0, 0, 255], 'albedo');
         assert.deepEqual(await texel('tex_3'), [0, 0, 255, 255], 'normals');
-        assert.match((await scanline('view', '--capture', capture, '--view', 'depth', '--at_draw', '3', '--target', 'fbo_2', '--x', '20', '--y', '60')).out, /Depth at \(20, 60\): 0\.5000000/);
+        // 0.5 in a 24-bit depth buffer: Metal reads it back as 0.5000000, Direct3D one step up.
+        assert.match((await scanline('view', '--capture', capture, '--view', 'depth', '--at_draw', '3', '--target', 'fbo_2', '--x', '20', '--y', '60')).out, /Depth at \(20, 60\): 0\.500000[01]/);
 
         // A region from the command line (it sends 70.0 for 70), and the canvas by name after
         // an event that drew elsewhere: the canvas, not that event's target.
