@@ -6,3 +6,5 @@
 *.gz binary
 *.zst binary
 *.scanline binary
+*.ico binary
+*.icns binary

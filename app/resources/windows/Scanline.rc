@@ -1,3 +1,5 @@
-// The app's resources on Windows, compiled in by build.rs.
+// The app's resources on Windows, compiled in by build.rs: its manifest, and its icon, which
+// Explorer shows for the executable and GPUI gives the window (icon 1).
 #define RT_MANIFEST 24
 1 RT_MANIFEST "resources/windows/Scanline.manifest"
+1 ICON "resources/windows/Scanline.ico"

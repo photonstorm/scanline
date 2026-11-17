@@ -270,6 +270,12 @@ pub fn note(text: impl Into<SharedString>) -> Div {
     div().text_xs().text_color(rgb(DIM)).child(text.into())
 }
 
+/// A shortcut as the Mac writes it (⇧⌘C), as this machine's keyboard has it: Ctrl+Shift+C on
+/// Windows, where the shortcuts are bound to Ctrl.
+pub fn keys(mac: &str) -> String {
+    if cfg!(windows) { mac.replace("⇧⌘", "Ctrl+Shift+").replace('⌘', "Ctrl+") } else { mac.to_string() }
+}
+
 /// Bytes as a person reads them.
 pub fn bytes(value: f64) -> String {
     let units = ["B", "KB", "MB", "GB"];

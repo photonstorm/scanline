@@ -137,7 +137,7 @@ fn cards(home: &Path, projects: &[Project]) -> String {
     let shown: Vec<&Project> = projects.iter().filter(|project| worth_keeping(&project.url)).collect();
 
     if shown.is_empty() {
-        return "<p class=\"lead\">No projects yet. <kbd>⌘L</kbd> to open one.</p>".into();
+        return format!("<p class=\"lead\">No projects yet. <kbd>{}</kbd> to open one.</p>", crate::theme::keys("⌘L"));
     }
 
     let mut out = String::from("<div class=\"projects\">");

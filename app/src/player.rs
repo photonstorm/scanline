@@ -1899,7 +1899,7 @@ impl Player {
     pub fn type_note(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
         let keystroke = &event.keystroke;
 
-        if keystroke.modifiers.platform {
+        if keystroke.modifiers.secondary() {
             match keystroke.key.as_str() {
                 "v" => {
                     if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
@@ -1951,7 +1951,7 @@ impl Player {
             return;
         }
 
-        if keystroke.modifiers.platform {
+        if keystroke.modifiers.secondary() {
             match keystroke.key.as_str() {
                 "v" => {
                     if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
@@ -2163,8 +2163,14 @@ impl Player {
 
     fn type_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
         let keystroke = &event.keystroke;
+        // A word back: ⌥⌫ on a Mac, Ctrl+Backspace on Windows.
+        let word_back = keystroke.key == "backspace" && if cfg!(windows) { keystroke.modifiers.control } else { keystroke.modifiers.alt };
 
-        if keystroke.modifiers.platform {
+        if word_back {
+            let trimmed = self.address.trim_end_matches(|c: char| c.is_alphanumeric()).len();
+
+            self.address.truncate(if trimmed == self.address.len() { self.address.len().saturating_sub(1) } else { trimmed });
+        } else if keystroke.modifiers.secondary() {
             match keystroke.key.as_str() {
                 "v" => {
                     if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
@@ -2174,10 +2180,6 @@ impl Player {
                 "a" | "backspace" => self.address.clear(),
                 _ => return,
             }
-        } else if keystroke.modifiers.alt && keystroke.key == "backspace" {
-            let trimmed = self.address.trim_end_matches(|c: char| c.is_alphanumeric()).len();
-
-            self.address.truncate(if trimmed == self.address.len() { self.address.len().saturating_sub(1) } else { trimmed });
         } else {
             match keystroke.key.as_str() {
                 "enter" => self.go(),
@@ -2893,31 +2895,31 @@ fn menus(cx: &mut App, recent: &[String]) {
 
 fn bind(cx: &mut App) {
     cx.bind_keys([
-        KeyBinding::new("cmd-q", Quit, None),
-        KeyBinding::new("cmd-n", NewWindow, None),
-        KeyBinding::new("cmd-w", CloseWindow, None),
-        KeyBinding::new("cmd-l", OpenLocation, None),
-        KeyBinding::new("cmd-r", Reload, None),
-        KeyBinding::new("cmd-.", TogglePause, None),
-        KeyBinding::new("cmd-'", StepFrame, None),
-        KeyBinding::new("cmd-shift-'", StepTen, None),
-        KeyBinding::new("cmd-[", SlowDown, None),
-        KeyBinding::new("cmd-]", SpeedUp, None),
-        KeyBinding::new("cmd-shift-c", Capture, None),
-        KeyBinding::new("cmd-shift-d", Debug, None),
-        KeyBinding::new("cmd-1", ShowLive, None),
-        KeyBinding::new("cmd-2", ShowResources, None),
-        KeyBinding::new("cmd-3", ShowCaptures, None),
-        KeyBinding::new("cmd-4", ShowExperiments, None),
-        KeyBinding::new("cmd-5", ShowConsole, None),
-        KeyBinding::new("cmd-6", ShowAgent, None),
-        KeyBinding::new("cmd-shift-s", Screenshot, None),
-        KeyBinding::new("cmd-shift-v", ToggleVideo, None),
-        KeyBinding::new("cmd-\\", ToggleWide, None),
-        KeyBinding::new("cmd-shift-m", ToggleMute, None),
-        KeyBinding::new("cmd-shift-n", TakeNote, None),
-        KeyBinding::new("cmd-shift-h", ShowProjects, None),
-        KeyBinding::new("cmd-shift-e", ChooseSize, None),
+        KeyBinding::new("secondary-q", Quit, None),
+        KeyBinding::new("secondary-n", NewWindow, None),
+        KeyBinding::new("secondary-w", CloseWindow, None),
+        KeyBinding::new("secondary-l", OpenLocation, None),
+        KeyBinding::new("secondary-r", Reload, None),
+        KeyBinding::new("secondary-.", TogglePause, None),
+        KeyBinding::new("secondary-'", StepFrame, None),
+        KeyBinding::new("secondary-shift-'", StepTen, None),
+        KeyBinding::new("secondary-[", SlowDown, None),
+        KeyBinding::new("secondary-]", SpeedUp, None),
+        KeyBinding::new("secondary-shift-c", Capture, None),
+        KeyBinding::new("secondary-shift-d", Debug, None),
+        KeyBinding::new("secondary-1", ShowLive, None),
+        KeyBinding::new("secondary-2", ShowResources, None),
+        KeyBinding::new("secondary-3", ShowCaptures, None),
+        KeyBinding::new("secondary-4", ShowExperiments, None),
+        KeyBinding::new("secondary-5", ShowConsole, None),
+        KeyBinding::new("secondary-6", ShowAgent, None),
+        KeyBinding::new("secondary-shift-s", Screenshot, None),
+        KeyBinding::new("secondary-shift-v", ToggleVideo, None),
+        KeyBinding::new("secondary-\\", ToggleWide, None),
+        KeyBinding::new("secondary-shift-m", ToggleMute, None),
+        KeyBinding::new("secondary-shift-n", TakeNote, None),
+        KeyBinding::new("secondary-shift-h", ShowProjects, None),
+        KeyBinding::new("secondary-shift-e", ChooseSize, None),
     ]);
 
     cx.on_action(|_: &Quit, _| std::process::exit(0));

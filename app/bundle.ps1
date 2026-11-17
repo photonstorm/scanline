@@ -48,6 +48,14 @@ if ($newest -and -not (Select-String -Path (Join-Path $newest.FullName 'shared\s
     $env:CL = ('/DNTDDI_WIN10_FE=0x0A00000A ' + $env:CL).Trim()
 }
 
+# A release build of GPUI compiles its Direct3D shaders with fxc, from the Windows SDK.
+if ($env:RELEASE -and -not $env:GPUI_FXC_PATH -and -not (Get-Command fxc.exe -ErrorAction SilentlyContinue)) {
+    $fxc = Get-ChildItem (Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin') -Filter fxc.exe -Recurse -ErrorAction SilentlyContinue |
+        Where-Object { $_.Directory.Name -eq 'x64' } | Sort-Object { [version]$_.Directory.Parent.Name } -ErrorAction SilentlyContinue | Select-Object -Last 1
+
+    if ($fxc) { $env:GPUI_FXC_PATH = $fxc.FullName }
+}
+
 $env:CEF_PATH = Join-Path $here 'target\cef'
 
 Push-Location $here

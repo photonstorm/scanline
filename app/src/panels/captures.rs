@@ -530,7 +530,7 @@ fn list_of_captures(player: &mut Player, cx: &mut Context<Player>) -> gpui::Div 
                     this.record(120);
                     cx.notify();
                 })))
-                .child(note("⇧⌘C")),
+                .child(note(keys("⇧⌘C"))),
         )
         .when(!recordings.is_empty(), |list| {
             list.child(section("Recordings")).child(div().flex().flex_wrap().gap_1().children(recordings.into_iter().map(|recording| {

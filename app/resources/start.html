@@ -63,6 +63,15 @@
     <p class="lead" style="margin-top: 1.4rem; font-size: 0.8rem">Icons: Streamline Core Line Free (streamlinehq.com), CC BY 4.0.</p>
 </main>
 <script>
+// On Windows the shortcuts are Ctrl's, not ⌘'s.
+if (navigator.userAgent.includes('Windows'))
+{
+    for (const key of document.querySelectorAll('kbd'))
+    {
+        key.textContent = key.textContent.replace('⇧⌘', 'Ctrl+Shift+').replace('⌘', 'Ctrl+');
+    }
+}
+
 // A small WebGL scene, so the panels have something to measure: a ring of glowing bars.
 const canvas = document.getElementById('scene');
 const gl = canvas.getContext('webgl2');

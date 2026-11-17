@@ -1,7 +1,8 @@
 //! Where CEF and GPUI meet on Windows: the browser's window is a child of GPUI's, placed over
 //! the rectangle GPUI lays out for the game. The same functions as mac.rs.
 //!
-//! Written on the Mac on 12 November 2026 and never compiled: docs/HANDOVER.md, section 2a.
+//! Written on the Mac on 12 November 2026, and built and tested on the PC on 17 November
+//! (docs/DEPARTURES.md, "The app on Windows").
 
 use std::ffi::c_void;
 
@@ -114,7 +115,8 @@ pub fn frame(view: *mut c_void) -> Option<[f64; 4]> {
 }
 
 /// Holds the cursor for a game that has taken the pointer, or lets it go. On Windows, hidden
-/// only (Chromium's own lock there would also confine it): never run, like the rest of this file.
+/// only: Windows has no call that parts the cursor from the mouse as macOS does, so it still
+/// moves, and stops at the edge of the screen.
 pub fn hold_pointer(hold: bool) {
     static HELD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -225,5 +227,22 @@ pub fn snapshot(view: *mut c_void, path: &std::path::Path) -> bool {
         }
 
         image::save_buffer(path, &pixels, width as u32, height as u32, image::ColorType::Rgba8).is_ok()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn the_desktop_is_a_folder_that_exists() {
+        assert!(super::desktop().is_some_and(|desktop| desktop.is_dir()));
+    }
+
+    #[test]
+    fn the_stamp_is_written_as_the_mac_writes_it() {
+        let stamp = super::local_stamp().unwrap();
+
+        assert_eq!(stamp.len(), "2026-11-12 at 14.03.27".len(), "{stamp}");
+        assert_eq!(&stamp[10..14], " at ", "{stamp}");
+        assert!(stamp[..4].parse::<u32>().is_ok_and(|year| year >= 2026), "{stamp}");
     }
 }

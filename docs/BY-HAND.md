@@ -4,7 +4,7 @@ Scanline is built and tested with no window on screen. These are the things only
 
 ## Where things stand
 
-Every milestone of the build plan up to 1.0 has been worked through on macOS, and the result was built and tested on Windows 11 on 11 November 2026 ("On Windows", below, is what a person has yet to look at there). What comes next, for a person or an agent picking this up on another machine, is in [HANDOVER.md](HANDOVER.md). What is left falls into three kinds, and only the first two need you:
+Every milestone of the build plan up to 1.0 has been worked through on macOS, and the result was built and tested on Windows 11 on 11 November 2026 ("On Windows", below, is what a person has yet to look at there). The Scanline app was built on Windows on 17 November 2026 ("The app on Windows", under "The Scanline app"). What comes next, for a person or an agent picking this up on another machine, is in [HANDOVER.md](HANDOVER.md). What is left falls into three kinds, and only the first two need you:
 
 1. **Things to look at.** The sections below. Start with the viewer and the control strip, which nobody has yet seen on a screen with their own eyes.
 2. **Things to decide or supply.** "Yours to decide" near the end: a licence, the name, where releases live, and the Apple Developer identity that signing needs. The pinned browser download and the Claude Code plugin are written and waiting on a first run by you.
@@ -263,6 +263,18 @@ Built and checked through the host and pictures of the app's own window; nobody 
 13. **Audio.** On https://adventure.sixfingerpunch.com, Game › Audio. The meters move with the sound; the graph lists the mix, reverbs and the ambient loops, with a green dot on what plays. M on a playing source: it falls silent; M again: back. S on one: only it is heard. B on a filter: the sound brightens. Click a gain node and change its gain: louder or quieter at once. Undo all: as it was. The findings card names the 55 MB music buffer once the music starts. Keep last 10 s, play a while, Save clip: a WAV on the desktop that sounds like what you heard.
 14. **Takes.** On `fixtures/protocol/menu.html`, Game › Takes, Record. Click Start, choose a level with ↓ and Return, walk right with → past the door. Stop and keep: the take is listed. Click its name and rename it. Play: the page reloads and walks to the same place by itself. Play + capture: the same, then the capture opens. In a terminal, `scanline take play <name>` does the same for an agent.
 15. **Notes.** On any game, Note in the toolbar (or ⇧⌘N): the game freezes and its frame fills the panel. Draw with each tool (Pen, Arrow, Box, Ring, Pin) and each colour; a Pin asks for its words as you type; Undo and Clear. Type a line in the field, Send to agent. In a terminal, `scanline notes` lists it and `scanline note <id>` gives its words, the marked picture (open it: your marks on the frame), its capture and its take.
+
+### The app on Windows (17 November 2026)
+
+Built and tested on the PC through the host and pictures of its own window, which leave out the game area; nobody has looked at it there. Build it with `npm run app` (it is then `app\target\Scanline\Scanline.exe`), and work through 1 to 15 above with Ctrl for ⌘ (Ctrl+L, Ctrl+Shift+C). These are about Windows itself:
+
+16. **The game is on screen.** Double-click `Scanline.exe` in Explorer. No console window appears, for the app or for the host it starts. The window opens on the start page, and its ring of bars turns in the dark area left of the panels, sharp, filling it. The window and the taskbar show Scanline's icon.
+17. **Its place, at every scale.** Resize the window, drag the divider, and maximise it: the game follows its area and nothing is drawn over the toolbar or the panels. Move the window to a display with another scale (Settings › Display, 100% and 150%) or change the scale while it is open: the game stays in its area, sharp.
+18. **Keys.** Ctrl+L, type an address, Return. Ctrl+V pastes, Ctrl+Backspace deletes a word. Ctrl+. pauses, Ctrl+' steps, Ctrl+1 to Ctrl+6 change panels, also while the game has the keyboard. The Windows key does nothing to the app (it had been bound to the shortcuts' ⌘ before 17 November). Alt+F4 closes the window and ends its session.
+19. **The pointer.** On `fixtures/app/lock.html`, click: the cursor disappears and the page says "locked". Move the mouse: the count climbs, but stops when the cursor (hidden) reaches the edge of the screen (DEPARTURES.md, "The app on Windows"). Esc gives it back.
+20. **The desktop.** Screenshot (Ctrl+Shift+S): a picture named by the date and time appears on the desktop, the one OneDrive keeps if it keeps it. Edit on a shader opens it in Notepad; saving it changes the game.
+21. **A capture file.** `scanline export --capture cap_1 --path $HOME\Desktop\frame.scanline`, then right-click the file › Open with › Choose another app › `Scanline.exe`: a new window opens on its Captures panel with that capture.
+22. **The zip.** `npm run package:app` writes `dist\Scanline-app-0.0.1-windows-x64.zip`. Unpack it into `%LOCALAPPDATA%\Programs` (so that `%LOCALAPPDATA%\Programs\Scanline\Scanline.exe` exists), stop any host (`scanline stop`), and open it from there: it works with no `SCANLINE_APP` set, and `scanline launch <url> --display app` from a terminal finds it. Windows may warn that it is unsigned.
 
 ## The desktop app prototype
 

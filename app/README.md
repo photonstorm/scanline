@@ -1,10 +1,12 @@
 # The Scanline app
 
-The game in Chromium and everything Scanline knows about it in one window: [docs/APP.md](../docs/APP.md) is the design. macOS on Apple silicon for now; Windows is next ([docs/HANDOVER.md](../docs/HANDOVER.md)).
+The game in Chromium and everything Scanline knows about it in one window: [docs/APP.md](../docs/APP.md) is the design. macOS on Apple silicon, and Windows on x64 since 17 November 2026; not Linux yet ([docs/HANDOVER.md](../docs/HANDOVER.md)).
 
 ## Using it
 
-Open `Scanline.app`. It asks the host for a new session in the app (starting the host if none is running) and the window opens on its start page. Type an address in the bar (`⌘L`), or open one from File › Open Recent.
+Open `Scanline.app` (on Windows, `Scanline.exe`). It asks the host for a new session in the app (starting the host if none is running) and the window opens on its start page. Type an address in the bar (`⌘L`), or open one from File › Open Recent.
+
+On Windows every `⌘` below is Ctrl (`Ctrl+L`, `Ctrl+Shift+C`), a word back in the address bar is `Ctrl+Backspace`, and there is no menu bar: the shortcuts, the toolbar and the projects page (`⌂`, which lists what Open Recent does) take its place.
 
 | | |
 |---|---|
@@ -44,7 +46,7 @@ The panels:
 - **Console**: the page's console by frame, repeats folded, filtered to warnings or errors.
 - **Agent**: every command an agent runs on the host, and what you do, newest first; and what the agent has asked of you, with Debug.
 
-A capture file (`.scanline`, written by `export`) opens in the app when double-clicked: it is imported into the host and shown in Captures, in a new window or the one already open.
+A capture file (`.scanline`, written by `export`) opens in the app when double-clicked: it is imported into the host and shown in Captures, in a new window or the one already open. On Windows (Open with › Scanline.exe, or `Scanline.exe frame.scanline`) it always opens in a new window.
 
 ## Agents
 
@@ -56,17 +58,23 @@ What you do in the app goes to the host as yours: the activity log says so, the 
 
 One executable, three parts (`src/main.rs`):
 
-- **The launcher** (opened from the Dock or the Finder): asks the host, on its control socket, for a session in the app, starting the host first with the bundled command line if none is running, and quits.
+- **The launcher** (opened from the Dock or the Finder, or on Windows from Explorer): asks the host, on its control socket (a named pipe on Windows), for a session in the app, starting the host first with the bundled command line if none is running, and quits.
 - **The player** (started by the host with `--remote-debugging-pipe`, as it starts Chrome): the window. The host drives the page over the pipe; the window asks the host for everything its panels show, as the "viewer" (not logged), and sends what you do as the "person" (logged). `src/player.rs`, `src/panels/`, `src/host.rs`.
-- **Chromium's helpers** (`--type=…`): CEF's renderer, GPU and utility processes, in Chromium's sandbox.
+- **Chromium's helpers** (`--type=…`): CEF's renderer, GPU and utility processes, in Chromium's sandbox on a Mac. On Windows they run without it ([docs/DEPARTURES.md](../docs/DEPARTURES.md), "The app on Windows").
 
-The game is a native view of Chromium's own (CEF in windowed mode), placed over the rectangle GPUI lays out for it; nothing is drawn over it. `src/mac.rs` holds the two places where CEF and GPUI meet in AppKit.
+The game is a native view of Chromium's own (CEF in windowed mode), placed over the rectangle GPUI lays out for it; nothing is drawn over it. `src/mac.rs` holds the places where CEF and GPUI meet in AppKit; `src/win.rs` the same in Win32, where the browser's window is a child of GPUI's, placed with `SetWindowPos`.
 
 The bundle (`Scanline.app/Contents`):
 
 - `MacOS/Scanline`: the app; `MacOS/scanline-cli`: the `scanline` command line, under another name because file names on a Mac ignore case.
 - `Frameworks/Chromium Embedded Framework.framework`, and the five `Scanline Helper` apps, each a hard link to the app's executable.
 - `Resources/start.html`, `Resources/AppIcon.icns`.
+
+On Windows, a folder (`app\target\Scanline\`):
+
+- `Scanline.exe`: the app, and Chromium's helpers too; `scanline-cli.exe`: the command line, named so for the same reason.
+- CEF's runtime beside them: `libcef.dll` and its other DLLs, the `.pak` files, `icudtl.dat`, `v8_context_snapshot.bin`, `vk_swiftshader_icd.json` and `locales\`.
+- `start.html`, and the icons' licence. The icon and the manifest are compiled into `Scanline.exe` (`resources/windows/`, by `build.rs`).
 
 ## Its look
 
@@ -80,20 +88,26 @@ Flat panels edged with hairlines, colour kept for meaning (what is chosen, what 
 npm run app
 ```
 
-That is `app/bundle.sh`: it builds the app and the command line and assembles `app/target/Scanline.app`. `RELEASE=1 sh app/bundle.sh` makes a release build. The first build needs:
+On a Mac that is `app/bundle.sh` (by way of `app/build.mjs`, which picks the script for the machine): it builds the app and the command line and assembles `app/target/Scanline.app`. `RELEASE=1 sh app/bundle.sh` makes a release build. The first build needs:
 
 - **CEF 156** in `app/target/cef`. `bundle.sh` copies the prototype's if it has one; otherwise the build downloads it there (135 MB, from cef-builds.spotifycdn.com).
 - **cmake and ninja**, to compile CEF's C++ wrapper: on the PATH (Homebrew's will do), or in a private Python environment, `python3 -m venv app/target/tools` and the `cmake` and `ninja` wheels installed into it.
 - Not Xcode: GPUI is built with `runtime_shaders`, so its Metal shaders are compiled when the app starts.
 
-To use the build with the command line in this repository, point the host at it: `SCANLINE_APP=app/target/Scanline.app`, set where the host is started (a running host keeps its environment: `scanline stop` first). An installed app is found without it, in `/Applications` or `~/Applications`.
+On Windows `npm run app` is `app\bundle.ps1`, which assembles `app\target\Scanline\` (`$env:RELEASE = '1'` first for a release build). The first build needs:
 
-`SCANLINE_APP_SNAPSHOTS=<folder>` makes the window save a picture of itself there every two seconds, with where Chromium's view sits beside it: a way to check the window with nobody at the screen. (A picture of one's own window leaves out what Chromium's GPU process draws, so the game area is dark in it.) In that mode the window also does what a `<session>.do` file in the folder says, one line each, then removes it: `capture`, `screenshot`, `video`, `show experiments`, `select tex_4`, `kind shader`, `back`, `view wireframe`, `patch <key> patch_draws {json}`, `measure flat_fragment`, `width 900`, `draw 12`, `pixel 10 20`, `address <url>`, `mute` (or `mute on`, `mute off`), `projects`, `release`, `sizes`, `size 1080p @2x` (or `size iPhone 15 landscape`, `size fit`), `timeline` (measure the open capture's GPU time), `magnify x y w h` (a region of the chosen draw's target), `showing before|after|changed`, `tab live 2` (a panel's tab, from 0), `audio anode_3` (an audio node in the Game panel).
+- **CEF 156 for Windows**, which the build downloads into `app\target\cef` (175 MB, from cef-builds.spotifycdn.com).
+- **Visual Studio 2022, or its Build Tools, with the C++ tools.** They bring cmake and ninja for CEF's wrapper; `bundle.ps1` enters Visual Studio's developer shell itself when they are not on the PATH. A release build also needs `fxc.exe` from the Windows SDK, for GPUI's Direct3D shaders, which `bundle.ps1` finds; a debug build compiles them when the app starts.
+- With the Windows 10 SDK (10.0.19041), the newest some machines have, CEF's wrapper does not compile as it comes: CEF targets `NTDDI_WIN10_FE`, which that SDK does not define. `bundle.ps1` defines it for the app's build when the newest SDK lacks it. A newer SDK needs nothing.
 
-`npm run package:app` (`app/package.sh`) makes a release build and packs it into `dist/Scanline-<version>-macos-arm64.dmg`, with a link to `/Applications`. It is unsigned: signing and notarising are the owner's, and come before packing.
+To use the build with the command line in this repository, point the host at it: `SCANLINE_APP=app/target/Scanline.app` (on Windows, `app\target\Scanline\Scanline.exe`), set where the host is started (a running host keeps its environment: `scanline stop` first). An installed app is found without it, in `/Applications` or `~/Applications`, or on Windows in `%LOCALAPPDATA%\Programs\Scanline`.
 
-The icon is drawn by `resources/icon/draw.swift`; `resources/icon/make.sh` remakes `AppIcon.icns`.
+`SCANLINE_APP_SNAPSHOTS=<folder>` makes the window save a picture of itself there every two seconds, with where Chromium's view sits beside it: a way to check the window with nobody at the screen. (A picture of one's own window leaves out what Chromium's GPU process draws, so the game area is dark in it, on Windows as on a Mac.) In that mode the window also does what a `<session>.do` file in the folder says, one line each, then removes it: `capture`, `screenshot`, `video`, `show experiments`, `select tex_4`, `kind shader`, `back`, `view wireframe`, `patch <key> patch_draws {json}`, `measure flat_fragment`, `width 900`, `draw 12`, `pixel 10 20`, `address <url>`, `mute` (or `mute on`, `mute off`), `projects`, `release`, `sizes`, `size 1080p @2x` (or `size iPhone 15 landscape`, `size fit`), `timeline` (measure the open capture's GPU time), `magnify x y w h` (a region of the chosen draw's target), `showing before|after|changed`, `tab live 2` (a panel's tab, from 0), `audio anode_3` (an audio node in the Game panel).
+
+`npm run package:app` (`app/package.sh`) makes a release build and packs it into `dist/Scanline-<version>-macos-arm64.dmg`, with a link to `/Applications`. It is unsigned: signing and notarising are the owner's, and come before packing. On Windows it is `app\package.ps1`, and packs the folder into `dist\Scanline-app-<version>-windows-x64.zip` (named apart from the command line's `scanline-<version>-windows-x64.zip`, which Windows would take for the same file): unsigned too, and with no installer yet. Unpacked into `%LOCALAPPDATA%\Programs`, so that `Scanline.exe` is in `%LOCALAPPDATA%\Programs\Scanline`, the host finds it there.
+
+The icon is drawn by `resources/icon/draw.swift`; `resources/icon/make.sh` remakes `AppIcon.icns`, and `node app/resources/icon/ico.mjs` then makes the Windows icon from it.
 
 ## Tests
 
-`npm run test:app` launches the app as the host's browser, drives and captures a page in it, points its panels, and closes it. It is skipped when the app has not been built. The window itself (typing, clicking, menus) is checked by hand: [docs/BY-HAND.md](../docs/BY-HAND.md), "The Scanline app".
+`npm run test:app` launches the app as the host's browser, drives and captures a page in it, points its panels, and closes it. It is skipped when the app has not been built (on Windows it looks for `app\target\Scanline\Scanline.exe`). The window itself (typing, clicking, menus) is checked by hand: [docs/BY-HAND.md](../docs/BY-HAND.md), "The Scanline app".
