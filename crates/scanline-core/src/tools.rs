@@ -416,7 +416,12 @@ pub const TOOLS: &[Tool] = &[
     Tool {
         name: "watches",
         description: "The watches' current values and the rules they broke, with each property's last frames when history is given.",
-        schema: schema!("[]", session!(), r#""name": { "type": "string" }"#, r#""history": { "type": "integer", "description": "Frames of history, up to 600." }"#),
+        schema: schema!(
+            "[]",
+            session!(),
+            r#""name": { "type": "string" }"#,
+            r#""history": { "type": "integer", "description": "Frames of history, up to 600." }"#
+        ),
         read_only: true,
     },
     Tool {
@@ -440,7 +445,11 @@ pub const TOOLS: &[Tool] = &[
     Tool {
         name: "audio",
         description: "The game's sound: each Web Audio context with its state and output level, the graph of nodes with their parameters and connections, what is playing, every buffer with its size and the file it was decoded from, the audio and video elements, and findings (a suspended context, a node connected to nothing, a gain above 1, clipping, a file decoded twice). Labels and addresses in «» are the page's.",
-        schema: schema!("[]", session!(), r#""view": { "type": "string", "enum": ["summary", "graph", "playing", "buffers", "elements"], "description": "Default summary." }"#),
+        schema: schema!(
+            "[]",
+            session!(),
+            r#""view": { "type": "string", "enum": ["summary", "graph", "playing", "buffers", "elements"], "description": "Default summary." }"#
+        ),
         read_only: true,
     },
     Tool {
@@ -505,12 +514,7 @@ pub const TOOLS: &[Tool] = &[
         ),
         read_only: false,
     },
-    Tool {
-        name: "notes",
-        description: "The person's notes, newest first, with their words, frame, capture and take.",
-        schema: schema!("[]"),
-        read_only: true,
-    },
+    Tool { name: "notes", description: "The person's notes, newest first, with their words, frame, capture and take.", schema: schema!("[]"), read_only: true },
     Tool {
         name: "events",
         description: "Events queued for a session since a cursor: crashes, context loss, navigation, warnings. Nothing is lost if you were not listening.",

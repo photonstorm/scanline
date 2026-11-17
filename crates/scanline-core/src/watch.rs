@@ -80,7 +80,11 @@ pub(crate) fn watch_line(watch: &Value) -> String {
             let key = prop["prop"].as_str().unwrap_or("");
             let mark = if prop["broken"] == true { " ✗" } else { "" };
 
-            if key.is_empty() { format!("{}{mark}", value_text(&prop["value"])) } else { format!("«{}» = {}{mark}", page_text(key, 60), value_text(&prop["value"])) }
+            if key.is_empty() {
+                format!("{}{mark}", value_text(&prop["value"]))
+            } else {
+                format!("«{}» = {}{mark}", page_text(key, 60), value_text(&prop["value"]))
+            }
         })
         .collect();
     let source = match (watch["source"].as_str(), watch["kind"].as_str()) {
@@ -110,7 +114,8 @@ async fn probe(session: &Arc<Session>, method: &str, args: Value) -> Result<Valu
 }
 
 fn unknown(reply: &Value, name: &str) -> anyhow::Error {
-    let known: Vec<String> = reply["known"].as_array().into_iter().flatten().filter_map(Value::as_str).map(|name| format!("«{}»", page_text(name, 60))).collect();
+    let known: Vec<String> =
+        reply["known"].as_array().into_iter().flatten().filter_map(Value::as_str).map(|name| format!("«{}»", page_text(name, 60))).collect();
 
     anyhow!(
         "There is no watch «{}». {}",
@@ -139,7 +144,12 @@ pub async fn watch(session: &Arc<Session>, params: &Value) -> Result<Value> {
         let props = reply["props"].as_array().map_or(0, Vec::len);
 
         return Ok(result(
-            format!("Watching {props} propert{} of the engine's object: {}.\nwatches() reads them; unwatch(name: \"{}\") removes it.", if props == 1 { "y" } else { "ies" }, watch_line(&reply), page_text(reply["name"].as_str().unwrap_or(path), 80)),
+            format!(
+                "Watching {props} propert{} of the engine's object: {}.\nwatches() reads them; unwatch(name: \"{}\") removes it.",
+                if props == 1 { "y" } else { "ies" },
+                watch_line(&reply),
+                page_text(reply["name"].as_str().unwrap_or(path), 80)
+            ),
             reply,
         ));
     }
@@ -162,7 +172,9 @@ pub async fn watch(session: &Arc<Session>, params: &Value) -> Result<Value> {
         let name = reply["name"].clone();
 
         state.watched.retain(|kept| kept["name"] != name);
-        state.watched.push(json!({ "name": name, "expr": asked["expr"], "props": asked["props"], "depth": asked["depth"], "rules": asked["rules"], "break": asked["break"] }));
+        state.watched.push(
+            json!({ "name": name, "expr": asked["expr"], "props": asked["props"], "depth": asked["depth"], "rules": asked["rules"], "break": asked["break"] }),
+        );
     }
 
     let props = reply["props"].as_array().map_or(0, Vec::len);
@@ -206,10 +218,19 @@ pub async fn watchable(session: &Arc<Session>, params: &Value) -> Result<Value> 
         if reply["total"] == 1 { "" } else { "s" },
         params["filter"].as_str().map(|filter| format!(" matching «{}»", page_text(filter, 40))).unwrap_or_default(),
         engines.join(", "),
-        if objects.len() as u64 > 0 && reply["total"].as_u64().unwrap_or(0) > objects.len() as u64 { format!(", the first {}", objects.len()) } else { String::new() }
+        if objects.len() as u64 > 0 && reply["total"].as_u64().unwrap_or(0) > objects.len() as u64 {
+            format!(", the first {}", objects.len())
+        } else {
+            String::new()
+        }
     )];
 
-    lines.extend(objects.iter().take(200).map(|object| format!("  «{}»  {}", page_text(object["path"].as_str().unwrap_or(""), 120), object["type"].as_str().unwrap_or(""))));
+    lines.extend(
+        objects
+            .iter()
+            .take(200)
+            .map(|object| format!("  «{}»  {}", page_text(object["path"].as_str().unwrap_or(""), 120), object["type"].as_str().unwrap_or(""))),
+    );
     lines.push("watch(object: \"<path>\") watches one: position, rotation, scale and visibility, or a sprite's x, y, frame and velocity.".into());
 
     Ok(result(lines.join("\n"), reply))
@@ -319,7 +340,9 @@ pub async fn reapply(session: &Arc<Session>) -> Option<String> {
 
     for asked in &kept {
         let (method, args) = match asked["object"].as_str() {
-            Some(path) => ("watch.object", json!({ "path": path, "name": asked["name"], "props": asked["props"], "rules": asked["rules"], "break": asked["break"] })),
+            Some(path) => {
+                ("watch.object", json!({ "path": path, "name": asked["name"], "props": asked["props"], "rules": asked["rules"], "break": asked["break"] }))
+            }
             None => ("watch.add", asked.clone()),
         };
 
@@ -350,7 +373,12 @@ pub async fn watch_set(session: &Arc<Session>, params: &Value) -> Result<Value> 
     }
 
     Ok(result(
-        format!("{} was {} and is now {}. The game reads it from its next frame; step and look.", label(name, prop), value_text(&reply["before"]), value_text(&reply["after"])),
+        format!(
+            "{} was {} and is now {}. The game reads it from its next frame; step and look.",
+            label(name, prop),
+            value_text(&reply["before"]),
+            value_text(&reply["after"])
+        ),
         reply,
     ))
 }

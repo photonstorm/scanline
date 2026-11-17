@@ -84,7 +84,10 @@ pub async fn take(host: &Arc<Host>, session: &Arc<Session>, params: &Value) -> R
         "play" => play(host, session, params).await,
         "remove" => remove(host, params),
         "rename" => rename(host, params),
-        other => bail!("take needs action: start, stop, play, remove or rename{}.", if other.is_empty() { String::new() } else { format!(" (not \"{}\")", page_text(other, 20)) }),
+        other => bail!(
+            "take needs action: start, stop, play, remove or rename{}.",
+            if other.is_empty() { String::new() } else { format!(" (not \"{}\")", page_text(other, 20)) }
+        ),
     }
 }
 
@@ -122,7 +125,9 @@ async fn start(host: &Arc<Host>, session: &Arc<Session>, params: &Value) -> Resu
         }
 
         if from == "checkpoint" && checkpoint.is_null() {
-            bail!("The page offers no checkpoint it can restore (checkpoint.provide with save and restore), so a take can only play from its load. Leave from out, or use from: \"load\".");
+            bail!(
+                "The page offers no checkpoint it can restore (checkpoint.provide with save and restore), so a take can only play from its load. Leave from out, or use from: \"load\"."
+            );
         }
     }
 
@@ -134,7 +139,11 @@ async fn start(host: &Arc<Host>, session: &Arc<Session>, params: &Value) -> Resu
         format!(
             "Recording take «{name}» from frame {frame}. {} Play, or send input; take(action: \"stop\") keeps it.",
             if plays_from == "load" {
-                if frame == 0 { "It plays from the page's load.".to_string() } else { format!("It plays from the page's load, with the input before frame {frame} too, so it reaches the same place.") }
+                if frame == 0 {
+                    "It plays from the page's load.".to_string()
+                } else {
+                    format!("It plays from the page's load, with the input before frame {frame} too, so it reaches the same place.")
+                }
             } else {
                 format!("The page saved a checkpoint at frame {frame}; the take plays from there.")
             }
@@ -186,7 +195,10 @@ async fn stop(host: &Arc<Host>, session: &Arc<Session>) -> Result<Value> {
         lines.push("This session is not deterministic, so a replay gets the same input but may part from the original. Launch with deterministic: true for takes that reach the same frame every time.".into());
     }
 
-    lines.push(format!("take(action: \"play\", name: \"{name}\") plays it; then: \"capture\" or \"screenshot\" does that where it ends. Its file: {}", path.display()));
+    lines.push(format!(
+        "take(action: \"play\", name: \"{name}\") plays it; then: \"capture\" or \"screenshot\" does that where it ends. Its file: {}",
+        path.display()
+    ));
 
     Ok(result(lines.join("\n"), json!({ "take": name, "start": start, "end": end, "events": events.len(), "from": run["from"], "path": path })))
 }
@@ -207,7 +219,11 @@ async fn play(host: &Arc<Host>, session: &Arc<Session>, params: &Value) -> Resul
         runs::replay(session, &take, name, &json!({ "to_frame": params["to_frame"], "until_mark": params["until_mark"], "fast": fast })).await?
     };
 
-    let summary = played["summary"].as_str().unwrap_or("").replace(&format!(" of {name} "), &format!(" of take «{name}» ")).replace(&format!("Replayed {name} "), &format!("Played take «{name}» "));
+    let summary = played["summary"]
+        .as_str()
+        .unwrap_or("")
+        .replace(&format!(" of {name} "), &format!(" of take «{name}» "))
+        .replace(&format!("Replayed {name} "), &format!("Played take «{name}» "));
 
     played["summary"] = json!(summary);
 
@@ -284,7 +300,10 @@ async fn from_checkpoint(session: &Arc<Session>, take: &Value, name: &str, param
     Ok(result(
         match &stopped_by {
             Some(why) => format!("Stopped take «{name}» {} frames after its checkpoint: {why}. Paused at frame {frame}.", at - start),
-            None => format!("Played take «{name}» from its checkpoint (saved at frame {start}) for {} frames. Paused at frame {frame}. The page's frame count did not go back with its state.", at - start),
+            None => format!(
+                "Played take «{name}» from its checkpoint (saved at frame {start}) for {} frames. Paused at frame {frame}. The page's frame count did not go back with its state.",
+                at - start
+            ),
         },
         json!({ "take": name, "from": "checkpoint", "played": at - start, "frame": frame, "stopped_by": stopped_by }),
     ))

@@ -271,7 +271,20 @@ pub async fn audio_node(session: &Arc<Session>, params: &Value) -> Result<Value>
             .flatten()
             .rev()
             .take(4)
-            .map(|call| format!("{}({}) at frame {}", call["call"].as_str().unwrap_or("?"), call["args"].as_array().into_iter().flatten().map(|arg| arg.as_f64().map(number).unwrap_or_else(|| arg.to_string())).collect::<Vec<_>>().join(", "), call["frame"]))
+            .map(|call| {
+                format!(
+                    "{}({}) at frame {}",
+                    call["call"].as_str().unwrap_or("?"),
+                    call["args"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .map(|arg| arg.as_f64().map(number).unwrap_or_else(|| arg.to_string()))
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    call["frame"]
+                )
+            })
             .collect();
 
         lines.push(format!(
@@ -284,16 +297,30 @@ pub async fn audio_node(session: &Arc<Session>, params: &Value) -> Result<Value>
         ));
     }
 
-    let props: Vec<String> = node["props"].as_object().into_iter().flatten().map(|(name, value)| format!("{name} {}", value.as_str().map(|text| format!("«{}»", page_text(text, 60))).unwrap_or_else(|| value.to_string()))).collect();
+    let props: Vec<String> = node["props"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .map(|(name, value)| format!("{name} {}", value.as_str().map(|text| format!("«{}»", page_text(text, 60))).unwrap_or_else(|| value.to_string())))
+        .collect();
 
     if !props.is_empty() {
         lines.push(format!("Settings: {}.", props.join(", ")));
     }
 
-    let inputs: Vec<String> = node["inputs"].as_array().into_iter().flatten().map(|edge| edge["from"].as_str().unwrap_or("?").to_string() + &edge["param"].as_str().map(|param| format!(" (into {param})")).unwrap_or_default()).collect();
+    let inputs: Vec<String> = node["inputs"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|edge| edge["from"].as_str().unwrap_or("?").to_string() + &edge["param"].as_str().map(|param| format!(" (into {param})")).unwrap_or_default())
+        .collect();
     let outputs: Vec<String> = node["outputs"].as_array().into_iter().flatten().map(edge_text).collect();
 
-    lines.push(format!("From: {}. To: {}.", if inputs.is_empty() { "nothing".into() } else { inputs.join(", ") }, if outputs.is_empty() { "nothing".into() } else { outputs.join(", ") }));
+    lines.push(format!(
+        "From: {}. To: {}.",
+        if inputs.is_empty() { "nothing".into() } else { inputs.join(", ") },
+        if outputs.is_empty() { "nothing".into() } else { outputs.join(", ") }
+    ));
 
     if let Some(started) = node["started"].as_object() {
         lines.push(format!(
@@ -321,7 +348,9 @@ pub async fn audio_patch(session: &Arc<Session>, params: &Value) -> Result<Value
         return Ok(result(format!("Undid {undone} audio patch{}: the game sounds as it did.", if undone == 1 { "" } else { "es" }), reply));
     }
 
-    let handle = params["handle"].as_str().ok_or_else(|| anyhow!("audio_patch needs handle (a node from audio()) and mode: mute, solo, bypass or param. undo: \"apatch_1\" or all: true puts things back."))?;
+    let handle = params["handle"].as_str().ok_or_else(|| {
+        anyhow!("audio_patch needs handle (a node from audio()) and mode: mute, solo, bypass or param. undo: \"apatch_1\" or all: true puts things back.")
+    })?;
     let mode = params["mode"].as_str().unwrap_or("mute");
     let reply = probe(session, "audio.patch", json!({ "node": handle, "mode": mode, "param": params["param"], "value": params["value"] })).await?;
 
@@ -395,7 +424,12 @@ pub async fn audio_clip(host: &Arc<crate::Host>, session: &Arc<Session>, params:
             } else if recording == 0 {
                 "Nothing to keep yet: no context sends sound to its destination. Ask again once the game makes a sound.".to_string()
             } else {
-                format!("Keeping the last {} s of what {recording} context{} play{}. audio_clip() writes them as a WAV file.", reply["seconds"], if recording == 1 { "" } else { "s" }, if recording == 1 { "s" } else { "" })
+                format!(
+                    "Keeping the last {} s of what {recording} context{} play{}. audio_clip() writes them as a WAV file.",
+                    reply["seconds"],
+                    if recording == 1 { "" } else { "s" },
+                    if recording == 1 { "s" } else { "" }
+                )
             },
             reply,
         ));

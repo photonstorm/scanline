@@ -109,16 +109,6 @@ pub fn render(player: &mut Player, _window: &mut Window, cx: &mut Context<Player
         .flex()
         .flex_col()
         .child(crate::panels::header("console", "Console", CYAN).child(div().flex_1()).child(filters))
-        .child(
-            div()
-                .flex_1()
-                .min_h_0()
-                .flex()
-                .flex_col()
-                .gap_2()
-                .p_3()
-                .when(count == 0, |content| content.child(note("Empty.")))
-                .child(list),
-        )
+        .child(div().flex_1().min_h_0().flex().flex_col().gap_2().p_3().when(count == 0, |content| content.child(note("Empty."))).child(list))
         .into_any_element()
 }

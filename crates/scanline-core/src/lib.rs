@@ -22,8 +22,8 @@ mod page;
 mod patch;
 mod runs;
 mod session;
-mod takes;
 pub mod skills;
+mod takes;
 pub mod tiers;
 mod tools;
 mod trace;
@@ -168,8 +168,14 @@ impl Host {
 
     /// Waits for every capture a session is still finishing: a session finishes one at a time.
     pub(crate) async fn settled(&self, session: &str) {
-        let waiting: Vec<(String, Finished)> =
-            self.finishing.lock().unwrap().iter().filter(|(_, (owner, _))| owner == session).map(|(handle, (_, receiver))| (handle.clone(), receiver.clone())).collect();
+        let waiting: Vec<(String, Finished)> = self
+            .finishing
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, (owner, _))| owner == session)
+            .map(|(handle, (_, receiver))| (handle.clone(), receiver.clone()))
+            .collect();
 
         for (_, mut receiver) in waiting {
             let _ = receiver.wait_for(Option::is_some).await;
@@ -308,7 +314,9 @@ impl Host {
 
         // One owner of the input at a time. While the person has it, the agent may look but
         // may not move time or send input: that would fight them for the game.
-        if matches!(method, "input" | "step" | "run_until" | "resume" | "navigate" | "replay_run" | "policy") || (method == "take" && params["action"] == "play") {
+        if matches!(method, "input" | "step" | "run_until" | "resume" | "navigate" | "replay_run" | "policy")
+            || (method == "take" && params["action"] == "play")
+        {
             if let Ok(session) = self.session(&params) {
                 let state = session.state.lock().unwrap();
 
@@ -369,7 +377,9 @@ impl Host {
             "live_view" => page::live_view(&live()?, &params).await,
             "save_run" => runs::save_run(self, &live()?).await,
             "replay_run" => runs::replay_run(self, &live()?, &params).await,
-            "take" if matches!(params["action"].as_str(), Some("remove" | "rename")) => takes::take(self, &self.session(&params).or_else(|_| live())?, &params).await,
+            "take" if matches!(params["action"].as_str(), Some("remove" | "rename")) => {
+                takes::take(self, &self.session(&params).or_else(|_| live())?, &params).await
+            }
             "take" => takes::take(self, &live()?, &params).await,
             "takes" => takes::takes(self),
             "note" if params["id"].is_string() => notes::note(self, None, &params).await,

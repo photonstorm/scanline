@@ -149,7 +149,11 @@ fn cards(home: &Path, projects: &[Project]) -> String {
             .map(|name| pictures(home).join(name))
             .filter(|path| path.exists())
             .map(|path| {
-                let stamp = std::fs::metadata(&path).and_then(|meta| meta.modified()).ok().and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |since| since.as_secs());
+                let stamp = std::fs::metadata(&path)
+                    .and_then(|meta| meta.modified())
+                    .ok()
+                    .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map_or(0, |since| since.as_secs());
 
                 format!("<img src=\"{}?v={stamp}\" alt=\"\">", escape(&file_url(&path)))
             })
@@ -182,7 +186,11 @@ fn cards(home: &Path, projects: &[Project]) -> String {
 /// Windows.
 pub fn template(me: &Path) -> Option<PathBuf> {
     let folder = me.parent();
-    let page = if cfg!(windows) { folder.map(|folder| folder.join("start.html")) } else { folder.and_then(Path::parent).map(|contents| contents.join("Resources/start.html")) };
+    let page = if cfg!(windows) {
+        folder.map(|folder| folder.join("start.html"))
+    } else {
+        folder.and_then(Path::parent).map(|contents| contents.join("Resources/start.html"))
+    };
 
     page.filter(|page| page.exists())
 }

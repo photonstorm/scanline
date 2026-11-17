@@ -110,7 +110,9 @@ pub fn rail(player: &mut Player, cx: &mut Context<Player>) -> impl IntoElement {
                 .hover(move |button| button.bg(tint(colour, 0.08)))
                 // The panel open now: a lit bar at the rail's edge.
                 .when(on, |button| {
-                    button.child(div().absolute().left(px(-4.0)).top(px(10.0)).bottom(px(10.0)).w(px(3.0)).rounded(px(1.5)).bg(rgb(colour)).shadow(glow(colour, 0.7)))
+                    button.child(
+                        div().absolute().left(px(-4.0)).top(px(10.0)).bottom(px(10.0)).w(px(3.0)).rounded(px(1.5)).bg(rgb(colour)).shadow(glow(colour, 0.7)),
+                    )
                 })
                 .child(crate::icons::icon(panel.icon(), 18.0, if on { tint(colour, 1.0) } else { tint(TEXT, 0.62) }))
                 .child(div().text_size(px(9.5)).text_color(if on { tint(colour, 1.0) } else { tint(DIM, 1.0) }).child(panel.name()))

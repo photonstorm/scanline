@@ -38,7 +38,11 @@ pub enum Mode {
 impl Mode {
     /// `--lean`, or SCANLINE_MCP=lean.
     pub fn chosen(args: &[String]) -> Mode {
-        if args.iter().any(|arg| arg == "--lean") || std::env::var("SCANLINE_MCP").is_ok_and(|value| value.eq_ignore_ascii_case("lean")) { Mode::Lean } else { Mode::Full }
+        if args.iter().any(|arg| arg == "--lean") || std::env::var("SCANLINE_MCP").is_ok_and(|value| value.eq_ignore_ascii_case("lean")) {
+            Mode::Lean
+        } else {
+            Mode::Full
+        }
     }
 }
 
@@ -231,10 +235,14 @@ where
                     if TOOLS.iter().any(|tool| tool.name == command) { call(command, args).await } else { Err(unknown_command(&command)) }
                 }
                 (Mode::Lean, "gfx_help") => match arguments["command"].as_str() {
-                    Some(command) => command_help(command).map(|text| json!({ "summary": text, "data": { "command": command } })).ok_or_else(|| unknown_command(command)),
+                    Some(command) => {
+                        command_help(command).map(|text| json!({ "summary": text, "data": { "command": command } })).ok_or_else(|| unknown_command(command))
+                    }
                     None => call("help".into(), arguments).await,
                 },
-                (Mode::Lean, _) => Err(anyhow::anyhow!("Unknown tool \"{name}\". Run commands with gfx(command, args); gfx_help(command) gives a command's parameters.")),
+                (Mode::Lean, _) => {
+                    Err(anyhow::anyhow!("Unknown tool \"{name}\". Run commands with gfx(command, args); gfx_help(command) gives a command's parameters."))
+                }
                 (Mode::Full, _) => match name.strip_prefix("gfx_") {
                     Some(command) if TOOLS.iter().any(|tool| tool.name == command) => call(command.to_string(), arguments).await,
                     _ => Err(anyhow::anyhow!("Unknown tool \"{name}\". Tools are named gfx_launch, gfx_step and so on; gfx_help lists the workflow.")),
@@ -363,18 +371,30 @@ mod tests {
         assert!(listed["result"].to_string().len() < 2500, "{}", listed["result"].to_string().len());
         assert!(TOOLS.iter().all(|tool| tools[0]["description"].as_str().unwrap().contains(tool.name)));
 
-        let run = handle_in(Mode::Lean, &json!({ "id": 2, "method": "tools/call", "params": { "name": "gfx", "arguments": { "command": "step", "args": { "frames": 3 } } } }), &fake).await.unwrap();
+        let run = handle_in(
+            Mode::Lean,
+            &json!({ "id": 2, "method": "tools/call", "params": { "name": "gfx", "arguments": { "command": "step", "args": { "frames": 3 } } } }),
+            &fake,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(run["result"]["isError"], false);
         assert!(run["result"]["content"][0]["text"].as_str().unwrap().contains("step"));
 
-        let help = handle_in(Mode::Lean, &json!({ "id": 3, "method": "tools/call", "params": { "name": "gfx_help", "arguments": { "command": "pixels" } } }), &fake).await.unwrap();
+        let help =
+            handle_in(Mode::Lean, &json!({ "id": 3, "method": "tools/call", "params": { "name": "gfx_help", "arguments": { "command": "pixels" } } }), &fake)
+                .await
+                .unwrap();
         let text = help["result"]["content"][0]["text"].as_str().unwrap();
 
         assert!(text.starts_with("pixels: "), "{text}");
         assert!(text.contains("Parameters (as args):"), "{text}");
 
-        let slip = handle_in(Mode::Lean, &json!({ "id": 4, "method": "tools/call", "params": { "name": "gfx", "arguments": { "command": "screnshot" } } }), &fake).await.unwrap();
+        let slip =
+            handle_in(Mode::Lean, &json!({ "id": 4, "method": "tools/call", "params": { "name": "gfx", "arguments": { "command": "screnshot" } } }), &fake)
+                .await
+                .unwrap();
 
         assert_eq!(slip["result"]["isError"], true);
         assert_eq!(slip["result"]["content"][0]["text"], "No command \"screnshot\". Did you mean \"screenshot\"?");

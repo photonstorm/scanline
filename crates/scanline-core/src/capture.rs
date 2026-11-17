@@ -1534,7 +1534,9 @@ pub async fn capture(host: &Arc<Host>, session: &Arc<Session>, params: &Value) -
         body["blob_hashes"] = json!(hashes);
 
         let outcome = match brought {
-            Ok(()) => finish(&host, &session, &handle, body.clone(), source, &params).await.map(|_| ()).map_err(|error| format!("it could not be replayed ({error})")),
+            Ok(()) => {
+                finish(&host, &session, &handle, body.clone(), source, &params).await.map(|_| ()).map_err(|error| format!("it could not be replayed ({error})"))
+            }
             Err(error) => Err(format!("the page went away before its textures were brought ({error})")),
         };
 
@@ -1555,7 +1557,15 @@ fn described(taken: &Value) -> Result<Value> {
 }
 
 /// Brings the blobs `indexes` names from the page into the store, setting their hashes.
-async fn bring(host: &Arc<Host>, session: &Arc<Session>, instance: &crate::session::Instance, id: &Value, indexes: &[usize], sizes: &[u64], hashes: &mut [Value]) -> Result<()> {
+async fn bring(
+    host: &Arc<Host>,
+    session: &Arc<Session>,
+    instance: &crate::session::Instance,
+    id: &Value,
+    indexes: &[usize],
+    sizes: &[u64],
+    hashes: &mut [Value],
+) -> Result<()> {
     let total: u64 = indexes.iter().map(|index| sizes[*index]).sum();
     let mut from = 0usize;
     let mut brought = 0usize;
@@ -1653,7 +1663,16 @@ pub(crate) async fn build(host: &Arc<Host>, session: &Arc<Session>, body: Value,
 /// The capture written before its textures are in: its tables, without what each draw changed
 /// and without a replay check, which follow. Returns what capture returns.
 #[allow(clippy::too_many_arguments)]
-fn provisional(host: &Arc<Host>, session: &Arc<Session>, handle: &str, body: &Value, source: &Source, params: &Value, count: usize, bytes: u64) -> Result<Value> {
+fn provisional(
+    host: &Arc<Host>,
+    session: &Arc<Session>,
+    handle: &str,
+    body: &Value,
+    source: &Source,
+    params: &Value,
+    count: usize,
+    bytes: u64,
+) -> Result<Value> {
     let waiting = format!(
         "still to come: {} ({}) {} being brought from the page in the background",
         if count == 1 { "one texture or large buffer".to_string() } else { format!("{count} textures and large buffers") },
@@ -3737,7 +3756,8 @@ pub async fn attachments(host: &Arc<Host>, params: &Value) -> Result<Value> {
 
     for (name, held, _) in &points {
         let described = host.store.query(&handle, "SELECT label, what FROM objects WHERE handle = ?1", &[Sql::Text(held.clone())], 1)?;
-        let (label, what) = described.rows.first().map(|row| (row[0].as_str().unwrap_or("").to_string(), row[1].as_str().unwrap_or("").to_string())).unwrap_or_default();
+        let (label, what) =
+            described.rows.first().map(|row| (row[0].as_str().unwrap_or("").to_string(), row[1].as_str().unwrap_or("").to_string())).unwrap_or_default();
         let depth = name.starts_with("Depth");
 
         // Colour: the target read back. A renderbuffer is read through its framebuffer.
@@ -3745,11 +3765,17 @@ pub async fn attachments(host: &Arc<Host>, params: &Value) -> Result<Value> {
         let read = if depth {
             let view_target = framebuffer.clone().unwrap_or_else(|| target.clone());
 
-            crate::analysis::view(host, &json!({ "capture": handle, "view": "depth", "at_draw": draw, "target": view_target, "session": params["session"], "max_edge": max_edge }))
-                .await
-                .and_then(|reply| reply["images"][0]["view"].as_str().map(str::to_string).ok_or_else(|| anyhow!("{}", reply["summary"].as_str().unwrap_or("no picture"))))
+            crate::analysis::view(
+                host,
+                &json!({ "capture": handle, "view": "depth", "at_draw": draw, "target": view_target, "session": params["session"], "max_edge": max_edge }),
+            )
+            .await
+            .and_then(|reply| {
+                reply["images"][0]["view"].as_str().map(str::to_string).ok_or_else(|| anyhow!("{}", reply["summary"].as_str().unwrap_or("no picture")))
+            })
         } else {
-            let as_target = if held.starts_with("renderbuffer") || held.starts_with("rbo_") { framebuffer.clone().unwrap_or_else(|| target.clone()) } else { held.clone() };
+            let as_target =
+                if held.starts_with("renderbuffer") || held.starts_with("rbo_") { framebuffer.clone().unwrap_or_else(|| target.clone()) } else { held.clone() };
 
             match replayed(host, &json!({ "capture": handle, "at_draw": draw, "target": as_target, "session": params["session"] })).await {
                 Ok((_, _, image, _, _)) => {
@@ -3780,7 +3806,8 @@ pub async fn attachments(host: &Arc<Host>, params: &Value) -> Result<Value> {
         lines.push("Warning: this capture's replay did not match the original frame, so these may be wrong.".into());
     }
 
-    let mut value = result(lines.join("\n"), json!({ "capture": handle, "draw": draw, "framebuffer": framebuffer, "attachments": listed, "provenance": "gpu-measured" }));
+    let mut value =
+        result(lines.join("\n"), json!({ "capture": handle, "draw": draw, "framebuffer": framebuffer, "attachments": listed, "provenance": "gpu-measured" }));
 
     value["images"] = json!(images);
 

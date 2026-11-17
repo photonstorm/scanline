@@ -18,12 +18,12 @@ use gpui::{
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use serde_json::{Value, json};
 
-use crate::host::{HostLink, Reply};
-use crate::panels::{self, Panel};
-use crate::theme::*;
 use crate::device::{self, Size};
+use crate::host::{HostLink, Reply};
 use crate::icons::icon;
+use crate::panels::{self, Panel};
 use crate::projects::{self, Project};
+use crate::theme::*;
 use crate::{browser, platform};
 
 const TOOLBAR: f32 = 52.0;
@@ -523,8 +523,7 @@ impl Player {
 
         // Pictures of the textures the chosen draw has bound, for its bound-resources table.
         if self.panel == Panel::Captures && !self.polling.contains("thumbnails") {
-            let wanted: Vec<String> =
-                self.captures.bound_textures().into_iter().filter(|handle| !self.resources.thumbs.contains_key(handle)).take(4).collect();
+            let wanted: Vec<String> = self.captures.bound_textures().into_iter().filter(|handle| !self.resources.thumbs.contains_key(handle)).take(4).collect();
 
             if !wanted.is_empty() {
                 for handle in &wanted {
@@ -712,10 +711,7 @@ impl Player {
                 let path = value["images"][0]["original"].as_str().or(value["images"][0]["view"].as_str()).map(PathBuf::from);
 
                 match path.as_deref().and_then(|path| to_desktop(path, "screenshot")) {
-                    Some(saved) => self.say(
-                        &format!("Saved {}", saved.file_name().map(|name| name.to_string_lossy().to_string()).unwrap_or_default()),
-                        false,
-                    ),
+                    Some(saved) => self.say(&format!("Saved {}", saved.file_name().map(|name| name.to_string_lossy().to_string()).unwrap_or_default()), false),
                     None => self.say("Could not save the screenshot to the desktop.", true),
                 }
             }
@@ -772,10 +768,7 @@ impl Player {
             }
             (Purpose::VideoStart, Ok(_)) => self.say("Recording", false),
             (Purpose::VideoStop, Ok(value)) => match value["data"]["video"].as_str().map(PathBuf::from).as_deref().and_then(|path| to_desktop(path, "video")) {
-                Some(saved) => self.say(
-                    &format!("Saved {}", saved.file_name().map(|name| name.to_string_lossy().to_string()).unwrap_or_default()),
-                    false,
-                ),
+                Some(saved) => self.say(&format!("Saved {}", saved.file_name().map(|name| name.to_string_lossy().to_string()).unwrap_or_default()), false),
                 None => self.say(value["summary"].as_str().unwrap_or("No video.").lines().next().unwrap_or(""), true),
             },
             (Purpose::Patched(key), Ok(value)) => {
@@ -1195,7 +1188,8 @@ impl Player {
     /// diff, as an agent would ask for them.
     pub fn magnify(&mut self, (x, y, w, h): (u32, u32, u32, u32)) {
         let (Some(capture), Some(draw)) = (self.captures.opened.clone(), self.captures.selected) else { return };
-        let enlarged = self.captures.enlarged.and_then(|index| self.captures.attachments.as_ref()?["attachments"][index]["handle"].as_str().map(str::to_string));
+        let enlarged =
+            self.captures.enlarged.and_then(|index| self.captures.attachments.as_ref()?["attachments"][index]["handle"].as_str().map(str::to_string));
         let target = enlarged
             .or_else(|| self.captures.draw.as_ref().and_then(|draw| draw["state"]["targetName"].as_str().map(str::to_string)))
             .unwrap_or_else(|| "canvas".into());
@@ -1812,8 +1806,12 @@ impl Player {
                     let mark = match (tool, numbers.as_slice()) {
                         ("arrow", [ax, ay, bx, by, ..]) => Some(json!({ "tool": "arrow", "from": [ax, ay], "to": [bx, by], "colour": colour })),
                         ("rect" | "ellipse", [x, y, w, h, ..]) => Some(json!({ "tool": tool, "x": x, "y": y, "w": w, "h": h, "colour": colour })),
-                        ("pen", points) if points.len() >= 4 => Some(json!({ "tool": "pen", "points": points.chunks_exact(2).map(|pair| json!([pair[0], pair[1]])).collect::<Vec<_>>(), "colour": colour })),
-                        ("text", [x, y, ..]) => Some(json!({ "tool": "text", "x": x, "y": y, "text": rest.split_whitespace().skip(3).collect::<Vec<_>>().join(" "), "colour": colour })),
+                        ("pen", points) if points.len() >= 4 => Some(
+                            json!({ "tool": "pen", "points": points.chunks_exact(2).map(|pair| json!([pair[0], pair[1]])).collect::<Vec<_>>(), "colour": colour }),
+                        ),
+                        ("text", [x, y, ..]) => Some(
+                            json!({ "tool": "text", "x": x, "y": y, "text": rest.split_whitespace().skip(3).collect::<Vec<_>>().join(" "), "colour": colour }),
+                        ),
                         _ => None,
                     };
 
@@ -2402,16 +2400,16 @@ impl Player {
         let retina = current.is_some_and(|size| size.retina);
         let landscape = current.is_some_and(|size| size.landscape);
         let chip = |id: String, label: String, on: bool, colour: u32| {
-            button(SharedString::from(id), label, if on { colour } else { TEXT }).when(on, |button| button.bg(tint(colour, 0.25)).border_color(tint(colour, 0.9)))
+            button(SharedString::from(id), label, if on { colour } else { TEXT })
+                .when(on, |button| button.bg(tint(colour, 0.25)).border_color(tint(colour, 0.9)))
         };
 
-        let mut card = card("Size", AMBER)
-            .child(
-                div().flex().flex_wrap().gap_1().child(chip("size-fit".into(), "Fit".into(), current.is_none(), AMBER).on_click(cx.listener(|this, _, _, cx| {
-                    this.set_size(None);
-                    cx.notify();
-                }))),
-            );
+        let mut card = card("Size", AMBER).child(div().flex().flex_wrap().gap_1().child(
+            chip("size-fit".into(), "Fit".into(), current.is_none(), AMBER).on_click(cx.listener(|this, _, _, cx| {
+                this.set_size(None);
+                cx.notify();
+            })),
+        ));
 
         for group in ["Desktop", "Phone", "Tablet"] {
             let mut chips = div().flex().flex_wrap().gap_1();
@@ -2603,27 +2601,35 @@ impl Player {
                         this.step(1);
                         cx.notify();
                     })))
-                    .child(tool_button("scale", "speed", format!("{}×", trim(scale)), CYAN, (scale - 1.0).abs() > 1e-6).on_click(cx.listener(|this, _, _, cx| {
-                        let next = match this.time_scale() {
-                            s if s < 0.3 => 0.5,
-                            s if s < 0.6 => 1.0,
-                            s if s < 1.5 => 2.0,
-                            _ => 0.25,
-                        };
+                    .child(tool_button("scale", "speed", format!("{}×", trim(scale)), CYAN, (scale - 1.0).abs() > 1e-6).on_click(cx.listener(
+                        |this, _, _, cx| {
+                            let next = match this.time_scale() {
+                                s if s < 0.3 => 0.5,
+                                s if s < 0.6 => 1.0,
+                                s if s < 1.5 => 2.0,
+                                _ => 0.25,
+                            };
 
-                        this.set_time_scale(next);
-                        cx.notify();
-                    }))),
+                            this.set_time_scale(next);
+                            cx.notify();
+                        },
+                    ))),
             )
             // The game: its size, its sound.
             .child(
                 group()
                     .child(
-                        tool_button("size", "size", self.size.map(|size| size.name()).unwrap_or_else(|| "Fit".into()), AMBER, self.size.is_some() || self.choosing_size)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.choosing_size = !this.choosing_size;
-                                cx.notify();
-                            })),
+                        tool_button(
+                            "size",
+                            "size",
+                            self.size.map(|size| size.name()).unwrap_or_else(|| "Fit".into()),
+                            AMBER,
+                            self.size.is_some() || self.choosing_size,
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.choosing_size = !this.choosing_size;
+                            cx.notify();
+                        })),
                     )
                     .child(icon_button("mute", if self.muted { "mute" } else { "sound" }, RED, self.muted).on_click(cx.listener(|this, _, _, cx| {
                         this.toggle_mute();
@@ -2665,12 +2671,18 @@ impl Player {
                         cx.notify();
                     })))
                     .child(
-                        tool_button("video", "video", if running { format!("{:.0}:{:02.0}", (seconds / 60.0).floor(), seconds % 60.0) } else { "Rec".to_string() }, RED, running)
-                            .when(running, |button| button.shadow(glow(RED, 0.6)))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.toggle_video();
-                                cx.notify();
-                            })),
+                        tool_button(
+                            "video",
+                            "video",
+                            if running { format!("{:.0}:{:02.0}", (seconds / 60.0).floor(), seconds % 60.0) } else { "Rec".to_string() },
+                            RED,
+                            running,
+                        )
+                        .when(running, |button| button.shadow(glow(RED, 0.6)))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.toggle_video();
+                            cx.notify();
+                        })),
                     ),
             )
             .child(icon_label("note", "edit", "Note", AMBER).h(px(30.0)).on_click(cx.listener(|this, _, _, cx| {
@@ -3057,9 +3069,7 @@ mod tests {
 
     #[test]
     fn progress_moves_through_a_stage_by_its_count_and_never_stands_still() {
-        let busy = |stage: &str, detail: &str, seconds: f64, done: &[&str]| {
-            json!({ "stage": stage, "detail": detail, "stage_seconds": seconds, "done": done.iter().map(|name| json!({ "stage": name, "ms": 0 })).collect::<Vec<_>>() })
-        };
+        let busy = |stage: &str, detail: &str, seconds: f64, done: &[&str]| json!({ "stage": stage, "detail": detail, "stage_seconds": seconds, "done": done.iter().map(|name| json!({ "stage": name, "ms": 0 })).collect::<Vec<_>>() });
         let start = progress_fraction(&busy("Loading the replay", "0 of 287 MB", 0.0, &["Fetching textures"]), FINISHING_STAGES);
         let half = progress_fraction(&busy("Loading the replay", "143 of 287 MB", 0.0, &["Fetching textures"]), FINISHING_STAGES);
         let checking = progress_fraction(&busy("Checking the replay", "", 0.4, &["Fetching textures", "Loading the replay"]), FINISHING_STAGES);

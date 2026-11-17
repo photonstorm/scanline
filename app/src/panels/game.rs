@@ -23,7 +23,11 @@ pub struct State {
 }
 
 fn number(value: f64) -> String {
-    if value.fract() == 0.0 && value.abs() < 1e12 { format!("{value:.0}") } else { format!("{value:.3}").trim_end_matches('0').trim_end_matches('.').to_string() }
+    if value.fract() == 0.0 && value.abs() < 1e12 {
+        format!("{value:.0}")
+    } else {
+        format!("{value:.3}").trim_end_matches('0').trim_end_matches('.').to_string()
+    }
 }
 
 /// A level, -60 dB to 0, as a fraction of a meter.
@@ -49,7 +53,9 @@ fn level(level: &Value) -> gpui::Div {
                 .gap_2()
                 .child(div().w(px(34.0)).text_xs().text_color(rgb(DIM)).child("Peak"))
                 .child(div().flex_1().child(meter(40, fraction(&level["peak"]), if clipping { RED } else { GREEN })))
-                .child(div().w(px(64.0)).text_xs().font_family(MONO).text_color(if clipping { tint(RED, 1.0) } else { rgb(TEXT) }).child(db_text(&level["peak"]))),
+                .child(
+                    div().w(px(64.0)).text_xs().font_family(MONO).text_color(if clipping { tint(RED, 1.0) } else { rgb(TEXT) }).child(db_text(&level["peak"])),
+                ),
         )
         .child(
             div()
@@ -193,14 +199,23 @@ fn node_card(player: &Player, cx: &mut Context<Player>) -> Option<gpui::Div> {
             )))
     });
 
-    let settings: Vec<String> = node["props"].as_object().into_iter().flatten().map(|(name, value)| format!("{name} {}", value.as_str().map(str::to_string).unwrap_or_else(|| value.to_string()))).collect();
+    let settings: Vec<String> = node["props"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .map(|(name, value)| format!("{name} {}", value.as_str().map(str::to_string).unwrap_or_else(|| value.to_string())))
+        .collect();
     let inputs: Vec<String> = node["inputs"].as_array().into_iter().flatten().filter_map(|edge| edge["from"].as_str().map(str::to_string)).collect();
     let outputs: Vec<String> = node["outputs"].as_array().into_iter().flatten().filter_map(|edge| edge["to"].as_str().map(str::to_string)).collect();
     let title = format!("{} {}{}", id, node["type"].as_str().unwrap_or(""), node["label"].as_str().map(|label| format!(" «{label}»")).unwrap_or_default());
 
     Some(
         card(title, CYAN)
-            .child(if node["level"].is_null() { note(format!("No level{}", node["why"].as_str().map(|why| format!(": {why}")).unwrap_or_default())) } else { level(&node["level"]) })
+            .child(if node["level"].is_null() {
+                note(format!("No level{}", node["why"].as_str().map(|why| format!(": {why}")).unwrap_or_default()))
+            } else {
+                level(&node["level"])
+            })
             .children(params)
             .when(!settings.is_empty(), |card| card.child(row("Settings", settings.join(", "))))
             .child(row("From", if inputs.is_empty() { "nothing".into() } else { inputs.join(", ") }))
@@ -240,22 +255,24 @@ fn audio_tab(player: &Player, wide: bool, cx: &mut Context<Player>) -> gpui::Div
             })))
         });
 
-    let outputs = card("Output", GREEN).children(contexts.iter().map(|context| {
-        div()
-            .flex()
-            .flex_col()
-            .gap_1()
-            .child(row(
-                context["id"].as_str().unwrap_or("?").to_string(),
-                format!(
-                    "{} · {} Hz · {} s",
-                    context["state"].as_str().unwrap_or("?"),
-                    number(context["sampleRate"].as_f64().unwrap_or(0.0)),
-                    number((context["currentTime"].as_f64().unwrap_or(0.0) * 10.0).round() / 10.0)
-                ),
-            ))
-            .child(level(&context["level"]))
-    })).child(clips);
+    let outputs = card("Output", GREEN)
+        .children(contexts.iter().map(|context| {
+            div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(row(
+                    context["id"].as_str().unwrap_or("?").to_string(),
+                    format!(
+                        "{} · {} Hz · {} s",
+                        context["state"].as_str().unwrap_or("?"),
+                        number(context["sampleRate"].as_f64().unwrap_or(0.0)),
+                        number((context["currentTime"].as_f64().unwrap_or(0.0) * 10.0).round() / 10.0)
+                    ),
+                ))
+                .child(level(&context["level"]))
+        }))
+        .child(clips);
 
     let findings = audio["findings"].as_array().cloned().unwrap_or_default();
     let worth = (!findings.is_empty() || !patches.is_empty()).then(|| {
@@ -282,23 +299,33 @@ fn audio_tab(player: &Player, wide: bool, cx: &mut Context<Player>) -> gpui::Div
 
     let total = audio["bufferBytes"].as_f64().unwrap_or(0.0);
     let stored = card(format!("Buffers · {}", megabytes(total)), PURPLE)
-        .child(
-            div().id("audio-buffers").flex().flex_col().max_h(px(200.0)).overflow_y_scroll().children(buffers.iter().map(|buffer| {
-                let file = buffer["file"].as_f64().map(|file| format!(" ({})", megabytes(file))).unwrap_or_default();
-                let from = buffer["url"].as_str().map(|url| url.rsplit('/').next().unwrap_or(url).to_string()).unwrap_or_else(|| buffer["origin"].as_str().unwrap_or("").to_string());
+        .child(div().id("audio-buffers").flex().flex_col().max_h(px(200.0)).overflow_y_scroll().children(buffers.iter().map(|buffer| {
+            let file = buffer["file"].as_f64().map(|file| format!(" ({})", megabytes(file))).unwrap_or_default();
+            let from = buffer["url"]
+                .as_str()
+                .map(|url| url.rsplit('/').next().unwrap_or(url).to_string())
+                .unwrap_or_else(|| buffer["origin"].as_str().unwrap_or("").to_string());
 
-                row(
-                    format!("{} {from}", buffer["id"].as_str().unwrap_or("?")),
-                    format!("{} s · {}{file}", number((buffer["duration"].as_f64().unwrap_or(0.0) * 10.0).round() / 10.0), megabytes(buffer["bytes"].as_f64().unwrap_or(0.0))),
-                )
-            })),
-        )
+            row(
+                format!("{} {from}", buffer["id"].as_str().unwrap_or("?")),
+                format!(
+                    "{} s · {}{file}",
+                    number((buffer["duration"].as_f64().unwrap_or(0.0) * 10.0).round() / 10.0),
+                    megabytes(buffer["bytes"].as_f64().unwrap_or(0.0))
+                ),
+            )
+        })))
         .children(elements.iter().map(|element| {
             let src = element["src"].as_str().unwrap_or("");
 
             row(
                 format!("{} {}", element["id"].as_str().unwrap_or("?"), src.rsplit('/').next().unwrap_or(src)),
-                format!("{} {} s{}", if element["paused"] == true { "paused" } else { "playing" }, number(element["currentTime"].as_f64().unwrap_or(0.0).round()), if element["muted"] == true { " · muted" } else { "" }),
+                format!(
+                    "{} {} s{}",
+                    if element["paused"] == true { "paused" } else { "playing" },
+                    number(element["currentTime"].as_f64().unwrap_or(0.0).round()),
+                    if element["muted"] == true { " · muted" } else { "" }
+                ),
             )
         }));
 
@@ -337,12 +364,12 @@ fn takes_tab(player: &Player, cx: &mut Context<Player>) -> gpui::Div {
                 cx.notify();
             }))))
     } else {
-        card("Record", RED)
-            .child(note("Records the input from now: yours or the agent's. Stop keeps it as a take anyone can play by name."))
-            .child(div().flex().child(icon_label("take-start", "video", "Record", RED).on_click(cx.listener(|this, _, _, cx| {
+        card("Record", RED).child(note("Records the input from now: yours or the agent's. Stop keeps it as a take anyone can play by name.")).child(
+            div().flex().child(icon_label("take-start", "video", "Record", RED).on_click(cx.listener(|this, _, _, cx| {
                 this.take_action("start", None);
                 cx.notify();
-            }))))
+            }))),
+        )
     };
 
     let list = player.sound.takes["takes"].as_array().cloned().unwrap_or_default();
@@ -398,10 +425,12 @@ fn takes_tab(player: &Player, cx: &mut Context<Player>) -> gpui::Div {
                         this.take_action("play", Some((play.clone(), "pause")));
                         cx.notify();
                     })))
-                    .child(tab_button(SharedString::from(format!("take-capture-{index}")), "Play + capture", PURPLE, false).on_click(cx.listener(move |this, _, _, cx| {
-                        this.take_action("play", Some((capture.clone(), "capture")));
-                        cx.notify();
-                    }))),
+                    .child(tab_button(SharedString::from(format!("take-capture-{index}")), "Play + capture", PURPLE, false).on_click(cx.listener(
+                        move |this, _, _, cx| {
+                            this.take_action("play", Some((capture.clone(), "capture")));
+                            cx.notify();
+                        },
+                    ))),
             )
             .child(icon_button(SharedString::from(format!("take-remove-{index}")), "close", DIM, false).on_click(cx.listener(move |this, _, _, cx| {
                 this.take_action("remove", Some((remove.clone(), "")));

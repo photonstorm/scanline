@@ -36,14 +36,24 @@ pub enum Entry {
     /// An expression to watch.
     New,
     /// A new value for a watched property.
-    Value { name: String, prop: String },
+    Value {
+        name: String,
+        prop: String,
+    },
     /// A value to hold an audio node's parameter at (the Game panel).
-    Param { node: String, param: String },
+    Param {
+        node: String,
+        param: String,
+    },
     /// A take's new name (the Game panel).
-    Rename { name: String },
+    Rename {
+        name: String,
+    },
     /// A note's words, and the words for one of its pins (the Note panel).
     NoteText,
-    Pin { index: usize },
+    Pin {
+        index: usize,
+    },
 }
 
 /// A watched value as words. NaN, infinities and undefined come as { $: name }.
@@ -54,7 +64,11 @@ pub fn shown(value: &Value) -> String {
         Value::Number(number) => {
             let number = number.as_f64().unwrap_or(0.0);
 
-            if number.fract() == 0.0 && number.abs() < 1e15 { format!("{number:.0}") } else { format!("{number:.4}").trim_end_matches('0').trim_end_matches('.').to_string() }
+            if number.fract() == 0.0 && number.abs() < 1e15 {
+                format!("{number:.0}")
+            } else {
+                format!("{number:.4}").trim_end_matches('0').trim_end_matches('.').to_string()
+            }
         }
         other => other.to_string(),
     }
@@ -180,10 +194,7 @@ pub fn render(player: &mut Player, _window: &mut Window, cx: &mut Context<Player
     let times = card("CPU and GPU", BLUE)
         .child(row("CPU", format!("{cpu:.2} ms (p95 {:.2})", number(&stats["cpuMs"]["p95"]))))
         .child(graph(live.cpu.iter().copied().collect(), cpu_ceiling, AMBER, 56.0))
-        .child(row(
-            "GPU",
-            format!("{gpu:.3} ms (p95 {:.3})", number(&stats["gpu"]["ms"]["p95"])),
-        ))
+        .child(row("GPU", format!("{gpu:.3} ms (p95 {:.3})", number(&stats["gpu"]["ms"]["p95"]))))
         .child(graph(live.gpu.iter().copied().collect(), gpu_ceiling, BLUE, 56.0));
 
     let work = card("Work per frame", AMBER).children(
@@ -308,14 +319,10 @@ fn watched(player: &Player, cx: &mut Context<Player>) -> gpui::Div {
             this.commit_watch_entry();
             cx.notify();
         })))
-        .child(
-            group().child(
-                tab_button("watch-break", "Stop on break", RED, live.break_new).on_click(cx.listener(|this, _, _, cx| {
-                    this.live.break_new = !this.live.break_new;
-                    cx.notify();
-                })),
-            ),
-        );
+        .child(group().child(tab_button("watch-break", "Stop on break", RED, live.break_new).on_click(cx.listener(|this, _, _, cx| {
+            this.live.break_new = !this.live.break_new;
+            cx.notify();
+        }))));
 
     let list = live.watches["watches"].as_array().cloned().unwrap_or_default();
 
@@ -349,7 +356,17 @@ fn watched(player: &Player, cx: &mut Context<Player>) -> gpui::Div {
             .items_center()
             .gap_2()
             .child(div().flex_none().w(px(3.0)).h(px(12.0)).rounded(px(1.5)).bg(rgb(if broken_any { RED } else { CYAN })))
-            .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_sm().font_weight(gpui::FontWeight::SEMIBOLD).text_color(rgb(TEXT)).child(name.clone()))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_sm()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(rgb(TEXT))
+                    .child(name.clone()),
+            )
             .child(note(source))
             .child(icon_button(SharedString::from(format!("unwatch-{index}")), "close", DIM, false).on_click(cx.listener(move |this, _, _, cx| {
                 this.remove_watch(&removing);
@@ -372,7 +389,11 @@ fn watched(player: &Player, cx: &mut Context<Player>) -> gpui::Div {
                 .gap_2()
                 .h(px(24.0))
                 .text_xs()
-                .child(div().w(px(130.0)).flex_none().overflow_hidden().whitespace_nowrap().text_color(rgb(DIM)).child(if key.is_empty() { "value".to_string() } else { key.clone() }))
+                .child(div().w(px(130.0)).flex_none().overflow_hidden().whitespace_nowrap().text_color(rgb(DIM)).child(if key.is_empty() {
+                    "value".to_string()
+                } else {
+                    key.clone()
+                }))
                 .child(
                     div()
                         .id(SharedString::from(format!("watch-{index}-{row}")))

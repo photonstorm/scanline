@@ -198,11 +198,7 @@ pub async fn save_run(host: &Arc<Host>, session: &Arc<Session>) -> Result<Value>
 
     std::fs::write(&path, serde_json::to_vec(&run)?).with_context(|| format!("writing {}", path.display()))?;
 
-    let mut lines = vec![format!(
-        "{handle}: the {frame} frames since {} loaded, with {}.",
-        page_text(&session.url(), 80),
-        input_words(&events)
-    )];
+    let mut lines = vec![format!("{handle}: the {frame} frames since {} loaded, with {}.", page_text(&session.url(), 80), input_words(&events))];
 
     if status["deterministic"].is_null() {
         lines.push(
@@ -274,7 +270,9 @@ pub(crate) fn stop_reason(session: &Session, since: u64, mark: Option<&str>) -> 
             page_text(event.data["prop"].as_str().unwrap_or(""), 60),
             event.data["frame"]
         )),
-        "mark" if mark.is_some() && event.data["name"].as_str() == mark => Some(format!("the page marked «{}» at frame {}", page_text(mark.unwrap_or(""), 60), event.data["frame"])),
+        "mark" if mark.is_some() && event.data["name"].as_str() == mark => {
+            Some(format!("the page marked «{}» at frame {}", page_text(mark.unwrap_or(""), 60), event.data["frame"]))
+        }
         _ => None,
     })
 }

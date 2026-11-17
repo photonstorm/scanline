@@ -81,40 +81,37 @@ pub fn render(player: &mut Player, _window: &mut Window, cx: &mut Context<Player
     // The frame drawn another way.
     let views = [("", "Normal"), ("wireframe", "Wireframe"), ("overdraw", "Overdraw"), ("depth", "Depth"), ("draw_id", "Draw ID")];
     let current = player.experiments.view.clone();
-    let view_card = card("View", CYAN)
-        .child(div().flex().flex_wrap().gap_1().children(views.into_iter().map(|(view, label)| {
-            let on = current == view;
+    let view_card = card("View", CYAN).child(div().flex().flex_wrap().gap_1().children(views.into_iter().map(|(view, label)| {
+        let on = current == view;
 
-            button(format!("view-{label}"), label, if on { CYAN } else { DIM })
-                .when(on, |button| button.bg(tint(CYAN, 0.3)).border_color(tint(CYAN, 0.9)))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.set_view(view);
-                    cx.notify();
-                }))
-        })));
+        button(format!("view-{label}"), label, if on { CYAN } else { DIM })
+            .when(on, |button| button.bg(tint(CYAN, 0.3)).border_color(tint(CYAN, 0.9)))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.set_view(view);
+                cx.notify();
+            }))
+    })));
 
     // The whole frame's state.
-    let state_card = card("All draws", AMBER)
-        .child(
-            div()
-                .flex()
-                .flex_wrap()
-                .gap_1()
-                .child(switch(player, "all:cull", "No culling", AMBER, "patch_state", json!({ "state": { "cull": false } }), cx))
-                .child(switch(player, "all:depth_test", "No depth test", AMBER, "patch_state", json!({ "state": { "depth_test": false } }), cx))
-                .child(switch(player, "all:depth_write", "No depth write", AMBER, "patch_state", json!({ "state": { "depth_write": false } }), cx))
-                .child(switch(player, "all:blend", "No blending", AMBER, "patch_state", json!({ "state": { "blend": false } }), cx))
-                .child(switch(player, "all:solid", "Flat", AMBER, "patch_draws", json!({ "mode": "solid" }), cx)),
-        );
+    let state_card = card("All draws", AMBER).child(
+        div()
+            .flex()
+            .flex_wrap()
+            .gap_1()
+            .child(switch(player, "all:cull", "No culling", AMBER, "patch_state", json!({ "state": { "cull": false } }), cx))
+            .child(switch(player, "all:depth_test", "No depth test", AMBER, "patch_state", json!({ "state": { "depth_test": false } }), cx))
+            .child(switch(player, "all:depth_write", "No depth write", AMBER, "patch_state", json!({ "state": { "depth_write": false } }), cx))
+            .child(switch(player, "all:blend", "No blending", AMBER, "patch_state", json!({ "state": { "blend": false } }), cx))
+            .child(switch(player, "all:solid", "Flat", AMBER, "patch_draws", json!({ "mode": "solid" }), cx)),
+    );
 
     // Programs: a three.js material, a pass, a post effect. Hide one, draw it flat, or draw
     // only it.
     let webgpu = player.status["contexts"].as_array().and_then(|contexts| contexts.first()).is_some_and(|context| context["api"] == "webgpu");
     let key_name = if webgpu { "pipeline" } else { "program" };
     let programs = player.experiments.programs.clone();
-    let programs_card = card(if webgpu { "Pipelines" } else { "Programs" }, PURPLE)
-        .when(programs.is_empty(), |card| card.child(note("None yet.")))
-        .children(programs.iter().take(60).map(|row| {
+    let programs_card = card(if webgpu { "Pipelines" } else { "Programs" }, PURPLE).when(programs.is_empty(), |card| card.child(note("None yet."))).children(
+        programs.iter().take(60).map(|row| {
             let handle = row["handle"].as_str().unwrap_or("").to_string();
             let label = row["label"].as_str().map(|label| format!(" «{label}»")).unwrap_or_default();
             let what = format!("{}{label}", row["what"].as_str().unwrap_or(""));
@@ -148,65 +145,62 @@ pub fn render(player: &mut Player, _window: &mut Window, cx: &mut Context<Player
                 .child(switch(player, &format!("{handle}:skip"), "Hide", PURPLE, "patch_draws", json!({ "filter": filter, "mode": "skip" }), cx))
                 .child(switch(player, &format!("{handle}:solid"), "Flat", PURPLE, "patch_draws", json!({ "filter": filter, "mode": "solid" }), cx))
                 .child(switch(player, &format!("{handle}:isolate"), "Only", PURPLE, "patch_draws", json!({ "filter": filter, "mode": "isolate" }), cx))
-        }));
+        }),
+    );
 
     // Textures: a stand-in for each, to see where it lands, or to rule it out.
     let textures = player.experiments.textures.clone();
-    let textures_card = card("Textures", GREEN)
-        .when(textures.is_empty(), |card| card.child(note("None yet.")))
-        .children(textures.iter().take(60).map(|row| {
-            let handle = row["handle"].as_str().unwrap_or("").to_string();
-            let picture = match player.resources.thumbs.get(&handle) {
-                Some(crate::panels::resources::Thumb::Ready(path)) => Some(path.clone()),
-                _ => None,
-            };
-            let what = row["what"].as_str().unwrap_or("").to_string();
+    let textures_card = card("Textures", GREEN).when(textures.is_empty(), |card| card.child(note("None yet."))).children(textures.iter().take(60).map(|row| {
+        let handle = row["handle"].as_str().unwrap_or("").to_string();
+        let picture = match player.resources.thumbs.get(&handle) {
+            Some(crate::panels::resources::Thumb::Ready(path)) => Some(path.clone()),
+            _ => None,
+        };
+        let what = row["what"].as_str().unwrap_or("").to_string();
 
-            div()
-                .flex()
-                .items_center()
-                .gap_2()
-                .py(px(2.0))
-                .child(
-                    div()
-                        .size(px(34.0))
-                        .flex_none()
-                        .rounded_sm()
-                        .bg(rgb(0x000000))
-                        .overflow_hidden()
-                        .when_some(picture, |frame, path: PathBuf| frame.child(img(path).size_full().object_fit(ObjectFit::Cover))),
-                )
-                .child(div().w(px(50.0)).flex_none().font_family(MONO).text_xs().text_color(rgb(GREEN)).child(handle.clone()))
-                .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_xs().text_color(rgb(TEXT)).child(what))
-                .children(["checker", "white", "black", "mips"].into_iter().map(|with| {
-                    let label = match with {
-                        "checker" => "Checker",
-                        "white" => "White",
-                        "black" => "Black",
-                        _ => "Mips",
-                    };
+        div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .py(px(2.0))
+            .child(
+                div()
+                    .size(px(34.0))
+                    .flex_none()
+                    .rounded_sm()
+                    .bg(rgb(0x000000))
+                    .overflow_hidden()
+                    .when_some(picture, |frame, path: PathBuf| frame.child(img(path).size_full().object_fit(ObjectFit::Cover))),
+            )
+            .child(div().w(px(50.0)).flex_none().font_family(MONO).text_xs().text_color(rgb(GREEN)).child(handle.clone()))
+            .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_xs().text_color(rgb(TEXT)).child(what))
+            .children(["checker", "white", "black", "mips"].into_iter().map(|with| {
+                let label = match with {
+                    "checker" => "Checker",
+                    "white" => "White",
+                    "black" => "Black",
+                    _ => "Mips",
+                };
 
-                    switch(player, &format!("{handle}:{with}"), label, GREEN, "patch_texture", json!({ "handle": handle, "with": with }), cx)
-                }))
-        }));
+                switch(player, &format!("{handle}:{with}"), label, GREEN, "patch_texture", json!({ "handle": handle, "with": with }), cx)
+            }))
+    }));
 
     // Where the time goes.
     let measuring = player.experiments.measuring.clone();
     let measured = player.experiments.measured.clone();
     let measure_card = card("GPU cost", BLUE)
         .child(div().flex().flex_wrap().gap_1().children(
-            [("scissor_1px", "Fill"), ("flat_fragment", "Shading"), ("textures_2x2", "Texturing")].into_iter().map(
-                |(kind, label)| {
-                    let running = measuring.as_deref() == Some(kind);
+            [("scissor_1px", "Fill"), ("flat_fragment", "Shading"), ("textures_2x2", "Texturing")].into_iter().map(|(kind, label)| {
+                let running = measuring.as_deref() == Some(kind);
 
-                    button(format!("measure-{kind}"), if running { format!("{label}…") } else { label.to_string() }, BLUE).on_click(cx.listener(
-                        move |this, _, _, cx| {
-                            this.measure(kind);
-                            cx.notify();
-                        },
-                    ))
-                },
-            ),
+                button(format!("measure-{kind}"), if running { format!("{label}…") } else { label.to_string() }, BLUE).on_click(cx.listener(
+                    move |this, _, _, cx| {
+                        this.measure(kind);
+                        cx.notify();
+                    },
+                ))
+            }),
         ))
         .when_some(measured, |card, measured| {
             let gpu = &measured["data"]["gpu_ms"];
@@ -228,11 +222,12 @@ pub fn render(player: &mut Player, _window: &mut Window, cx: &mut Context<Player
             let share = if without > 0.0 { saved / without * 100.0 } else { 0.0 };
 
             card.child(bar("before", without, BLUE)).child(bar("after", with, GREEN)).child(
-                div()
-                    .text_xs()
-                    .font_family(MONO)
-                    .text_color(rgb(if steady { TEXT } else { AMBER }))
-                    .child(format!("{} {:.3} ms ({share:.0}%){}", if saved >= 0.0 { "saves" } else { "costs" }, saved.abs(), if steady { "" } else { " · noisy" })),
+                div().text_xs().font_family(MONO).text_color(rgb(if steady { TEXT } else { AMBER })).child(format!(
+                    "{} {:.3} ms ({share:.0}%){}",
+                    if saved >= 0.0 { "saves" } else { "costs" },
+                    saved.abs(),
+                    if steady { "" } else { " · noisy" }
+                )),
             )
         });
 
@@ -267,12 +262,7 @@ pub fn render(player: &mut Player, _window: &mut Window, cx: &mut Context<Player
 
     let editing = player.experiments.editing.clone().map(|edit| {
         card("Shader edit", ORANGE)
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(rgb(TEXT))
-                    .child(format!("{} of {}: saving applies it.", edit.shader, edit.program)),
-            )
+            .child(div().text_xs().text_color(rgb(TEXT)).child(format!("{} of {}: saving applies it.", edit.shader, edit.program)))
             .child(div().text_xs().font_family(MONO).text_color(rgb(DIM)).child(edit.path.display().to_string()))
             .child(icon_label("stop-editing", "undo", "Revert", ORANGE).on_click(cx.listener(|this, _, _, cx| {
                 this.stop_editing_shader();

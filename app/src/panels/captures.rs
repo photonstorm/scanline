@@ -471,9 +471,21 @@ fn list_of_captures(player: &mut Player, cx: &mut Context<Player>) -> gpui::Div 
                                 .child(div().font_family(MONO).text_sm().text_color(rgb(PURPLE)).child(capture.clone()))
                                 .child(div().flex_1())
                                 .child(crate::icons::icon(
-                                    if identical { "check" } else if waiting { "timer" } else { "warning" },
+                                    if identical {
+                                        "check"
+                                    } else if waiting {
+                                        "timer"
+                                    } else {
+                                        "warning"
+                                    },
                                     12.0,
-                                    rgb(if identical { GREEN } else if waiting { CYAN } else { AMBER }),
+                                    rgb(if identical {
+                                        GREEN
+                                    } else if waiting {
+                                        CYAN
+                                    } else {
+                                        AMBER
+                                    }),
                                 )),
                         )
                         .child(div().text_xs().text_color(rgb(TEXT)).child(format!("{frame} · {api} · {draws}")))
@@ -649,7 +661,11 @@ fn navigator(player: &Player, height: f32, cx: &mut Context<Player>) -> impl Int
                                 let open = this.captures.open_passes.contains(&pass.number);
                                 let picture = this.captures.pass_pictures.get(&pass.number).cloned().flatten();
                                 let holds_choice = this.captures.selected.is_some_and(|draw| {
-                                    this.captures.events.iter().position(|event| event["draw"].as_i64() == Some(draw)).is_some_and(|position| (pass.first..=pass.last).contains(&position))
+                                    this.captures
+                                        .events
+                                        .iter()
+                                        .position(|event| event["draw"].as_i64() == Some(draw))
+                                        .is_some_and(|position| (pass.first..=pass.last).contains(&position))
                                 });
                                 let number = pass.number;
 
@@ -679,14 +695,33 @@ fn navigator(player: &Player, height: f32, cx: &mut Context<Player>) -> impl Int
                                             .border_color(rgb(LINE))
                                             .when_some(picture, |frame, path| frame.child(img(path).size_full().object_fit(ObjectFit::Cover))),
                                     )
-                                    .child(div().flex_none().text_xs().font_weight(gpui::FontWeight::SEMIBOLD).text_color(rgb(TEXT)).child(format!("Pass {}", pass.number)))
-                                    .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_xs().font_family(MONO).text_color(rgb(DIM)).child(format!("→ {}", pass.target)))
+                                    .child(
+                                        div()
+                                            .flex_none()
+                                            .text_xs()
+                                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                                            .text_color(rgb(TEXT))
+                                            .child(format!("Pass {}", pass.number)),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .overflow_hidden()
+                                            .whitespace_nowrap()
+                                            .text_xs()
+                                            .font_family(MONO)
+                                            .text_color(rgb(DIM))
+                                            .child(format!("→ {}", pass.target)),
+                                    )
                                     .child(div().flex_none().text_xs().text_color(rgb(DIM)).child(match (pass.draws, pass.clears) {
                                         (0, 0) => "—".to_string(),
                                         (1, 0) => "1 draw".to_string(),
                                         (draws, 0) => format!("{draws} draws"),
                                         (0, clears) => format!("{clears} clear{}", if clears == 1 { "" } else { "s" }),
-                                        (draws, clears) => format!("{draws} draw{} · {clears} clear{}", if draws == 1 { "" } else { "s" }, if clears == 1 { "" } else { "s" }),
+                                        (draws, clears) => {
+                                            format!("{draws} draw{} · {clears} clear{}", if draws == 1 { "" } else { "s" }, if clears == 1 { "" } else { "s" })
+                                        }
                                     }))
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         if !this.captures.open_passes.remove(&number) {
@@ -876,7 +911,8 @@ fn bound_resources(player: &Player, draw: &Value, cx: &mut Context<Player>) -> g
         }
 
         if let Some(id) = state["elementBuffer"].as_i64() {
-            table = table.child(binding_row("buffer", BLUE, format!("buf_{id}"), "Indices".into(), state["indexType"].as_str().unwrap_or("").to_string(), None));
+            table =
+                table.child(binding_row("buffer", BLUE, format!("buf_{id}"), "Indices".into(), state["indexType"].as_str().unwrap_or("").to_string(), None));
         }
     }
 
@@ -979,14 +1015,18 @@ fn timeline(player: &Player, cx: &mut Context<Player>) -> gpui::Div {
     let total_ms = timing.map(|timing| timing.values().sum::<f64>() / 1e6);
     let chosen = state.selected;
     let caption = match (chosen, timing) {
-        (Some(draw), Some(timing)) => timing.get(&draw).map(|ns| format!("event {draw}: {:.3} ms · {:.1}%", ns / 1e6, ns / 1e6 / total_ms.unwrap_or(1.0) * 100.0)),
+        (Some(draw), Some(timing)) => {
+            timing.get(&draw).map(|ns| format!("event {draw}: {:.3} ms · {:.1}%", ns / 1e6, ns / 1e6 / total_ms.unwrap_or(1.0) * 100.0))
+        }
         _ => None,
     };
 
     let passes = div().relative().w_full().h(px(22.0)).children(state.passes.iter().enumerate().map(|(index, pass)| {
         let left = starts.get(pass.first).copied().unwrap_or(0.0);
         let width: f64 = weights[pass.first..=pass.last.min(weights.len().saturating_sub(1))].iter().sum::<f64>() / total;
-        let ms = timing.map(|timing| (pass.first..=pass.last).filter_map(|position| events[position]["draw"].as_i64()).filter_map(|draw| timing.get(&draw)).sum::<f64>() / 1e6);
+        let ms = timing.map(|timing| {
+            (pass.first..=pass.last).filter_map(|position| events[position]["draw"].as_i64()).filter_map(|draw| timing.get(&draw)).sum::<f64>() / 1e6
+        });
         let colour = [0x7c83fd, 0x22d3ee, 0xa78bfa, 0x34d399][index % 4];
         let first = events.get(pass.first).and_then(|event| event["draw"].as_i64());
 
@@ -1099,11 +1139,17 @@ fn magnifier_card(player: &Player, cx: &mut Context<Player>) -> Option<gpui::Div
         Showing::Changed => magnifier.changed.clone(),
     };
     let tab = |id: &'static str, label: String, which: Showing, ready: bool| {
-        tool_button(id, match which {
-            Showing::After => "eye",
-            Showing::Before => "undo",
-            Showing::Changed => "search",
-        }, label, CYAN, showing == which)
+        tool_button(
+            id,
+            match which {
+                Showing::After => "eye",
+                Showing::Before => "undo",
+                Showing::Changed => "search",
+            },
+            label,
+            CYAN,
+            showing == which,
+        )
         .when(!ready, |button| button.opacity(0.45))
         .on_click(cx.listener(move |this, _, _, cx| {
             if let Some(magnifier) = this.captures.magnifier.as_mut() {
@@ -1117,7 +1163,9 @@ fn magnifier_card(player: &Player, cx: &mut Context<Player>) -> Option<gpui::Div
     let hover = magnifier.hover;
     let after = hover.and_then(|at| texel(magnifier.after.as_ref().and_then(|shot| shot.pixels.as_ref()), at));
     let before = hover.and_then(|at| texel(magnifier.before.as_ref().and_then(|shot| shot.pixels.as_ref()), at));
-    let swatch = |rgba: [u8; 4]| div().size(px(14.0)).rounded(px(3.0)).border_1().border_color(rgb(LINE)).bg(rgb(((rgba[0] as u32) << 16) | ((rgba[1] as u32) << 8) | rgba[2] as u32));
+    let swatch = |rgba: [u8; 4]| {
+        div().size(px(14.0)).rounded(px(3.0)).border_1().border_color(rgb(LINE)).bg(rgb(((rgba[0] as u32) << 16) | ((rgba[1] as u32) << 8) | rgba[2] as u32))
+    };
     let height = ((h as f32 / w as f32) * 420.0).clamp(140.0, 420.0);
 
     Some(
@@ -1202,7 +1250,12 @@ fn magnifier_card(player: &Player, cx: &mut Context<Player>) -> Option<gpui::Div
 /// call next ("draw(draw: 10) says which test rejected it").
 fn for_people(text: &str) -> String {
     let calls = |sentence: &str| {
-        sentence.char_indices().any(|(at, c)| c == '(' && at > 0 && sentence[..at].chars().last().is_some_and(|before| before.is_ascii_lowercase() || before == '_') && sentence[at..].contains(':'))
+        sentence.char_indices().any(|(at, c)| {
+            c == '('
+                && at > 0
+                && sentence[..at].chars().last().is_some_and(|before| before.is_ascii_lowercase() || before == '_')
+                && sentence[at..].contains(':')
+        })
     };
     let kept: Vec<&str> = text.split_inclusive(". ").filter(|sentence| !calls(sentence)).collect();
 
@@ -1223,15 +1276,10 @@ fn attachments_grid(player: &Player, columns: usize, cx: &mut Context<Player>) -
     let state = &player.captures;
     let target = state.draw.as_ref().and_then(|draw| draw["state"]["targetName"].as_str().map(str::to_string));
     let mut grid = div().flex().flex_col().gap_2().p_2().rounded(px(7.0)).bg(rgb(CARD)).border_1().border_color(rgb(LINE)).child(
-        div()
-            .flex()
-            .items_center()
-            .gap_2()
-            .child(crate::icons::icon("framebuffer", 13.0, rgb(GREEN)))
-            .child(section(match &target {
-                Some(target) => format!("Attachments · {target}"),
-                None => "Attachments".to_string(),
-            })),
+        div().flex().items_center().gap_2().child(crate::icons::icon("framebuffer", 13.0, rgb(GREEN))).child(section(match &target {
+            Some(target) => format!("Attachments · {target}"),
+            None => "Attachments".to_string(),
+        })),
     );
 
     let Some(attachments) = &state.attachments else {
@@ -1271,7 +1319,13 @@ fn attachments_grid(player: &Player, columns: usize, cx: &mut Context<Player>) -
                 .overflow_hidden()
                 .cursor_pointer()
                 .border_2()
-                .border_color(if on { tint(PURPLE, 1.0) } else if own { tint(GREEN, 0.85) } else { rgb(LINE) })
+                .border_color(if on {
+                    tint(PURPLE, 1.0)
+                } else if own {
+                    tint(GREEN, 0.85)
+                } else {
+                    rgb(LINE)
+                })
                 .when(own || on, |tile| tile.shadow(glow(if on { PURPLE } else { GREEN }, 0.35)))
                 .child(
                     div()
@@ -1350,10 +1404,47 @@ fn workspace(player: &mut Player, tab: usize, cx: &mut Context<Player>) -> gpui:
                 .py(px(1.0))
                 .rounded(px(4.0))
                 .text_xs()
-                .bg(tint(if identical { GREEN } else if waiting { CYAN } else { AMBER }, 0.14))
-                .text_color(rgb(if identical { GREEN } else if waiting { CYAN } else { AMBER }))
-                .child(crate::icons::icon(if identical { "check" } else if waiting { "timer" } else { "warning" }, 11.0, rgb(if identical { GREEN } else if waiting { CYAN } else { AMBER })))
-                .child(if identical { "replay identical" } else if waiting { "textures on their way" } else { "replay differs" }),
+                .bg(tint(
+                    if identical {
+                        GREEN
+                    } else if waiting {
+                        CYAN
+                    } else {
+                        AMBER
+                    },
+                    0.14,
+                ))
+                .text_color(rgb(if identical {
+                    GREEN
+                } else if waiting {
+                    CYAN
+                } else {
+                    AMBER
+                }))
+                .child(crate::icons::icon(
+                    if identical {
+                        "check"
+                    } else if waiting {
+                        "timer"
+                    } else {
+                        "warning"
+                    },
+                    11.0,
+                    rgb(if identical {
+                        GREEN
+                    } else if waiting {
+                        CYAN
+                    } else {
+                        AMBER
+                    }),
+                ))
+                .child(if identical {
+                    "replay identical"
+                } else if waiting {
+                    "textures on their way"
+                } else {
+                    "replay differs"
+                }),
         )
         .child(div().flex_1())
         .child(icon_label("wide", "wide", if player.wide { "Narrow" } else { "Wide" }, DIM).on_click(cx.listener(|this, _, _, cx| {
@@ -1367,8 +1458,7 @@ fn workspace(player: &mut Player, tab: usize, cx: &mut Context<Player>) -> gpui:
 
     // A note of the person's own, sent with the capture, draw and pixel.
     let noting = player.noting;
-    let shown =
-        if player.note.is_empty() && !noting { "Note for the agent".to_string() } else { player.note.clone() };
+    let shown = if player.note.is_empty() && !noting { "Note for the agent".to_string() } else { player.note.clone() };
     let note_field = div()
         .id("note")
         .track_focus(&player.note_focus)
@@ -1402,7 +1492,13 @@ fn workspace(player: &mut Player, tab: usize, cx: &mut Context<Player>) -> gpui:
             let text = finding.as_str().or(finding["text"].as_str()).or(finding["summary"].as_str()).map(str::to_string).unwrap_or_else(|| finding.to_string());
             let text = for_people(&text);
 
-            div().flex().gap_2().text_xs().text_color(rgb(TEXT)).child(crate::icons::icon("warning", 12.0, tint(RED, 0.85))).child(div().flex_1().min_w_0().child(text))
+            div()
+                .flex()
+                .gap_2()
+                .text_xs()
+                .text_color(rgb(TEXT))
+                .child(crate::icons::icon("warning", 12.0, tint(RED, 0.85)))
+                .child(div().flex_1().min_w_0().child(text))
         }))
     });
 
@@ -1445,14 +1541,20 @@ fn workspace(player: &mut Player, tab: usize, cx: &mut Context<Player>) -> gpui:
                 }
             }
         }))
-        .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| {
-            this.finish_drag();
-            cx.notify();
-        }))
-        .on_mouse_up_out(MouseButton::Left, cx.listener(|this, _, _, cx| {
-            this.finish_drag();
-            cx.notify();
-        }))
+        .on_mouse_up(
+            MouseButton::Left,
+            cx.listener(|this, _, _, cx| {
+                this.finish_drag();
+                cx.notify();
+            }),
+        )
+        .on_mouse_up_out(
+            MouseButton::Left,
+            cx.listener(|this, _, _, cx| {
+                this.finish_drag();
+                cx.notify();
+            }),
+        )
         .child(canvas(move |bounds, _, _| place.set(Some(bounds)), |_, _, _, _| {}).absolute().size_full())
         .w_full()
         .h(px(if width >= 760.0 { (width * 0.36).clamp(260.0, 520.0) } else { 240.0 }))
@@ -1489,7 +1591,19 @@ fn workspace(player: &mut Player, tab: usize, cx: &mut Context<Player>) -> gpui:
             )
         })
         .when(!caption.is_empty(), |frame| {
-            frame.child(div().absolute().left(px(8.0)).top(px(8.0)).px_1p5().py(px(1.0)).rounded(px(4.0)).bg(tint(0x000000, 0.65)).text_xs().text_color(rgb(TEXT)).child(caption))
+            frame.child(
+                div()
+                    .absolute()
+                    .left(px(8.0))
+                    .top(px(8.0))
+                    .px_1p5()
+                    .py(px(1.0))
+                    .rounded(px(4.0))
+                    .bg(tint(0x000000, 0.65))
+                    .text_xs()
+                    .text_color(rgb(TEXT))
+                    .child(caption),
+            )
         });
 
     // What a click on the picture found: the pixel's value and every event that changed it.
@@ -1557,7 +1671,11 @@ fn workspace(player: &mut Player, tab: usize, cx: &mut Context<Player>) -> gpui:
         (Some(draw), Some(_)) => bound_resources(player, draw, cx).into_any_element(),
     };
     let magnified = magnifier_card(player, cx);
-    let state_card = draw.as_ref().zip(selected).map(|(draw, number)| card(format!("Draw {number}"), PURPLE).when_some(said.clone(), |card, said| card.child(div().text_xs().text_color(rgb(TEXT)).child(said))).child(state_of(draw)));
+    let state_card = draw.as_ref().zip(selected).map(|(draw, number)| {
+        card(format!("Draw {number}"), PURPLE)
+            .when_some(said.clone(), |card, said| card.child(div().text_xs().text_color(rgb(TEXT)).child(said)))
+            .child(state_of(draw))
+    });
 
     // One tab at a time beside the navigator: the frame, the bindings, the state, or the
     // timeline over the whole width.
@@ -1565,11 +1683,9 @@ fn workspace(player: &mut Player, tab: usize, cx: &mut Context<Player>) -> gpui:
     let tall = if width >= 1100.0 { 640.0 } else { 520.0 };
     let side = width >= 760.0;
     let main = match tab {
-        0 if width >= 1100.0 => div()
-            .flex()
-            .gap_3()
-            .child(div().flex_1().min_w_0().flex().flex_col().gap_2().child(picture).children(magnified))
-            .child(div().w(px((width * 0.28).clamp(300.0, 480.0))).flex_none().flex().flex_col().gap_2().child(attachments_grid(player, 1, cx)).children(story)),
+        0 if width >= 1100.0 => div().flex().gap_3().child(div().flex_1().min_w_0().flex().flex_col().gap_2().child(picture).children(magnified)).child(
+            div().w(px((width * 0.28).clamp(300.0, 480.0))).flex_none().flex().flex_col().gap_2().child(attachments_grid(player, 1, cx)).children(story),
+        ),
         0 => div().flex().flex_col().gap_2().child(picture).children(magnified).children(story).child(attachments_grid(player, 2, cx)),
         1 => div().flex().flex_col().gap_2().child(table),
         2 => div().flex().flex_col().gap_2().children(worth).children(state_card),

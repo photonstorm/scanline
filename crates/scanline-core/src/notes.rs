@@ -20,7 +20,8 @@ use crate::session::Session;
 use crate::{Host, result};
 
 /// The five colours a mark can be drawn in.
-const COLOURS: &[(&str, [u8; 3])] = &[("red", [239, 68, 68]), ("yellow", [250, 204, 21]), ("green", [74, 222, 128]), ("cyan", [34, 211, 238]), ("white", [255, 255, 255])];
+const COLOURS: &[(&str, [u8; 3])] =
+    &[("red", [239, 68, 68]), ("yellow", [250, 204, 21]), ("green", [74, 222, 128]), ("cyan", [34, 211, 238]), ("white", [255, 255, 255])];
 
 const MARKS: usize = 200;
 
@@ -78,7 +79,8 @@ pub(crate) fn draw(image: &mut Image, marks: &[Value]) -> Vec<(usize, (f64, f64)
 
     for mark in marks.iter().take(MARKS) {
         let rgb = colour_of(mark);
-        let (x, y, w, h) = (mark["x"].as_f64().unwrap_or(0.0), mark["y"].as_f64().unwrap_or(0.0), mark["w"].as_f64().unwrap_or(0.0), mark["h"].as_f64().unwrap_or(0.0));
+        let (x, y, w, h) =
+            (mark["x"].as_f64().unwrap_or(0.0), mark["y"].as_f64().unwrap_or(0.0), mark["w"].as_f64().unwrap_or(0.0), mark["h"].as_f64().unwrap_or(0.0));
 
         match mark["tool"].as_str().unwrap_or("") {
             "pen" => {
@@ -148,7 +150,8 @@ pub(crate) fn draw(image: &mut Image, marks: &[Value]) -> Vec<(usize, (f64, f64)
 fn mark_words(mark: &Value) -> String {
     let at = |value: &Value| point(value).map(|(x, y)| format!("{x:.0},{y:.0}")).unwrap_or_default();
     let colour = mark["colour"].as_str().unwrap_or("red");
-    let (x, y, w, h) = (mark["x"].as_f64().unwrap_or(0.0), mark["y"].as_f64().unwrap_or(0.0), mark["w"].as_f64().unwrap_or(0.0), mark["h"].as_f64().unwrap_or(0.0));
+    let (x, y, w, h) =
+        (mark["x"].as_f64().unwrap_or(0.0), mark["y"].as_f64().unwrap_or(0.0), mark["w"].as_f64().unwrap_or(0.0), mark["h"].as_f64().unwrap_or(0.0));
 
     match mark["tool"].as_str().unwrap_or("") {
         "pen" => {
@@ -205,7 +208,13 @@ fn describe(note: &Value) -> (String, Vec<Value>) {
     }
 
     for pin in note["pins"].as_array().into_iter().flatten() {
-        lines.push(format!("Pin {} at {:.0},{:.0}: «{}»", pin["number"], pin["x"].as_f64().unwrap_or(0.0), pin["y"].as_f64().unwrap_or(0.0), page_text(pin["text"].as_str().unwrap_or(""), 200)));
+        lines.push(format!(
+            "Pin {} at {:.0},{:.0}: «{}»",
+            pin["number"],
+            pin["x"].as_f64().unwrap_or(0.0),
+            pin["y"].as_f64().unwrap_or(0.0),
+            page_text(pin["text"].as_str().unwrap_or(""), 200)
+        ));
     }
 
     if let Some(capture) = note["capture"].as_str() {
@@ -230,10 +239,21 @@ fn describe(note: &Value) -> (String, Vec<Value>) {
         let playing = note["audio"]["playing"].as_array().map_or(0, Vec::len);
         let levels: Vec<String> = contexts
             .iter()
-            .map(|context| format!("{} {} at {}", context["id"].as_str().unwrap_or("?"), context["state"].as_str().unwrap_or("?"), crate::audio::decibels(&context["level"]["peak"])))
+            .map(|context| {
+                format!(
+                    "{} {} at {}",
+                    context["id"].as_str().unwrap_or("?"),
+                    context["state"].as_str().unwrap_or("?"),
+                    crate::audio::decibels(&context["level"]["peak"])
+                )
+            })
             .collect();
 
-        lines.push(format!("Audio then: {playing} source{} playing; {}. audio(view: \"playing\") reads it now.", if playing == 1 { "" } else { "s" }, levels.join(", ")));
+        lines.push(format!(
+            "Audio then: {playing} source{} playing; {}. audio(view: \"playing\") reads it now.",
+            if playing == 1 { "" } else { "s" },
+            levels.join(", ")
+        ));
     }
 
     if let Some(path) = note["clip"]["path"].as_str() {
@@ -278,8 +298,18 @@ async fn make(host: &Arc<Host>, session: &Arc<Session>, params: &Value) -> Resul
     let frame = session.probe(&top, "status", json!({}), SHORT).await?["frame"].clone();
 
     // What goes with it: each is kept when it can be had, and the note is sent either way.
-    let watches = session.probe(&top, "watch.list", json!({ "history": 120 }), SHORT).await.ok().filter(|list| list["watches"].as_array().is_some_and(|all| !all.is_empty())).unwrap_or(Value::Null);
-    let audio = session.probe(&top, "audio.state", json!({ "view": "playing" }), SHORT).await.ok().filter(|state| state["contexts"].as_array().is_some_and(|all| !all.is_empty())).unwrap_or(Value::Null);
+    let watches = session
+        .probe(&top, "watch.list", json!({ "history": 120 }), SHORT)
+        .await
+        .ok()
+        .filter(|list| list["watches"].as_array().is_some_and(|all| !all.is_empty()))
+        .unwrap_or(Value::Null);
+    let audio = session
+        .probe(&top, "audio.state", json!({ "view": "playing" }), SHORT)
+        .await
+        .ok()
+        .filter(|state| state["contexts"].as_array().is_some_and(|all| !all.is_empty()))
+        .unwrap_or(Value::Null);
     let take = match crate::runs::collect(session).await {
         Ok(run) => crate::takes::keep(host, &id, run).ok(),
         Err(_) => None,
@@ -293,7 +323,9 @@ async fn make(host: &Arc<Host>, session: &Arc<Session>, params: &Value) -> Resul
     let capture = capture.and_then(|taken| taken["data"]["capture"].as_str().map(str::to_string));
     // The last seconds of sound, when audio is being kept (audio_clip(record: true)).
     let clip = match crate::audio::clip_bytes(session, 10.0).await {
-        Ok(Some((bytes, about))) => std::fs::write(folder.join("audio.wav"), bytes).ok().map(|_| json!({ "path": folder.join("audio.wav"), "seconds": about["seconds"], "peak": about["peak"] })),
+        Ok(Some((bytes, about))) => std::fs::write(folder.join("audio.wav"), bytes)
+            .ok()
+            .map(|_| json!({ "path": folder.join("audio.wav"), "seconds": about["seconds"], "peak": about["peak"] })),
         _ => None,
     };
     let request = session.state.lock().unwrap().request.as_ref().map(|request| request.id.clone());
@@ -343,17 +375,16 @@ pub async fn note(host: &Arc<Host>, session: Option<&Arc<Session>>, params: &Val
 }
 
 pub fn notes(host: &Arc<Host>) -> Result<Value> {
-    let mut all: Vec<Value> = std::fs::read_dir(dir(host))
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter_map(|entry| load(host, entry.file_name().to_str()?).ok())
-        .collect();
+    let mut all: Vec<Value> =
+        std::fs::read_dir(dir(host)).into_iter().flatten().flatten().filter_map(|entry| load(host, entry.file_name().to_str()?).ok()).collect();
 
     all.sort_by_key(|note| std::cmp::Reverse(note["made"].as_u64().unwrap_or(0)));
 
     if all.is_empty() {
-        return Ok(result("No notes. The person makes one with Note in the Scanline app (⇧⌘N); wait(kinds: [\"note\"]) waits for one.", json!({ "notes": [] })));
+        return Ok(result(
+            "No notes. The person makes one with Note in the Scanline app (⇧⌘N); wait(kinds: [\"note\"]) waits for one.",
+            json!({ "notes": [] }),
+        ));
     }
 
     let mut lines = vec![format!("{} note{}, newest first:", all.len(), if all.len() == 1 { "" } else { "s" })];

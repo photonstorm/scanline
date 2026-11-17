@@ -131,19 +131,12 @@ pub fn render(player: &mut Player, _window: &mut Window, cx: &mut Context<Player
             .flex_col()
             .gap_2()
             .when_some(asked, |content, asked| content.child(asked))
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1p5()
-                    .when(human, |bar| bar.child(note("You have the input.")))
-                    .when(human, |bar| {
-                        bar.child(icon_label("give-back", "agent", "Hand back", BLUE).on_click(cx.listener(|this, _, _, cx| {
-                            this.take_input(false);
-                            cx.notify();
-                        })))
-                    }),
-            )
+            .child(div().flex().flex_col().gap_1p5().when(human, |bar| bar.child(note("You have the input."))).when(human, |bar| {
+                bar.child(icon_label("give-back", "agent", "Hand back", BLUE).on_click(cx.listener(|this, _, _, cx| {
+                    this.take_input(false);
+                    cx.notify();
+                })))
+            }))
             .when(player.agent.rows.is_empty(), |content| content.child(note("No activity.")))
             .child(list),
     )

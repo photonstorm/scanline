@@ -321,8 +321,15 @@ impl Session {
     pub fn begin_for(self: &Arc<Self>, what: &str, stage: &str, capture: Option<String>) -> BusyGuard {
         let now = std::time::Instant::now();
 
-        self.state.lock().unwrap().busy =
-            Some(Busy { what: what.to_string(), stage: stage.to_string(), detail: String::new(), started: now, stage_started: now, stages: Vec::new(), capture });
+        self.state.lock().unwrap().busy = Some(Busy {
+            what: what.to_string(),
+            stage: stage.to_string(),
+            detail: String::new(),
+            started: now,
+            stage_started: now,
+            stages: Vec::new(),
+            capture,
+        });
 
         BusyGuard(self.clone())
     }
@@ -1348,7 +1355,8 @@ fn handle(session: &Arc<Session>, event: Event) {
                 // What the probe reports, and nothing else. The binding is in the page's own
                 // world, so a page that finds it can call it: it must not be able to queue an
                 // event that reads as the host's (capture_ready, owner_changed) or the person's.
-                kind @ ("annotation" | "context" | "context-lost" | "context-restored" | "mark" | "probe-fault" | "stopped" | "watch-broken" | "audio-clipping") => {
+                kind @ ("annotation" | "context" | "context-lost" | "context-restored" | "mark" | "probe-fault" | "stopped" | "watch-broken"
+                | "audio-clipping") => {
                     let mut data = payload.clone();
 
                     if let Some(object) = data.as_object_mut() {

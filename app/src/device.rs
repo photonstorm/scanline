@@ -54,7 +54,13 @@ impl Size {
     pub fn dpr(&self) -> f32 {
         let preset = self.preset();
 
-        if preset.mobile { preset.dpr } else if self.retina { 2.0 } else { 1.0 }
+        if preset.mobile {
+            preset.dpr
+        } else if self.retina {
+            2.0
+        } else {
+            1.0
+        }
     }
 
     /// What it is called in the toolbar and remembered by: "1080p @2x", "iPhone 15 landscape".
@@ -107,7 +113,11 @@ mod tests {
 
     #[test]
     fn a_size_is_remembered_by_its_name() {
-        for size in [Size { preset: 3, retina: true, landscape: false }, Size { preset: 7, retina: false, landscape: true }, Size { preset: 0, retina: false, landscape: false }] {
+        for size in [
+            Size { preset: 3, retina: true, landscape: false },
+            Size { preset: 7, retina: false, landscape: true },
+            Size { preset: 0, retina: false, landscape: false },
+        ] {
             assert_eq!(Size::from_name(&size.name()), Some(size));
         }
     }

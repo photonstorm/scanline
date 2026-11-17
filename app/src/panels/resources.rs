@@ -281,7 +281,14 @@ fn facts(detail: &Value, keys: &[&str]) -> gpui::Div {
 fn made_at(detail: &Value) -> Option<gpui::Div> {
     let site = detail["site"].as_str().filter(|site| !site.is_empty())?;
 
-    Some(div().flex().flex_col().gap_1().child(section("Created")).child(div().text_xs().font_family(MONO).text_color(rgb(DIM)).child(site.replace(" < ", "\n"))))
+    Some(
+        div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(section("Created"))
+            .child(div().text_xs().font_family(MONO).text_color(rgb(DIM)).child(site.replace(" < ", "\n"))),
+    )
 }
 
 fn back(id: &'static str, label: &'static str, cx: &mut Context<Player>) -> gpui::Stateful<gpui::Div> {

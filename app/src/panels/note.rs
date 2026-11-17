@@ -34,7 +34,17 @@ pub struct Marking {
 
 impl Marking {
     pub fn new(picture: PathBuf, size: (f32, f32)) -> Self {
-        Marking { picture, size, marks: Vec::new(), drawing: None, tool: "arrow", colour: "red", text: String::new(), sending: false, place: Rc::new(Cell::new(None)) }
+        Marking {
+            picture,
+            size,
+            marks: Vec::new(),
+            drawing: None,
+            tool: "arrow",
+            colour: "red",
+            text: String::new(),
+            sending: false,
+            place: Rc::new(Cell::new(None)),
+        }
     }
 
     /// Where the frame sits in its box: left and top in the window, and its scale.
@@ -134,8 +144,11 @@ fn paint(window: &mut Window, bounds: Bounds<Pixels>, size: (f32, f32), marks: &
                 let centre = point(a.x + px(dx * t), a.y + px(dy * t));
 
                 window.paint_quad(
-                    gpui::fill(gpui::Bounds::new(point(centre.x - px(radius), centre.y - px(radius)), gpui::size(px(radius * 2.0), px(radius * 2.0))), tint(colour, 1.0))
-                        .corner_radii(px(radius)),
+                    gpui::fill(
+                        gpui::Bounds::new(point(centre.x - px(radius), centre.y - px(radius)), gpui::size(px(radius * 2.0), px(radius * 2.0))),
+                        tint(colour, 1.0),
+                    )
+                    .corner_radii(px(radius)),
                 );
             }
         }
@@ -143,7 +156,8 @@ fn paint(window: &mut Window, bounds: Bounds<Pixels>, size: (f32, f32), marks: &
 
     for mark in marks {
         let colour = colour_value(mark["colour"].as_str().unwrap_or("red"));
-        let (x, y, w, h) = (mark["x"].as_f64().unwrap_or(0.0), mark["y"].as_f64().unwrap_or(0.0), mark["w"].as_f64().unwrap_or(0.0), mark["h"].as_f64().unwrap_or(0.0));
+        let (x, y, w, h) =
+            (mark["x"].as_f64().unwrap_or(0.0), mark["y"].as_f64().unwrap_or(0.0), mark["w"].as_f64().unwrap_or(0.0), mark["h"].as_f64().unwrap_or(0.0));
         let pair = |value: &Value| (value[0].as_f64().unwrap_or(0.0), value[1].as_f64().unwrap_or(0.0));
 
         match mark["tool"].as_str().unwrap_or("") {
@@ -179,7 +193,8 @@ fn paint(window: &mut Window, bounds: Bounds<Pixels>, size: (f32, f32), marks: &
             }
             "text" => {
                 let ring = 8.0 / scale as f64;
-                let points: Vec<(f64, f64)> = (0..=36).map(|step| step as f64 / 36.0 * std::f64::consts::TAU).map(|angle| (x + ring * angle.cos(), y + ring * angle.sin())).collect();
+                let points: Vec<(f64, f64)> =
+                    (0..=36).map(|step| step as f64 / 36.0 * std::f64::consts::TAU).map(|angle| (x + ring * angle.cos(), y + ring * angle.sin())).collect();
 
                 stroke(window, &points, colour);
             }
@@ -239,7 +254,9 @@ pub fn render(player: &mut Player, _window: &mut Window, cx: &mut Context<Player
         .iter()
         .filter(|mark| mark["tool"] == "text")
         .enumerate()
-        .map(|(index, mark)| (index + 1, mark["x"].as_f64().unwrap_or(0.0), mark["y"].as_f64().unwrap_or(0.0), colour_value(mark["colour"].as_str().unwrap_or("red"))))
+        .map(|(index, mark)| {
+            (index + 1, mark["x"].as_f64().unwrap_or(0.0), mark["y"].as_f64().unwrap_or(0.0), colour_value(mark["colour"].as_str().unwrap_or("red")))
+        })
         .collect();
     let labels = place.get().map(|bounds| {
         let (left, top, scale) = Marking::fit(bounds, size);
@@ -275,7 +292,12 @@ pub fn render(player: &mut Player, _window: &mut Window, cx: &mut Context<Player
         .overflow_hidden()
         .child(div().absolute().size_full().child(img(marking.picture.clone()).size_full().object_fit(ObjectFit::Contain)))
         .children(labels.into_iter().flatten())
-        .child(div().absolute().size_full().child(canvas(move |bounds, _, _| place.set(Some(bounds)), move |bounds, _, window, _| paint(window, bounds, size, &shown)).size_full()))
+        .child(
+            div()
+                .absolute()
+                .size_full()
+                .child(canvas(move |bounds, _, _| place.set(Some(bounds)), move |bounds, _, window, _| paint(window, bounds, size, &shown)).size_full()),
+        )
         .on_mouse_down(
             MouseButton::Left,
             cx.listener(|this, event: &gpui::MouseDownEvent, window, cx| {
@@ -316,7 +338,14 @@ pub fn render(player: &mut Player, _window: &mut Window, cx: &mut Context<Player
 
     // The words: the note's own, or the pin being labelled.
     let (field_text, field_on, hint) = match &typing {
-        Some(Entry::Pin { index }) => (format!("{typed}▏"), true, format!("Words for pin {}", marking.marks[..=(*index).min(marking.marks.len().saturating_sub(1))].iter().filter(|mark| mark["tool"] == "text").count())),
+        Some(Entry::Pin { index }) => (
+            format!("{typed}▏"),
+            true,
+            format!(
+                "Words for pin {}",
+                marking.marks[..=(*index).min(marking.marks.len().saturating_sub(1))].iter().filter(|mark| mark["tool"] == "text").count()
+            ),
+        ),
         Some(Entry::NoteText) => (format!("{typed}▏"), true, String::new()),
         _ => (marking.text.clone(), false, String::new()),
     };
