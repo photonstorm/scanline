@@ -597,6 +597,12 @@ Written on the Mac on 12 November 2026 and first compiled on the PC on 17 Novemb
 
 Found on the way, and true everywhere: the host looked for the app beside itself as `Scanline`, which on Windows and on most Macs, where file names ignore case, is the host's own binary when it is called `scanline`; it now skips itself.
 
+## Smoke testing, replays and recordings for games (18 November 2026)
+
+Asked for by the owner on 18 November 2026, after Scanline's release binary was tried on a game with no engine and no build step (plain ES modules on raw WebGL 2, served by its own small server). Playing and looking worked with the game unchanged; what follows is what that trial found missing, in the order it was built.
+
+- **A long `SCANLINE_HOME`.** A Unix socket's address holds about a hundred bytes of path, and a home under an agent's scratch folder is longer: the host failed to bind and the command waited out its 5 s. The socket for such a home is now `/tmp/scanline-<uid>/<hash of the home's path>.sock`, in a directory made and checked as the user's alone (`docs/SECURITY.md`); `runtime.json` records where it is, which is how the app finds it. A host that stops as it starts, for this or any reason, is now reported at once with what it said, not after 5 s with "could not reach it". The app's side of this (`app/src/channel.rs`, `app/src/host.rs`) was written and not compiled: the app's build needs cmake, which this shell did not have.
+
 ## Known gaps in what is built
 
 - Unlabelled WebGPU objects are not given generated labels, which the specification lists as a modification. They are named by handle in results instead.

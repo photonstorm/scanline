@@ -23,10 +23,27 @@ pub fn home() -> PathBuf {
 pub type Reader = Box<dyn Read + Send>;
 pub type Writer = Box<dyn Write + Send>;
 
+/// The host's socket: in its home directory, or, for a home whose path is too long to hold a
+/// socket, in the short place the host chose and wrote in `runtime.json`.
+#[cfg(unix)]
+pub fn socket(home: &Path) -> PathBuf {
+    let usual = home.join("control.sock");
+
+    if usual.exists() {
+        return usual;
+    }
+
+    std::fs::read_to_string(home.join("runtime.json"))
+        .ok()
+        .and_then(|runtime| serde_json::from_str::<serde_json::Value>(&runtime).ok())
+        .and_then(|runtime| runtime["socket"].as_str().map(PathBuf::from))
+        .unwrap_or(usual)
+}
+
 /// A connection to the host, as a half to read and a half to write.
 #[cfg(unix)]
 pub fn dial(home: &Path) -> std::io::Result<(Reader, Writer)> {
-    let stream = std::os::unix::net::UnixStream::connect(home.join("control.sock"))?;
+    let stream = std::os::unix::net::UnixStream::connect(socket(home))?;
     let reader = stream.try_clone()?;
 
     Ok((Box::new(reader), Box::new(stream)))

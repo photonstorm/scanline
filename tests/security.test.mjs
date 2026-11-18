@@ -655,3 +655,54 @@ describe('MCP over loopback HTTP', () =>
         await quiet.end();
     });
 });
+
+describe('the control socket', () =>
+{
+    // A socket's address holds about a hundred bytes of path (103 on macOS, 107 on Linux).
+    // An agent's scratch folder is often longer than that.
+    test('a home with a long path gets a short socket of the person\'s own', { skip: windows }, async () =>
+    {
+        const long = host();
+        const deep = join(long.home, 'a'.repeat(60), 'b'.repeat(60));
+        const scanline = (...args) => new Promise((resolve) =>
+        {
+            execFile(binary, args, { env: { ...process.env, SCANLINE_HOME: deep }, timeout: 20000 }, (error, stdout, stderr) => resolve({ code: error ? error.code ?? 1 : 0, out: (stdout + stderr).trim() }));
+        });
+
+        const started = Date.now();
+        const listed = await scanline('sessions');
+
+        assert.equal(listed.code, 0, listed.out);
+        assert.match(listed.out, /No sessions are open/);
+        assert.ok(Date.now() - started < 4000, 'and without waiting out the 5 s');
+
+        const socket = JSON.parse(readFileSync(join(deep, 'runtime.json'), 'utf8')).socket;
+
+        assert.ok(socket.length < 60 && !socket.startsWith(deep), socket);
+        assert.equal(statSync(socket).mode & 0o777, 0o600, 'the socket is its owner\'s alone');
+        assert.equal(statSync(join(socket, '..')).mode & 0o777, 0o700, 'and so is the directory it is in');
+        assert.equal(statSync(join(socket, '..')).uid, process.getuid());
+
+        // A second command finds the same host, and stop takes the socket away.
+        assert.equal((await scanline('sessions')).code, 0);
+        assert.match((await scanline('stop')).out, /stopped/);
+        assert.equal(existsSync(socket), false);
+        await long.end();
+    });
+
+    test('a host that cannot start says why at once, not after 5 s', async () =>
+    {
+        const broken = host();
+
+        // The store is a directory; a file in its place stops the host as it starts.
+        writeFileSync(join(broken.home, 'artefacts'), 'not a directory');
+
+        const started = Date.now();
+        const said = await broken.scanline('sessions');
+
+        assert.notEqual(said.code, 0);
+        assert.match(said.out, /The Scanline host could not start: .*artefacts/);
+        assert.ok(Date.now() - started < 4000, `it took ${Date.now() - started} ms`);
+        await broken.end();
+    });
+});

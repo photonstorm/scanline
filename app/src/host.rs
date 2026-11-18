@@ -123,10 +123,9 @@ fn keep(home: PathBuf, requests: Receiver<(u64, String)>, replies: Arc<Mutex<Vec
 /// Holds the connection: dial, send what is queued, read what comes back, dial again.
 #[cfg(unix)]
 fn keep(home: PathBuf, requests: Receiver<(u64, String)>, replies: Arc<Mutex<VecDeque<(u64, Reply)>>>, connected: Arc<AtomicBool>) {
-    let socket = home.join("control.sock");
-
     loop {
-        let stream = match UnixStream::connect(&socket) {
+        // Asked each time round: a host with a long home keeps its socket elsewhere, and says where when it starts.
+        let stream = match UnixStream::connect(crate::channel::socket(&home)) {
             Ok(stream) => stream,
             Err(_) => {
                 // Calls made while there is no host fail at once, rather than piling up.

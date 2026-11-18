@@ -29,6 +29,13 @@ fn runtime_path() -> PathBuf {
     home().join("runtime.json")
 }
 
+/// Where the control socket is: in the home directory, or in a short place of the user's own
+/// when the home directory's path is too long for a socket's address.
+#[cfg(unix)]
+pub fn socket_path() -> PathBuf {
+    channel::socket_path()
+}
+
 /// The connection to the host was lost mid-call.
 #[derive(Debug)]
 pub struct Dropped;
@@ -211,13 +218,23 @@ impl Link {
             }
         }
 
-        start_host()?;
+        let (mut child, before) = start_host()?;
 
         for _ in 0..100 {
             tokio::time::sleep(Duration::from_millis(50)).await;
 
             if let Some(link) = Self::try_connect().await {
                 return Ok(link);
+            }
+
+            // A host that has already gone will not be reached by waiting for it.
+            if let Ok(Some(_)) = child.try_wait() {
+                // Unless another command started one at the same moment, and that is the one serving.
+                if let Some(link) = Self::try_connect().await {
+                    return Ok(link);
+                }
+
+                bail!("The Scanline host could not start: {}", why_it_stopped(before));
             }
         }
 
@@ -272,7 +289,7 @@ impl Link {
 }
 
 /// Starts the host as a process of its own that outlives this one.
-fn start_host() -> Result<()> {
+fn start_host() -> Result<(std::process::Child, u64)> {
     // Said here, where the person will see it, and not only in the host's log.
     scanline_core::tiers::Tiers::from_env()?;
 
@@ -295,9 +312,26 @@ fn start_host() -> Result<()> {
     // the browsers a person may be playing in) down with it.
     channel::detach(&mut command);
 
-    command.spawn().context("starting the Scanline host")?;
+    // Where the log stood, so that what this host says can be told from what earlier ones said.
+    let before = std::fs::metadata(home.join("host.log")).map(|log| log.len()).unwrap_or(0);
 
-    Ok(())
+    Ok((command.spawn().context("starting the Scanline host")?, before))
+}
+
+/// What a host that stopped as soon as it was started said of why, from its log.
+fn why_it_stopped(before: u64) -> String {
+    use std::io::{Read, Seek};
+
+    let mut said = String::new();
+
+    if let Ok(mut log) = std::fs::File::open(home().join("host.log")) {
+        let _ = log.seek(std::io::SeekFrom::Start(before));
+        let _ = log.take(8192).read_to_string(&mut said);
+    }
+
+    let said = said.trim().strip_prefix("scanline: ").unwrap_or(said.trim()).to_string();
+
+    if said.is_empty() { format!("it left nothing in {}", home().join("host.log").display()) } else { said }
 }
 
 pub async fn stop() -> Result<String> {
@@ -341,8 +375,82 @@ mod channel {
 
     pub const KIND: &str = "socket";
 
-    fn socket_path() -> PathBuf {
-        super::home().join("control.sock")
+    /// The longest path a socket's address holds: 103 bytes on macOS, 107 on Linux.
+    fn longest() -> usize {
+        let address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+
+        address.sun_path.len() - 1
+    }
+
+    /// Where the socket goes when the home directory's path is too long to hold it: a
+    /// directory of the user's own under /tmp, with a name made from the home's path, so
+    /// that each home still has its own.
+    fn short_dir() -> PathBuf {
+        PathBuf::from(format!("/tmp/scanline-{}", unsafe { libc::getuid() }))
+    }
+
+    /// The socket for a home directory, and whether it had to go in the short place.
+    pub fn socket_for(home: &Path) -> (PathBuf, bool) {
+        let usual = home.join("control.sock");
+
+        if usual.as_os_str().len() <= longest() {
+            return (usual, false);
+        }
+
+        // FNV-1a: the same for every build, so a client and a host of different ages agree.
+        let hash = home
+            .as_os_str()
+            .as_encoded_bytes()
+            .iter()
+            .fold(0xcbf2_9ce4_8422_2325u64, |hash, byte| (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3));
+
+        (short_dir().join(format!("{hash:016x}.sock")), true)
+    }
+
+    pub fn socket_path() -> PathBuf {
+        socket_for(&super::home()).0
+    }
+
+    /// The short place is under a directory anyone can write to, so it is trusted only if it
+    /// is a real directory, this user's, that nobody else can enter. `create` makes it.
+    fn short_dir_is_ours(create: bool) -> std::io::Result<()> {
+        use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+
+        let dir = short_dir();
+
+        if create {
+            match std::fs::DirBuilder::new().mode(0o700).create(&dir) {
+                Err(error) if error.kind() != std::io::ErrorKind::AlreadyExists => return Err(error),
+                _ => {}
+            }
+        }
+
+        let found = std::fs::symlink_metadata(&dir)?;
+        let refuse = |why: &str| {
+            std::io::Error::other(format!(
+                "{} {why}, so Scanline will not keep its control socket there. Remove it, or set SCANLINE_HOME to a directory with a shorter path (under {} characters).",
+                dir.display(),
+                longest() - "/control.sock".len()
+            ))
+        };
+
+        if !found.is_dir() {
+            return Err(refuse("is not a directory"));
+        }
+
+        if found.uid() != unsafe { libc::getuid() } {
+            return Err(refuse("belongs to another user"));
+        }
+
+        if found.mode() & 0o077 != 0 {
+            if !create {
+                return Err(refuse("can be entered by other users"));
+            }
+
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
+        }
+
+        Ok(())
     }
 
     /// Where the channel is, as a person would look for it.
@@ -357,7 +465,14 @@ mod channel {
     }
 
     pub async fn dial() -> std::io::Result<(Reader, Writer)> {
-        let (read, write) = tokio::net::UnixStream::connect(socket_path()).await?.into_split();
+        let (socket, short) = socket_for(&super::home());
+
+        // Nothing there yet is "no host", as it is for a socket in the home directory.
+        if short && short_dir().exists() {
+            short_dir_is_ours(false)?;
+        }
+
+        let (read, write) = tokio::net::UnixStream::connect(socket).await?.into_split();
 
         Ok((Box::new(read), Box::new(write)))
     }
@@ -366,7 +481,18 @@ mod channel {
 
     impl Listener {
         pub fn bind() -> Result<Self> {
-            let socket = socket_path();
+            let (socket, short) = socket_for(&super::home());
+
+            if short {
+                short_dir_is_ours(true).with_context(|| {
+                    format!(
+                        "making a place for the control socket. {} is too long a path to hold a socket ({} characters at most), so the socket goes in {}",
+                        super::home().display(),
+                        longest() - "/control.sock".len(),
+                        short_dir().display()
+                    )
+                })?;
+            }
 
             // A socket file left by a host that did not exit cleanly.
             let _ = std::fs::remove_file(&socket);
@@ -377,9 +503,7 @@ mod channel {
 
             unsafe { libc::umask(mask) };
 
-            let listener = bound.with_context(|| {
-                format!("binding the control socket at {}. If the path is too long for a socket, set SCANLINE_HOME to a shorter directory.", socket.display())
-            })?;
+            let listener = bound.with_context(|| format!("binding the control socket at {}", socket.display()))?;
 
             std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).with_context(|| format!("making {} private to you", socket.display()))?;
 
@@ -834,3 +958,32 @@ pub fn pipe_name() -> String {
 
 #[cfg(not(any(unix, windows)))]
 compile_error!("The control channel is written for Unix sockets and for Windows named pipes.");
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::path::Path;
+
+    use super::channel::socket_for;
+
+    #[test]
+    fn a_short_home_keeps_its_socket() {
+        let (socket, short) = socket_for(Path::new("/Users/someone/Library/Application Support/Scanline"));
+
+        assert_eq!(socket, Path::new("/Users/someone/Library/Application Support/Scanline/control.sock"));
+        assert!(!short);
+    }
+
+    #[test]
+    fn a_long_home_gets_a_short_socket_of_its_own() {
+        let long = format!("/private/tmp/{}/scratchpad/home", "a".repeat(110));
+        let other = format!("/private/tmp/{}/scratchpad/home", "b".repeat(110));
+        let (socket, short) = socket_for(Path::new(&long));
+
+        assert!(short);
+        assert!(socket.as_os_str().len() < 60, "{} is not short", socket.display());
+        assert!(socket.starts_with("/tmp"));
+        // The same home has the same socket every time, and another home another.
+        assert_eq!(socket, socket_for(Path::new(&long)).0);
+        assert_ne!(socket, socket_for(Path::new(&other)).0);
+    }
+}

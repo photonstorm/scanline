@@ -95,7 +95,7 @@ fn press() -> Result<String> {
     use std::io::{BufRead, Write};
 
     let (session, _) = SESSION.get().expect("set before the key is registered");
-    let socket = scanline_core::default_home().join("control.sock");
+    let socket = crate::control::socket_path();
     let mut stream = std::os::unix::net::UnixStream::connect(&socket)?;
 
     stream.set_read_timeout(Some(std::time::Duration::from_secs(30)))?;
