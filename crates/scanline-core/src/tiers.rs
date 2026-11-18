@@ -223,7 +223,7 @@ pub(crate) fn refusal(tiers: &Tiers, method: &str, params: &Value, page: Option<
 
     match method {
         "pause" | "resume" | "step" | "run_until" | "input" | "request_human" | "take_control" | "debug" | "strip" | "replay_run" | "live_view" | "video"
-        | "emulate"
+        | "emulate" | "smoke"
             if !tiers.control =>
         {
             Some(format!(
@@ -417,8 +417,9 @@ mod tests {
             assert_eq!(refusal(&usual, method, &none, Some(&local)), None, "{method}");
         }
 
-        // A remote page may be looked at and driven, not patched or evaluated in.
-        for method in ["step", "input", "screenshot", "capture", "pixel_history", "resources"] {
+        // A remote page may be looked at and driven, not patched or evaluated in. A smoke
+        // test drives it by a rule of Scanline's own, which is driving and no more.
+        for method in ["step", "input", "smoke", "screenshot", "capture", "pixel_history", "resources"] {
             assert_eq!(refusal(&usual, method, &none, Some(&remote)), None, "{method}");
         }
 

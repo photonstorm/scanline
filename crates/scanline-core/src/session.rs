@@ -209,8 +209,13 @@ pub struct State {
     /// Requests in flight that a script began, by the browser's name for each, with its
     /// address: told to the probe while the page loads, as part of whether it is ready.
     pub net_flight: HashMap<String, String>,
-    /// Requests that failed or were answered with an error status, oldest first.
+    /// Requests that failed or were answered with an error status, oldest first, each with a
+    /// number that only rises (`seq`), and how many there have been.
     pub net_failed: VecDeque<Value>,
+    pub net_failed_seq: u64,
+    /// Every request under way, by the browser's name for it: its method and address, so
+    /// that one that fails can be named.
+    net_requests: HashMap<String, (String, String)>,
     worker_urls: HashMap<String, String>,
     /// Workers stopped at start, waiting for the instrumentation pause where the probe goes in.
     waiting_workers: HashSet<String>,
@@ -234,6 +239,8 @@ pub struct SessionOptions {
     pub start_paused: bool,
     pub unmodified: bool,
     pub deterministic: Option<(u32, f64)>,
+    /// The page is shown as a phone would show it: touch, and its viewport meta tag applies.
+    pub mobile: bool,
     /// How long a page is given to finish loading before it is taken as ready as it stands.
     pub ready_timeout: Duration,
     /// Let the page load before its time is held, and count frames from when it is ready.
@@ -516,14 +523,23 @@ impl Session {
         // Shared and service workers are not children of the page target (spike S1).
         client.send("Target.setAutoAttach", auto, None).await?;
 
-        if let Some(dpr) = options.dpr {
+        if options.dpr.is_some() || options.mobile {
+            let dpr = options.dpr.unwrap_or(1.0);
+
             client
                 .send(
                     "Emulation.setDeviceMetricsOverride",
-                    json!({ "width": options.width, "height": options.height, "deviceScaleFactor": dpr, "mobile": false }),
+                    json!({ "width": options.width, "height": options.height, "deviceScaleFactor": dpr, "mobile": options.mobile }),
                     p,
                 )
                 .await?;
+
+            // A phone is touched: the page sees touch events and maxTouchPoints from its first script.
+            if options.mobile {
+                client.send("Emulation.setTouchEmulationEnabled", json!({ "enabled": true, "maxTouchPoints": 5 }), p).await?;
+                session.state.lock().unwrap().emulated =
+                    Some(json!({ "width": options.width, "height": options.height, "dpr": dpr, "mobile": true, "scale": 1.0 }));
+            }
         }
 
         // A deterministic session keeps what the page is given from the network, so that a
@@ -1595,6 +1611,17 @@ fn handle(session: &Arc<Session>, event: Event) {
             let kind = params["type"].as_str().unwrap_or("");
             let by_script = params["initiator"]["type"] == "script";
 
+            if let (Some(id), Some(url)) = (params["requestId"].as_str(), params["request"]["url"].as_str()) {
+                let mut state = session.state.lock().unwrap();
+
+                // A page that never lets its requests finish must not grow this for ever.
+                if state.net_requests.len() > 4000 {
+                    state.net_requests.clear();
+                }
+
+                state.net_requests.insert(id.to_string(), (params["request"]["method"].as_str().unwrap_or("GET").to_string(), url.to_string()));
+            }
+
             if by_script && !matches!(kind, "WebSocket" | "EventSource" | "Media" | "Ping") {
                 if let (Some(id), Some(url)) = (params["requestId"].as_str(), params["request"]["url"].as_str()) {
                     let loading = {
@@ -1614,7 +1641,37 @@ fn handle(session: &Arc<Session>, event: Event) {
             }
         }
 
+        // A response with an error status: the request was answered, and the answer was no.
+        "Network.responseReceived" if event.session.as_deref() == Some(session.page.as_str()) => {
+            let status = params["response"]["status"].as_u64().unwrap_or(0);
+
+            if status >= 400 {
+                let url = params["response"]["url"].as_str().unwrap_or("").to_string();
+
+                failed_request(
+                    session,
+                    params["requestId"].as_str().unwrap_or(""),
+                    url,
+                    json!({ "status": status, "status_text": params["response"]["statusText"], "kind": params["type"] }),
+                );
+            }
+        }
+
         "Network.loadingFinished" | "Network.loadingFailed" if event.session.as_deref() == Some(session.page.as_str()) => {
+            let id = params["requestId"].as_str().unwrap_or("");
+
+            // One that got no answer at all. One the page itself gave up on (it navigated
+            // away, or aborted it) is not a failure.
+            let error = params["errorText"].as_str().unwrap_or("");
+
+            if event.method == "Network.loadingFailed" && params["canceled"] != true && !error.is_empty() && error != "net::ERR_ABORTED" {
+                let url = session.state.lock().unwrap().net_requests.get(id).map(|(_, url)| url.clone()).unwrap_or_default();
+
+                failed_request(session, id, url, json!({ "error": error, "blocked": params["blockedReason"], "kind": params["type"] }));
+            }
+
+            session.state.lock().unwrap().net_requests.remove(id);
+
             let was = params["requestId"].as_str().and_then(|id| session.state.lock().unwrap().net_flight.remove(id));
 
             if was.is_some() {
@@ -1691,11 +1748,20 @@ fn handle(session: &Arc<Session>, event: Event) {
 
         "Log.entryAdded" => {
             let entry = &params["entry"];
+            let mut text = entry["text"].as_str().unwrap_or("").to_string();
+
+            // "Failed to load resource: … 404" says what happened and not to what. The entry
+            // knows the address; the line should.
+            if let Some(url) = entry["url"].as_str().filter(|url| !url.is_empty() && !text.contains(*url)) {
+                if entry["source"] == "network" {
+                    text = format!("{text}: {url}");
+                }
+            }
 
             console(
                 session,
                 entry["level"].as_str().unwrap_or("info"),
-                entry["text"].as_str().unwrap_or("").to_string(),
+                text,
                 entry["timestamp"].as_f64().unwrap_or(0.0),
                 entry["source"].as_str().unwrap_or("browser"),
             );
@@ -1716,6 +1782,33 @@ fn handle(session: &Arc<Session>, event: Event) {
         }
 
         _ => {}
+    }
+}
+
+/// Notes a request that failed or was answered with an error status.
+fn failed_request(session: &Arc<Session>, id: &str, url: String, what: Value) {
+    // A browser asks for a page's icon by itself; a page without one has not failed.
+    if url.split(['?', '#']).next().is_some_and(|path| path.ends_with("/favicon.ico")) {
+        return;
+    }
+
+    let mut state = session.state.lock().unwrap();
+    let method = state.net_requests.get(id).map(|(method, _)| method.clone()).unwrap_or_else(|| "GET".to_string());
+
+    state.net_failed_seq += 1;
+
+    let mut entry = what;
+
+    entry["seq"] = json!(state.net_failed_seq);
+    entry["url"] = json!(url);
+    entry["method"] = json!(method);
+    // Wall-clock milliseconds, to find the frame it happened in (as console lines are).
+    entry["wall"] = json!(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|since| since.as_secs_f64() * 1000.0).unwrap_or(0.0));
+
+    state.net_failed.push_back(entry);
+
+    if state.net_failed.len() > 500 {
+        state.net_failed.pop_front();
     }
 }
 

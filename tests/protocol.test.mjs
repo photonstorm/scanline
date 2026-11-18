@@ -981,3 +981,153 @@ describe('replays that hold across loading', () =>
         assert.equal(JSON.parse(await state()).id, id);
     });
 });
+
+// One command that opens a page, plays it by seeded random input and says what went wrong
+// (fixtures/protocol/smoke.html: a small game that counts its input and can be told to fail).
+describe('a smoke test', () =>
+{
+    const page = (query = '') => server.url(`fixtures/protocol/smoke.html${query}`);
+
+    test('a healthy page passes: loaded, played by keys and mouse, measured, pictured and kept', async () =>
+    {
+        const smoked = await scanline('smoke', page(), '--seconds', 3, '--keep', '--json');
+
+        assert.equal(smoked.code, 0, smoked.out);
+        assert.equal(smoked.json.data.met, true);
+        assert.match(smoked.json.summary, /^Smoke test PASSED: http:\/\/127\.0\.0\.1:\d+\/fixtures\/protocol\/smoke\.html\n/);
+        assert.match(smoked.json.summary, /Loaded: ready \d+\.\d\d s after the page began to load \(its loading went quiet\)\./);
+        assert.match(smoked.json.summary, /Played: 180 frames \(3\.0 s of game time\) in \d+\.\d s, by a seeded random rule \(seed 1\): \d+ holds? of keys, \d+ taps? and \d+ drags? by mouse\. \d+ events sent\./);
+        assert.match(smoked.json.summary, /Errors: none\.\n {2}Warnings: none\.\n {2}Failed requests: none\./);
+        assert.match(smoked.json.summary, /A frame: 5 draws \(worst 5, frame \d+\), 10 triangles \(worst 10, frame \d+\), \d+ API calls \(worst \d+, frame \d+\)\./);
+        assert.match(smoked.json.summary, /Time: CPU in frame callbacks mean \d+\.\d\d ms, worst \d+\.\d\d ms, frame \d+\./);
+        assert.match(smoked.json.summary, /Pictures of the page at frames 0, 60, 120, 180 \(below\)\./);
+
+        const data = smoked.json.data;
+
+        assert.equal(data.frames, 180);
+        assert.equal(data.figures.frames, 180, 'every frame of the play was measured');
+        assert.equal(data.figures.draws.worst.value, 5);
+        assert.deepEqual(data.shots.map((shot) => shot.frame), [0, 60, 120, 180]);
+        assert.equal(smoked.json.images.length, 4);
+
+        for (const image of smoked.json.images)
+        {
+            assert.ok(existsSync(image.view) && existsSync(image.original), image.view);
+        }
+
+        // The input reached the game as real input, of every kind the rule gives.
+        const state = JSON.parse((await scanline('page', '--json')).json.data.state.text);
+
+        assert.equal(state.frame, 180);
+        assert.ok(state.keys >= 1 && state.mouse === data.input.taps + data.input.drags && state.moves > 0, JSON.stringify(state));
+        assert.equal(state.touches, 0);
+
+        // Kept: the session (asked for), paused where the play ended, and the play as a run.
+        assert.match(smoked.json.summary, /ses_\d+ is still open, paused where the play ended/);
+        assert.match((await scanline('status')).out, /Paused at frame 180\./);
+
+        const replayed = await scanline('replay_run', data.run, '--json');
+
+        assert.equal(replayed.json.data.diverged, null, replayed.json.summary);
+        assert.equal(replayed.json.data.matched, 6);
+        assert.equal(JSON.parse((await scanline('page', '--json')).json.data.state.text).keys, state.keys);
+    });
+
+    test('the same seed plays the same game, another seed another, and the session is closed', async () =>
+    {
+        const plays = [];
+
+        for (const seed of [5, 5, 6])
+        {
+            const smoked = await scanline('smoke', page(), '--seconds', 2, '--seed', seed, '--shots', 0, '--json');
+
+            assert.equal(smoked.code, 0, smoked.out);
+            assert.match(smoked.json.summary, /The session is closed\. The same address and seed play the same game again: smoke\(url, seed: \d, seconds: 2\)/);
+            assert.equal(smoked.json.images.length, 0);
+
+            const run = JSON.parse(readFileSync(join(home, 'artefacts', 'runs', `${smoked.json.data.run}.json`), 'utf8'));
+
+            plays.push(JSON.stringify([smoked.json.data.input, run.prints.map((print) => print.hash), run.events.map((row) => [row[0], ...row.slice(2)])]));
+        }
+
+        assert.equal(plays[1], plays[0], 'seed 5 twice: the same input on the same frames, and the same pictures');
+        assert.notEqual(plays[2], plays[0], 'seed 6 is another game');
+        assert.match((await scanline('sessions')).out, /No sessions are open/);
+    });
+
+    test('a page that goes wrong fails, with the frame of each error and the address of each failed request', async () =>
+    {
+        const smoked = await scanline('smoke', page('?broken'), '--seconds', 2, '--shots', 1, '--keep', '--json');
+
+        assert.equal(smoked.code, 2, 'a failed smoke test exits 2');
+        assert.equal(smoked.json.data.met, false);
+        assert.match(smoked.json.summary, /^Smoke test FAILED: .*smoke\.html\?broken: 2 errors; 1 failed request\./);
+        assert.match(smoked.json.summary, /\[frame 40\] exception: «Error: the player fell through the floor/);
+        assert.match(smoked.json.summary, /\[frame 4[01]\] error: «Failed to load resource: the server responded with a status of 404 \(Not Found\): http:\/\/127\.0\.0\.1:\d+\/fixtures\/protocol\/no-such-sprite\.png»/);
+        assert.match(smoked.json.summary, /Warnings: 1 .*\n {4}\[frame 40\] warning: «the larder is nearly empty»/);
+        assert.match(smoked.json.summary, /Failed requests: 1\.\n {4}404 Not Found {2}GET «http:\/\/127\.0\.0\.1:\d+\/fixtures\/protocol\/no-such-sprite\.png» {2}\(frame 4[01]\)/);
+        assert.equal(smoked.json.data.frames, 120, 'it is played to the end all the same');
+        assert.equal(smoked.json.data.failed_requests[0].status, 404);
+        assert.deepEqual(smoked.json.data.faults, ['2 errors', '1 failed request']);
+
+        // The same list, in any session: console(requests: true).
+        const listed = await scanline('console', '--requests', '--json');
+
+        assert.match(listed.json.summary, /1 request failed or was answered with an error status/);
+        assert.match(listed.json.summary, /404 Not Found {2}GET «.*no-such-sprite\.png»/);
+        assert.equal(listed.json.data.failed_requests[0].url, page('no-such-sprite.png').replace('smoke.htmlno', 'no'));
+        await scanline('close');
+
+        // And one that fails while the page loads.
+        const missing = await scanline('smoke', page('?missing'), '--seconds', 1, '--shots', 0);
+
+        assert.equal(missing.code, 2);
+        assert.match(missing.out, /404 Not Found {2}GET «.*not-there\.json» {2}\(while loading\)/);
+        assert.match(missing.out, /\[while loading\] error: «Failed to load resource: .*not-there\.json»/);
+    });
+
+    test('budgets are held to the worst frame, and a page that stops drawing fails', async () =>
+    {
+        const heavy = await scanline('smoke', page('?heavy'), '--seconds', 1, '--shots', 0, '--max_draws', 100, '--max_triangles', 5000, '--max_cpu_ms', 500, '--json');
+
+        assert.equal(heavy.code, 2);
+        assert.match(heavy.json.summary, /^Smoke test FAILED: .*: over budget \(max_draws\)\./);
+        assert.match(heavy.json.summary, /FAIL max_draws: 300 draws in its worst frame, and the budget is 100\./);
+        assert.match(heavy.json.summary, /PASS max_triangles: 600 triangles in its worst frame, and the budget is 5000\./);
+        assert.match(heavy.json.summary, /PASS max_cpu_ms: \d+\.\d\d ms of CPU time a frame in frame callbacks \(mean\), and the budget is 500\./);
+
+        const stalled = await scanline('smoke', page('?stall'), '--seconds', 2, '--shots', 0, '--json');
+
+        assert.equal(stalled.code, 2);
+        assert.match(stalled.json.summary, /^Smoke test FAILED: .*: the page stopped at frame 3\d: it has no frame callbacks and no timers pending, so nothing more will be drawn\./);
+        assert.ok(stalled.json.data.frames < 40);
+    });
+
+    test('as a phone it is played by touch, at a phone\'s size', async () =>
+    {
+        const smoked = await scanline('smoke', page(), '--seconds', 2, '--phone', '--shots', 2, '--keep', '--json');
+
+        assert.equal(smoked.code, 0, smoked.out);
+        assert.match(smoked.json.summary, /\d+ taps? and \d+ drags? by touch\./);
+
+        const state = JSON.parse((await scanline('page', '--json')).json.data.state.text);
+
+        assert.equal(state.width, 390, 'the page is a phone\'s width');
+        assert.equal(state.points, 5, 'and says it can be touched');
+        assert.equal(state.touches, smoked.json.data.input.taps + smoked.json.data.input.drags);
+        assert.equal(state.mouse, 0);
+        assert.ok(state.touches > 0, JSON.stringify(state));
+
+        // The pictures are the page as composited, at the phone's pixels (390×844 at 3).
+        assert.equal(smoked.json.images[0].width * (1 / smoked.json.images[0].scale), 1170);
+    });
+
+    test('what is asked wrongly is refused before a browser is opened', async () =>
+    {
+        assert.match((await scanline('smoke')).out, /smoke needs a url/);
+        assert.match((await scanline('smoke', page(), '--seconds', 0)).out, /seconds is how long to play, in seconds of game time, from 1 to 600/);
+        assert.match((await scanline('smoke', page(), '--keys', '["Sideways"]')).out, /Unknown key "Sideways" in keys/);
+        assert.match((await scanline('help', 'smoke')).out, /A smoke test: does the page load, play and stay healthy\?/);
+        assert.match((await scanline('sessions')).out, /No sessions are open/);
+    });
+});

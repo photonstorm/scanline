@@ -17,6 +17,8 @@ Use the `gfx_*` MCP tools if you have them, or the `scanline` command in a shell
 4. `gfx_console(level: "error")` for what the page and browser complained about.
 5. Change the code, `gfx_navigate(reload: true)`, repeat.
 
+To ask only "does it load, play and stay healthy?", one call does the whole loop: `gfx_smoke(url, seconds: 20)` opens the page, waits until it has loaded, plays it by seeded random input and reports errors, failed requests, frame costs and pictures, failing on any of the first two or on a budget you give (`max_draws`, `max_cpu_ms`…). `phone: true` plays it by touch at a phone's size. `gfx_help(topic: "smoke")`.
+
 ## Rules that save time
 
 - **Numbers before images.** To check a colour, ask `gfx_pixels`. It is exact and costs a few tokens. Look at a screenshot when you need to see layout or shape.

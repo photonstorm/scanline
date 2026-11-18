@@ -186,9 +186,22 @@ async fn connection(read: Reader, mut write: Writer, host: Arc<Host>, stop: Arc<
                 stop.notify_one();
                 json!({ "id": id, "result": { "summary": "Scanline host stopping; its browsers are being closed.", "data": {}, "images": [] } })
             } else {
-                match host.call(&method, request["params"].clone()).await {
-                    Ok(result) => json!({ "id": id, "result": result }),
-                    Err(error) => json!({ "id": id, "error": { "message": format!("{error:#}") } }),
+                // On a task of its own, so that a fault in the host's own code is an answer
+                // (and a plain one) and not a client left waiting for ever.
+                let call = {
+                    let method = method.clone();
+                    let params = request["params"].clone();
+
+                    tokio::spawn(async move { host.call(&method, params).await })
+                };
+
+                match call.await {
+                    Ok(Ok(result)) => json!({ "id": id, "result": result }),
+                    Ok(Err(error)) => json!({ "id": id, "error": { "message": format!("{error:#}") } }),
+                    Err(fault) => json!({ "id": id, "error": { "message": format!(
+                        "The Scanline host hit a fault of its own while running {method}, and gave up on that command ({fault}). This is a bug in Scanline, not in the page: the host's log ({}) has the details. The host is still running; a session the command had open may need closing.",
+                        home().join("host.log").display()
+                    ) } }),
                 }
             };
 

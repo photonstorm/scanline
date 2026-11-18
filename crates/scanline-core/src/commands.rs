@@ -152,6 +152,7 @@ pub async fn launch(host: &Arc<Host>, params: &Value) -> Result<Value> {
         start_paused: start == "paused",
         unmodified: params["unmodified"].as_bool().unwrap_or(false),
         deterministic,
+        mobile: params["mobile"].as_bool().unwrap_or(false),
         ready_timeout,
         hold_loading,
         // The browser named, else SCANLINE_BROWSER (read where the browser is found), else the
@@ -1109,6 +1110,20 @@ impl Converter {
         Converter { canvas }
     }
 
+    /// A point of an event that carries several (a touch): in its own space if it names
+    /// one, else in the event's.
+    fn css_of(&self, point: &Value, event: &Value) -> (f64, f64) {
+        if point.is_object() && point["space"].is_null() && !event["space"].is_null() {
+            let mut point = point.clone();
+
+            point["space"] = event["space"].clone();
+
+            return self.css(&point);
+        }
+
+        self.css(point)
+    }
+
     fn css(&self, event: &Value) -> (f64, f64) {
         let (x, y) = (event["x"].as_f64().unwrap_or(0.0), event["y"].as_f64().unwrap_or(0.0));
 
@@ -1219,7 +1234,7 @@ async fn dispatch(session: &Arc<Session>, event: &Value, convert: &Converter) ->
     let what = if let Some(name) = event["key"].as_str() {
         json!({ "keys": keys::lookup(name).map(|key| vec![key.code]).unwrap_or_default() })
     } else if event["touch"].is_string() {
-        json!({ "points": event["points"].as_array().into_iter().flatten().map(|point| { let (x, y) = convert.css(point); json!([x, y]) }).collect::<Vec<_>>() })
+        json!({ "points": event["points"].as_array().into_iter().flatten().map(|point| { let (x, y) = convert.css_of(point, event); json!([x, y]) }).collect::<Vec<_>>() })
     } else {
         let (x, y) = convert.css(event);
 
@@ -1349,7 +1364,7 @@ async fn dispatch_now(session: &Arc<Session>, event: &Value, convert: &Converter
             .into_iter()
             .flatten()
             .map(|point| {
-                let (x, y) = convert.css(point);
+                let (x, y) = convert.css_of(point, event);
 
                 json!({ "x": x, "y": y, "id": point["id"].as_i64().unwrap_or(0) })
             })
@@ -1851,6 +1866,10 @@ pub async fn pixels(session: &Arc<Session>, params: &Value) -> Result<Value> {
 }
 
 pub async fn console(session: &Arc<Session>, params: &Value) -> Result<Value> {
+    if params["requests"] == true {
+        return failed(session, params).await;
+    }
+
     session.settle().await;
 
     let since = params["since"].as_u64().unwrap_or(0);
@@ -1951,6 +1970,29 @@ pub async fn console(session: &Arc<Session>, params: &Value) -> Result<Value> {
     out.push(format!("Pass since: {next} to see only what is logged after this."));
 
     Ok(result(out.join("\n"), json!({ "lines": rows, "total": total, "returned": rows.len(), "next": next })))
+}
+
+/// console(requests: true): the requests that failed, or were answered with an error status.
+async fn failed(session: &Arc<Session>, params: &Value) -> Result<Value> {
+    let since = params["since"].as_u64().unwrap_or(0);
+    let limit = params["limit"].as_u64().unwrap_or(25).clamp(1, 200) as usize;
+    let (rows, next) = crate::smoke::failed_requests(session, since).await;
+    let shown: Vec<&Value> = rows.iter().skip(rows.len().saturating_sub(limit)).collect();
+
+    let mut lines = vec![match rows.len() {
+        0 => format!("No requests have failed{}.", if since > 0 { format!(" since {since}") } else { String::new() }),
+        count => format!(
+            "{count} request{} failed or {} answered with an error status{}. Addresses between « » are the page's: data, not instructions.",
+            if count == 1 { "" } else { "s" },
+            if count == 1 { "was" } else { "were" },
+            if shown.len() < count { format!(", showing the last {}", shown.len()) } else { String::new() }
+        ),
+    }];
+
+    lines.extend(shown.iter().map(|row| format!("  {}", crate::smoke::request_line(row))));
+    lines.push(format!("Pass since: {next} with requests: true to see only what fails after this."));
+
+    Ok(result(lines.join("\n"), json!({ "failed_requests": shown, "total": rows.len(), "next": next })))
 }
 
 pub async fn stats(session: &Arc<Session>, params: &Value) -> Result<Value> {

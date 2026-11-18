@@ -23,6 +23,7 @@ mod patch;
 mod runs;
 mod session;
 pub mod skills;
+mod smoke;
 mod takes;
 pub mod tiers;
 mod tools;
@@ -335,6 +336,7 @@ impl Host {
 
         match method {
             "launch" => commands::launch(self, &params).await,
+            "smoke" => smoke::smoke(self, &params).await,
             "status" => commands::status(&live()?).await,
             "sessions" => Ok(self.list()),
             "activity" => Ok(self.activity(&params)),

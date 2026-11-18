@@ -19,7 +19,7 @@ use crate::control::Link;
 /// The arguments a command takes by position, in order.
 fn positional(command: &str) -> &'static [&'static str] {
     match command {
-        "launch" | "navigate" => &["url"],
+        "launch" | "navigate" | "smoke" => &["url"],
         "step" => &["frames"],
         "pixels" => &["x", "y", "w", "h"],
         "eval" | "watch" => &["expression"],
@@ -254,6 +254,7 @@ pub fn command_usage(name: &str) -> Option<String> {
 
     let example = match name {
         "launch" => "scanline launch http://localhost:5173 --paused --headless",
+        "smoke" => "scanline smoke http://localhost:5173 --seconds 30 --max_draws 300",
         "step" => "scanline step 30 --screenshot 512 --session ses_1",
         "capture" => "scanline capture --session ses_1",
         "draw_list" => "scanline draw_list cap_1 --filter \"blend = 1\"",
@@ -496,8 +497,8 @@ pub async fn run(args: Vec<String>) -> Result<ExitCode> {
         let topic = parsed.params["topic"].as_str();
         let is_topic = |topic: &str| {
             [
-                "workflow", "input", "capture", "analysis", "patch", "page", "handoff", "sql", "testing", "loading", "ready", "security", "limits", "skills",
-                "help",
+                "workflow", "input", "capture", "analysis", "patch", "page", "handoff", "sql", "testing", "smoke", "loading", "ready", "security", "limits",
+                "skills", "help",
             ]
             .contains(&topic)
         };
@@ -515,7 +516,7 @@ pub async fn run(args: Vec<String>) -> Result<ExitCode> {
             },
             // Something that is neither a topic nor a command: say so, and not the workflow again.
             None if topic.is_some_and(|topic| !is_topic(topic)) => bail!(
-                "There is no help topic or command named \"{}\". Topics: workflow, input, capture, analysis, patch, page, handoff, sql, testing, loading, security, limits, skills. `scanline --help` lists the commands, and `scanline <command> --help` gives one command's arguments.{}",
+                "There is no help topic or command named \"{}\". Topics: workflow, input, capture, analysis, patch, page, handoff, sql, testing, smoke, loading, security, limits, skills. `scanline --help` lists the commands, and `scanline <command> --help` gives one command's arguments.{}",
                 topic.unwrap_or(""),
                 if matches!(topic, Some("calls" | "commands")) {
                     "\nThe calls of a captured frame are a table: scanline query cap_1 \"select command, method, args from commands where for_draw = 7\"."

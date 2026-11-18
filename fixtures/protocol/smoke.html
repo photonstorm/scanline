@@ -1,0 +1,107 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Smoke fixture</title>
+<style>html, body { margin: 0; background: #111; overflow: hidden; } canvas { display: block; width: 100vw; height: 100vh; touch-action: none; }</style>
+</head>
+<body>
+<canvas id="game" width="320" height="240"></canvas>
+<script>
+// A small game for a smoke test to play (scanline smoke). It counts the input it is given,
+// by kind, and can be told to go wrong in the ways a smoke test should find:
+//
+//   ?broken   at frame 40 it logs a warning, asks for a file that is not there, and throws
+//   ?heavy    it draws 300 quads a frame, not 5
+//   ?stall    it stops asking for frames after frame 30
+//   ?missing  it asks for a file that is not there while it loads
+
+const query = new URLSearchParams(location.search);
+const canvas = document.getElementById('game');
+const gl = canvas.getContext('webgl2', { antialias: false });
+
+const game = window.game = { frame: 0, keys: 0, held: [], mouse: 0, touches: 0, moves: 0, width: innerWidth, x: 160, y: 120, coarse: matchMedia('(pointer: coarse)').matches, points: navigator.maxTouchPoints };
+
+window.__scanline?.state.provide(() => ({ frame: game.frame, keys: game.keys, mouse: game.mouse, touches: game.touches, moves: game.moves, width: game.width, points: game.points, x: Math.round(game.x), y: Math.round(game.y) }));
+
+if (query.has('missing'))
+{
+    fetch('not-there.json').then((response) => response.text());
+}
+
+addEventListener('keydown', (event) => { if (!event.repeat) { game.keys++; } if (!game.held.includes(event.code)) { game.held.push(event.code); } });
+addEventListener('keyup', (event) => { game.held = game.held.filter((code) => code !== event.code); });
+canvas.addEventListener('pointerdown', (event) => { if (event.pointerType === 'mouse') { game.mouse++; } });
+canvas.addEventListener('pointermove', (event) => { if (event.pointerType === 'mouse') { game.moves++; game.x = event.clientX; game.y = event.clientY; } });
+canvas.addEventListener('touchstart', (event) => { game.touches++; event.preventDefault(); }, { passive: false });
+canvas.addEventListener('touchmove', (event) => { game.moves++; game.x = event.touches[0].clientX; game.y = event.touches[0].clientY; }, { passive: false });
+
+const program = gl.createProgram();
+
+for (const [type, source] of [
+    [gl.VERTEX_SHADER, `#version 300 es
+        uniform vec4 uRect;
+        void main () {
+            vec2 corner = vec2(float(gl_VertexID & 1), float((gl_VertexID >> 1) & 1));
+            gl_Position = vec4(uRect.xy + corner * uRect.zw, 0.0, 1.0);
+        }`],
+    [gl.FRAGMENT_SHADER, `#version 300 es
+        precision mediump float;
+        uniform vec4 uTint;
+        out vec4 colour;
+        void main () { colour = uTint; }`]
+])
+{
+    const shader = gl.createShader(type);
+
+    gl.shaderSource(shader, source);
+    gl.compileShader(shader);
+    gl.attachShader(program, shader);
+}
+
+gl.linkProgram(program);
+gl.useProgram(program);
+
+const uRect = gl.getUniformLocation(program, 'uRect');
+const uTint = gl.getUniformLocation(program, 'uTint');
+
+function frame ()
+{
+    game.frame++;
+
+    if (!query.has('stall') || game.frame < 30)
+    {
+        requestAnimationFrame(frame);
+    }
+
+    if (query.has('broken') && game.frame === 40)
+    {
+        console.warn('the larder is nearly empty');
+        new Image().src = 'no-such-sprite.png';
+
+        throw new Error('the player fell through the floor');
+    }
+
+    if (game.held.includes('ArrowLeft')) { game.x -= 2; }
+    if (game.held.includes('ArrowRight')) { game.x += 2; }
+
+    gl.clearColor(0.05, 0.06, 0.1, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+
+    const quads = query.has('heavy') ? 300 : 5;
+
+    for (let i = 0; i < quads; i++)
+    {
+        const t = game.frame * 0.02 + i;
+
+        gl.uniform4f(uRect, Math.sin(t) * 0.7 - 0.05, Math.cos(t * 1.3) * 0.7 - 0.05, 0.1, 0.1);
+        gl.uniform4f(uTint, 0.3 + 0.1 * (i % 5), 0.6, 0.9, 1);
+        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    }
+}
+
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

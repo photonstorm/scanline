@@ -54,7 +54,8 @@ Every milestone of the build plan up to 1.0 has been worked through on macOS (Ap
 - One owner of the input: when the agent takes control, the person's keys and mouse are kept out of the page; when the person has it, the agent may look but not act.
 - Runs: in a deterministic session (seeded random numbers, a fixed time step, a clock that starts from zero) the input a page has received can be saved and played again from a reload, on the same frames. What the page fetched while it ran is kept too, and given again on the frames it first arrived on. A fingerprint of the frame every 30 frames is checked against the original, and the replay stops where they first differ. Stepping and replay can run without waiting for the display: two minutes of play replays in about six seconds.
 - Waiting until a page is ready: the page says so through the page protocol (`__scanline.loading()` and `ready()`, in `packages/scanline-hooks`), or Scanline takes it as ready when its loading goes quiet (requests, decoding, shaders building in the background). `launch --wait ready` answers then and says how long it took; `run_until` can wait for it later. In a deterministic session the page loads before its time is held and frames count from when it is ready, so a run recorded on a page that loads assets plays again exactly; a replay also puts back the storage and cookies the recorded page found. `scanline help loading`.
-- Console, uncaught errors and browser GPU warnings, each with its frame.
+- A smoke test in one command: `scanline smoke <url>` opens the page headless and deterministic, waits until it is ready, plays it for some seconds by a seeded random rule (keys, taps and drags, by touch for `--phone`), and reports errors and warnings with their frames, every failed request with its status and address, draws and CPU and GPU time with the worst frame, and pictures along the way. It exits 2 on an error, a failed request or a broken budget. Also a tool over MCP. `scanline help smoke`.
+- Console, uncaught errors and browser GPU warnings, each with its frame. A failed request's line names its address, and `console --requests` lists them with their status.
 - The host survives the GPU process or the whole browser being killed, and says what happened.
 
 **Not built**
@@ -215,6 +216,14 @@ The commands are the same. Three things differ in a Windows shell:
 - **The host's lifetime.** The first command starts the host in the background, and it outlives the terminal. A terminal or agent client that kills everything it started when a command ends takes the host with it; run `scanline serve` in a window of its own to keep one.
 
 ## Use it in a test run
+
+The quickest check is one command, which exits 0 or 2:
+
+```bash
+scanline smoke http://localhost:5173 --seconds 30 --max_draws 300
+```
+
+For checks of your own, a session a step at a time:
 
 ```bash
 scanline launch http://localhost:5173 --headless --paused --deterministic

@@ -47,7 +47,9 @@ export function installPolicy (): void
         return {
             frame: currentFrame(),
             keys_down: G.Array.isArray(answer.keys_down) ? answer.keys_down.slice(0, 16).map((key: unknown) => G.String(key)) : undefined,
-            events: G.Array.isArray(answer.events) ? plain(answer.events.slice(0, 16)) : undefined,
+            // Each event is copied by itself, so that a touch's points (an object in a list in
+            // the event) are not past the depth a copy goes to.
+            events: G.Array.isArray(answer.events) ? answer.events.slice(0, 16).map((event: unknown) => plain(event)) : undefined,
             stop: answer.stop ? true : undefined,
             log: answer.log === undefined ? undefined : plain(answer.log)
         };

@@ -634,6 +634,24 @@ What was not done: pinning each asynchronous completion (an image's load, a deco
 
 Tested: `tests/protocol.test.mjs`, "waiting until a page is ready" (5 tests) and "replays that hold across loading" (3): a run recorded on the fixture with a drag between whole pixels and keys replays three times with all 5 fingerprints matching and the page's own state the same; two fresh launches given the same input draw the same frames; a run recorded by a returning visitor is replayed as one after the storage has been emptied. On the game: a 600-frame run with a drag and four key presses replayed three times with all 20 fingerprints matching.
 
+### A smoke test in one command
+
+`smoke(url)` (`crates/scanline-core/src/smoke.rs`, `scanline help smoke`) is made of the commands an agent would call by hand, and calls them: `launch` (headless, deterministic, `wait: "ready"`), `policy` for the play, `console`, `stats` and `screenshot` between stretches of it, `save_run`, `close`. It is on the command line (exit 2 on failure, as `assert` and `run_until` are) and a tool over MCP like the rest. What it needed that was not there:
+
+- **Failed requests with their address and status.** The host now follows the browser's network events for the page: a response with a status of 400 or more, and a request that got no answer, are kept with the method, the address, the status or the error, and the frame. `console(requests: true)` lists them in any session. A console line of the browser's about a request ("Failed to load resource: … 404") now ends with the address, which the browser gives beside the text and Scanline had dropped. A missing `favicon.ico` is not counted: a browser asks for one unprompted.
+- **The worst frame, and which it was.** `stats` gave means and maxima; the probe now also says which frame had the most CPU time, GPU time, draws, triangles and calls. The play is cut into stretches of at most 600 frames, because that is how many frames of each the probe keeps, so nothing of a long play is lost; lines logged are given their frames at the end of each stretch for the same reason.
+- **A phone from the first script.** `launch(mobile: true)` sets the size, the pixel ratio, touch and "mobile" before the page is loaded. `emulate` did this only to a page already open, which then saw itself resized.
+- **A policy's touch events.** An event a policy returned was copied to a depth that left a touch's points as the text "[object Object]", and the host then read them as (0, 0). They are copied whole now, and a touch point takes its event's `space` where it names none (a replayed touch was converted as canvas pixels for the same reason).
+- **A fault in the host is an answer.** The first run of `smoke` hit that touch fault as a panic in the host, and the command line waited for ever for a reply that was not coming. A command now runs on a task of its own, and a panic in it is reported to the caller as a fault of Scanline's, with where the log is.
+
+The rule the play goes by is fixed and Scanline's own: none, one or two keys held for 4 to 44 frames at a time, and every 5 to 55 frames a tap or a drag somewhere in the page, by mouse or by one finger, from a generator seeded apart from the page's. It reads the page's width and height and nothing else, so `smoke` is in the control tier and not the patch tier (`docs/SECURITY.md`). A caller cannot give it a rule of their own: that is `policy`, with `launch` before it.
+
+It fails on: an error logged or thrown, a failed request, a page that did not finish loading in the time allowed (it is played all the same), a page that stopped drawing or could not be played to the end, and a budget broken (`max_draws`, `max_triangles`, `max_calls` against the worst frame; `max_cpu_ms`, `max_gpu_ms` against the mean, as `assert` has them). Warnings are listed and do not fail it.
+
+Measured on the game: 30 s of play as a phone (1,800 frames, 498 touch events) took 24.9 s with a debug build, and passed with nothing logged and nothing failed.
+
+Tested: `tests/protocol.test.mjs`, "a smoke test" (6 tests) on `fixtures/protocol/smoke.html`, a small game that counts its input and can be told to throw, to ask for files that are not there, to draw 300 quads a frame, or to stop: a healthy page passes and its play replays; the same seed gives the same input and pictures and another seed others; errors and failed requests carry their frames and addresses and the exit is 2; budgets; a stall; a phone played by touch. `tests/security.test.mjs` checks the tier and the MCP tool.
+
 ## Known gaps in what is built
 
 - Unlabelled WebGPU objects are not given generated labels, which the specification lists as a modification. They are named by handle in results instead.

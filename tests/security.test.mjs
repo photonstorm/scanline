@@ -383,6 +383,7 @@ describe('tiers: switched off', () =>
             [['pause'], /control tier/],
             [['input', '--events', '[{"type":"key","key":"a"}]'], /control tier/],
             [['request_human', 'play'], /control tier/],
+            [['smoke', server.url('fixtures/bugs/b00.html')], /smoke is in the control tier/],
             [['page', 'set_control', '--id', 'x', '--value', '1'], /control tier/],
             [['eval', '1 + 1'], /patch-and-evaluate tier/],
             [['patch_draws', '--filter', '{"draws":[0]}'], /patch-and-evaluate tier/],
@@ -594,6 +595,7 @@ describe('MCP over loopback HTTP', () =>
         const tools = await post(auth, { jsonrpc: '2.0', id: 2, method: 'tools/list' });
 
         assert.ok(tools.json.result.tools.some((tool) => tool.name === 'gfx_launch'));
+        assert.ok(tools.json.result.tools.some((tool) => tool.name === 'gfx_smoke'), 'the smoke test is a tool like the rest');
 
         const called = await post(auth, { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'gfx_sessions', arguments: {} } });
 

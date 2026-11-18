@@ -48,6 +48,7 @@ pub const TOOLS: &[Tool] = &[
             r#""display": { "type": "string", "enum": ["window", "app", "headless"], "description": "window: a browser window (default, or SCANLINE_DISPLAY). app: the Scanline app, with the game and its panels in one window. headless: no window." }"#,
             r#""viewport": { "type": "object", "properties": { "width": { "type": "integer" }, "height": { "type": "integer" } } }"#,
             r#""dpr": { "type": "number", "description": "Device pixel ratio to emulate." }"#,
+            r#""mobile": { "type": "boolean", "description": "As a phone or tablet from the page's first script: touch (maxTouchPoints 5) and the viewport meta tag applied. Give viewport and dpr with it." }"#,
             r#""profile": { "type": "string", "enum": ["stock", "deep", "software", "native-capture"], "description": "stock: as users get it. deep: WebGPU developer features. software: software rasteriser. native-capture: GPU sandbox off, for attaching Xcode's Metal debugger or RenderDoc; the person must allow it." }"#,
             r#""deterministic": { "description": "true, or {\"seed\": 1, \"fixed_dt\": 16.667}: seeded random numbers and a fixed time step, so runs repeat." }"#,
             r#""wait": { "type": "string", "enum": ["ready", "none"], "description": "ready: let the page finish loading first (it says so, or its loading goes quiet), then answer; with start paused or deterministic, time is held from there and frames count from there. none: answer at once, and hold time from the page's first instant. Default: ready when deterministic is set, none otherwise." }"#,
@@ -57,6 +58,33 @@ pub const TOOLS: &[Tool] = &[
             r#""debug_key": { "type": "string", "description": "The key the person presses to freeze and capture. Default F9; \"none\" for no key." }"#,
             r#""pointer_lock": { "type": "string", "enum": ["native", "shim", "app"], "description": "shim: Scanline grants pointer lock itself and delivers relative mouse moves ({\"pointer\": \"move\", \"dx\": 12, \"dy\": -3}), for games played by mouse-look. app: the page's request goes to the browser first, and Scanline grants it when the browser refuses one made with a gesture (what a session shown in the Scanline app has). Default native." }"#,
             r#""strip": { "type": "boolean", "description": "Open the control strip under the game's window at once. Default: it opens when request_human is called." }"#,
+        ),
+        read_only: false,
+    },
+    Tool {
+        name: "smoke",
+        description: "A smoke test in one call: opens the page headless and deterministic, waits until it has loaded, plays it for some seconds by a seeded random rule (keys, taps and drags; touch for a phone), then reports errors and warnings with their frames, every failed request with its address and status, draws and CPU and GPU time with the worst frame, and pictures along the way. Fails on errors, failed requests or a budget.",
+        schema: schema!(
+            r#"["url"]"#,
+            r#""url": { "type": "string", "description": "A URL, or a path to a local HTML file." }"#,
+            r#""seconds": { "type": "number", "description": "How long to play, in seconds of game time (60 frames each). Default 20, at most 600." }"#,
+            r#""seed": { "type": "integer", "description": "Seeds the page's random numbers and the input. The same seed plays the same game. Default 1." }"#,
+            r#""phone": { "type": "boolean", "description": "As a phone: 390×844 at a pixel ratio of 3, touch input, the page's viewport meta tag applied." }"#,
+            r#""viewport": { "type": "object", "properties": { "width": { "type": "integer" }, "height": { "type": "integer" } } }"#,
+            r#""dpr": { "type": "number", "description": "Device pixel ratio to emulate." }"#,
+            r#""touch": { "type": "boolean", "description": "Taps and drags as one finger, not the mouse. Default: as phone." }"#,
+            r#""keys": { "type": "array", "items": { "type": "string" }, "description": "The keys the rule may hold. Default: the arrows, Space, Enter, Z, X and WASD. [] for none." }"#,
+            r#""shots": { "type": "integer", "description": "Pictures of the page, spread from the start to the end. Default 4, at most 12; 0 for none." }"#,
+            r#""max_draws": { "type": "number", "description": "Budget: most draws in any frame." }"#,
+            r#""max_triangles": { "type": "number" }"#,
+            r#""max_calls": { "type": "number", "description": "Budget: most graphics API calls in any frame." }"#,
+            r#""max_cpu_ms": { "type": "number", "description": "Budget: mean CPU time a frame in frame callbacks." }"#,
+            r#""max_gpu_ms": { "type": "number", "description": "Budget: mean GPU time a frame." }"#,
+            r#""keep": { "type": "boolean", "description": "Leave the session open, paused where the play ended, to look closer. Default: it is closed." }"#,
+            r#""headless": { "type": "boolean", "description": "Default true. false shows the play in a window." }"#,
+            r#""ready_timeout_s": { "type": "number", "description": "How long the page may take to load. Default 30." }"#,
+            r#""timeout_s": { "type": "number", "description": "Real seconds allowed in all. Default six times seconds, at least 90." }"#,
+            r#""profile": { "type": "string", "enum": ["stock", "deep", "software"] }"#,
         ),
         read_only: false,
     },
@@ -179,6 +207,7 @@ pub const TOOLS: &[Tool] = &[
             r#""level": { "type": "string", "enum": ["all", "warning", "error"], "description": "warning includes errors. Default all." }"#,
             r#""since": { "type": "integer", "description": "Only lines after this cursor (the \"next\" of an earlier call)." }"#,
             r#""limit": { "type": "integer", "description": "Default 25, most recent first to be kept." }"#,
+            r#""requests": { "type": "boolean", "description": "List instead the requests that failed or were answered with an error status, each with its address, status and frame." }"#,
         ),
         read_only: true,
     },
@@ -910,7 +939,7 @@ pub const TOOLS: &[Tool] = &[
         description: "How to use Scanline: the workflow, input events, and what is not built yet, by topic; or a whole skill, the recipe for one kind of job (a wrong pixel, a slow frame, growing memory, working with the person, playing a game). Matches this version exactly.",
         schema: schema!(
             "[]",
-            r#""topic": { "type": "string", "enum": ["workflow", "input", "capture", "analysis", "patch", "page", "handoff", "sql", "testing", "loading", "security", "limits", "skills"] }"#,
+            r#""topic": { "type": "string", "enum": ["workflow", "input", "capture", "analysis", "patch", "page", "handoff", "sql", "testing", "smoke", "loading", "security", "limits", "skills"] }"#,
             r#""skill": { "type": "string", "enum": ["scanline", "scanline-wrong-pixels", "scanline-slow-frame", "scanline-memory", "scanline-with-a-person", "scanline-play", "scanline-debuggable-rendering"], "description": "Print this skill instead of a topic." }"#,
         ),
         read_only: true,
@@ -996,8 +1025,8 @@ Sending a frame to someone: export(capture) writes it to one file; import(path) 
 A whole recipe for one kind of job (a wrong pixel, a slow frame, growing memory, working
 with the person, playing a game): help(topic: \"skills\") lists them, help(skill: \"…\") prints one.
 
-See help(topic: \"input\") for playing a game, help(topic: \"testing\") for checking a page
-in a test run, help(topic: \"loading\") for when a page is ready, help(topic: \"security\") for what you may
+See help(topic: \"input\") for playing a game, help(topic: \"smoke\") for a smoke test in one
+call, help(topic: \"testing\") for checking a page in a test run, help(topic: \"loading\") for when a page is ready, help(topic: \"security\") for what you may
 do, and help(topic: \"limits\") for what is not built.";
 
 const INPUT: &str = "\
@@ -1609,8 +1638,59 @@ A replay starts where the recording started
   loaded the pointer is put off the page and held keys and buttons are let go, so the
   first mouse move is the same distance every time.";
 
+const SMOKE: &str = "\
+A smoke test: does the page load, play and stay healthy?
+
+  smoke(url)                              from a shell: scanline smoke http://localhost:8080
+  smoke(url, seconds: 30, seed: 7)        longer, and another game
+  smoke(url, phone: true)                 390×844 at a pixel ratio of 3, played by touch
+  smoke(url, max_draws: 300, max_cpu_ms: 4)   with budgets
+
+One call does what you would do by hand, with the same commands:
+  1. launch, headless and deterministic, and wait until the page is ready
+     (help(topic: \"loading\")). What it logged and failed to fetch while loading counts.
+  2. policy: play for `seconds` of game time (60 frames each, however long they take) by a
+     seeded random rule, sent as real input. The rule holds none, one or two keys for 4 to
+     44 frames at a time (the arrows, Space, Enter, Z, X and WASD unless keys says
+     otherwise), and every 5 to 55 frames taps or drags somewhere in the page, by mouse or,
+     with phone or touch, by one finger. The same seed plays the same game every time.
+  3. console, stats, screenshot as it goes, and save_run at the end.
+  4. close, unless keep: true leaves the session open, paused where the play ended.
+
+The report
+  Loaded      how long loading took, and how Scanline knew it was over
+  Played      frames, real time, and how much input of each kind
+  Errors and warnings   each different line once, with its frame (or \"while loading\") and
+              how often
+  Failed requests       every request that got no answer or an error status: the status,
+              the method, the address and the frame
+  A frame     draws, triangles and API calls: the mean, and the worst frame and which it was
+  Time        CPU in frame callbacks and GPU time: the mean, the worst frame and which
+  PASS / FAIL for each budget asked for (max_draws, max_triangles, max_calls: the worst
+              frame; max_cpu_ms, max_gpu_ms: the mean)
+  Pictures    of the page as composited, spread from the first frame to the last
+              (shots: n, default 4)
+  run_N       the play, kept: replay_run gives it again to a changed page
+
+It FAILS, and from a shell exits 2, when the page logged an error or threw, a request
+failed, the page did not finish loading in time, stopped drawing (nothing scheduled) or
+could not be played to the end, or a budget was broken. Warnings are listed and do not
+fail it. A missing favicon is not counted.
+
+What it is not: a player. Random input finds crashes, missing files and frames that cost
+too much; it does not get far into a game. For that, play with step and policy, keep a
+take, and give smoke's budgets to assert. GPU time is real time on a machine that may be
+busy: give a GPU budget room.
+
+Related: console(requests: true) lists failed requests in any session;
+launch(mobile: true) starts any session as a phone.";
+
 const TESTING: &str = "\
 Checking a page in a test run
+
+The quickest check is one command: smoke(url) opens the page, plays it for a while by
+random input and fails on errors, failed requests or a broken budget.
+help(topic: \"smoke\"). What follows is for checks of your own.
 
 assert checks the running page against what it should be, and says pass or FAIL for each
 thing asked. From a shell it exits 2 when anything fails, so a test script needs nothing
@@ -1653,6 +1733,7 @@ pub fn help(topic: Option<&str>) -> String {
         Some("sql") => SQL.to_string(),
         Some("testing" | "ci" | "assert") => TESTING.to_string(),
         Some("loading" | "ready") => LOADING.to_string(),
+        Some("smoke") => SMOKE.to_string(),
         Some("limits") => LIMITS.to_string(),
         Some("security") => SECURITY.to_string(),
         Some("skills") => {

@@ -385,8 +385,36 @@ function boot (): void
             };
         }
 
+        // The worst frame of each kind, and which it was.
+        const worst = (values: number[], frames: number[]): { frame: number; value: number } | null =>
+        {
+            let at = -1;
+
+            for (let i = 0; i < values.length; i++)
+            {
+                if (at < 0 || values[i] > values[at])
+                {
+                    at = i;
+                }
+            }
+
+            return at < 0 ? null : { frame: frames[at], value: values[at] };
+        };
+
+        const frameOf = timing.map((sample) => sample.frame);
+        // The counters' rows are the last of the frames timed.
+        const countedFrames = frameOf.slice(-counted.length);
+        const measured = gpuSamples(FRAMES).filter((sample) => timing.length > 0 && sample.frame >= timing[0].frame);
+
         return {
             frames: timing.length,
+            worst: {
+                cpu: worst(timing.map((sample) => sample.cpu), frameOf),
+                gpu: worst(measured.map((sample) => sample.ms), measured.map((sample) => sample.frame)),
+                draws: worst(counted.map((frame) => frame.draws), countedFrames),
+                triangles: worst(counted.map((frame) => frame.triangles), countedFrames),
+                calls: worst(counted.map((frame) => frame.calls), countedFrames)
+            },
             firstFrame: timing.length ? timing[0].frame : null,
             lastFrame: timing.length ? timing[timing.length - 1].frame : null,
             // Real milliseconds, measured in the page: provenance cpu-measured.
