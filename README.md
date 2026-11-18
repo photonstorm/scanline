@@ -53,6 +53,7 @@ Every milestone of the build plan up to 1.0 has been worked through on macOS (Ap
 - A release archive: `npm run package` builds the one binary (the probe, the replay page and the skills are inside it) and packs it with an install script. `scanline browser install` fetches the pinned Chrome for Testing; `--dry-run` says what it would do.
 - One owner of the input: when the agent takes control, the person's keys and mouse are kept out of the page; when the person has it, the agent may look but not act.
 - Runs: in a deterministic session (seeded random numbers, a fixed time step, a clock that starts from zero) the input a page has received can be saved and played again from a reload, on the same frames. What the page fetched while it ran is kept too, and given again on the frames it first arrived on. A fingerprint of the frame every 30 frames is checked against the original, and the replay stops where they first differ. Stepping and replay can run without waiting for the display: two minutes of play replays in about six seconds.
+- Waiting until a page is ready: the page says so through the page protocol (`__scanline.loading()` and `ready()`, in `packages/scanline-hooks`), or Scanline takes it as ready when its loading goes quiet (requests, decoding, shaders building in the background). `launch --wait ready` answers then and says how long it took; `run_until` can wait for it later. In a deterministic session the page loads before its time is held and frames count from when it is ready, so a run recorded on a page that loads assets plays again exactly; a replay also puts back the storage and cookies the recorded page found. `scanline help loading`.
 - Console, uncaught errors and browser GPU warnings, each with its frame.
 - The host survives the GPU process or the whole browser being killed, and says what happened.
 
@@ -231,7 +232,7 @@ scanline assert --baseline tests/baselines/title.png --no_errors --max_draws 200
 scanline stop
 ```
 
-The first run, with `--update` added to `assert`, saves the baseline. After that `assert` exits 0 when everything holds and 2 when anything fails, with a picture of where the canvas differs. `scanline help testing` says more.
+The launch answers once the page has finished loading (a deterministic session waits for that, and counts its frames from there), so `step 120` is 120 frames of the game however long its loading took. The first run, with `--update` added to `assert`, saves the baseline. After that `assert` exits 0 when everything holds and 2 when anything fails, with a picture of where the canvas differs. `scanline help testing` says more.
 
 ## Use it from an agent
 

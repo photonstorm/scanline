@@ -56,6 +56,10 @@ pub(crate) fn reset(session: &Session) {
     // Until the new document's probe says hello there is no page to hold: the old one is
     // on its way out and would not answer.
     state.net_loading = true;
+
+    // And what was in flight, and whether the page was ready, were the last document's.
+    state.net_flight.clear();
+    state.ready = None;
 }
 
 /// Whether a page load is under way and its probe is not there yet.
@@ -174,6 +178,12 @@ async fn hand_over(session: &Arc<Session>, method: &str, params: Value) -> u64 {
     };
 
     let _ = send().await;
+
+    // A page that is still loading has no frames for this to fall between: it is handed
+    // over as it comes, at frame 0.
+    if held["loading"] == true {
+        return 0;
+    }
 
     settle(session).await;
 

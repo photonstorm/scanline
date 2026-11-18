@@ -40,7 +40,8 @@ export function patch (target: any, name: string, make: (native: Fn) => Fn): Fn 
     }
 
     const native: Fn = descriptor.value;
-    const wrapper = disguise(make(native), native);
+    // A function wrapped a second time still reads as the browser's own, not as the first wrapper.
+    const wrapper = disguise(make(native), originals.get(native) ?? native);
 
     nDefineProperty(owner, name, { ...descriptor, value: wrapper });
 

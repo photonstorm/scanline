@@ -7,7 +7,7 @@
 //
 // Everything here is a GPU readback of what the page drew: provenance `gpu-measured`.
 
-import { currentFrame, isPaused, onFrameBegin, onFrameEnd, requestGrab } from './clock/gate';
+import { currentFrame, isLoading, isPaused, onFrameBegin, onFrameEnd, requestGrab } from './clock/gate';
 import { config } from './config';
 import { allContexts, contextById, type ContextInfo } from './contexts';
 import { natives } from './hooks/install';
@@ -410,7 +410,7 @@ export function installImage (): void
         const info = printEvery > 0 ? printedContext() : undefined;
         const draws = info ? info.record.draws : 0;
         const calls = info ? info.record.calls : 0;
-        const due = printEvery > 0 && currentFrame() % printEvery === 0;
+        const due = printEvery > 0 && !isLoading() && currentFrame() % printEvery === 0;
 
         if (keep || grabWaiters.length || due)
         {

@@ -50,6 +50,8 @@ pub const TOOLS: &[Tool] = &[
             r#""dpr": { "type": "number", "description": "Device pixel ratio to emulate." }"#,
             r#""profile": { "type": "string", "enum": ["stock", "deep", "software", "native-capture"], "description": "stock: as users get it. deep: WebGPU developer features. software: software rasteriser. native-capture: GPU sandbox off, for attaching Xcode's Metal debugger or RenderDoc; the person must allow it." }"#,
             r#""deterministic": { "description": "true, or {\"seed\": 1, \"fixed_dt\": 16.667}: seeded random numbers and a fixed time step, so runs repeat." }"#,
+            r#""wait": { "type": "string", "enum": ["ready", "none"], "description": "ready: let the page finish loading first (it says so, or its loading goes quiet), then answer; with start paused or deterministic, time is held from there and frames count from there. none: answer at once, and hold time from the page's first instant. Default: ready when deterministic is set, none otherwise." }"#,
+            r#""ready_timeout_s": { "type": "number", "description": "How long the page is given to finish loading before it is taken as ready as it stands. Default 30." }"#,
             r#""level": { "type": "string", "enum": ["off", "observe"], "description": "off: hooks pass straight through. Default observe." }"#,
             r#""unmodified": { "type": "boolean", "description": "Change nothing the page can observe. Some readbacks stop working." }"#,
             r#""debug_key": { "type": "string", "description": "The key the person presses to freeze and capture. Default F9; \"none\" for no key." }"#,
@@ -105,7 +107,7 @@ pub const TOOLS: &[Tool] = &[
         schema: schema!(
             r#"["until"]"#,
             session!(),
-            r#""until": { "type": "object", "description": "One of {\"frame\": n}, {\"frames\": n}, {\"ms\": n}, {\"expr\": \"game.level === 2\"}, {\"error\": true}, {\"frame_ms_over\": n}." }"#,
+            r#""until": { "type": "object", "description": "One of {\"ready\": true} (the page has finished loading), {\"frame\": n}, {\"frames\": n}, {\"ms\": n}, {\"expr\": \"game.level === 2\"}, {\"error\": true}, {\"frame_ms_over\": n}." }"#,
             r#""timeout_s": { "type": "number", "description": "Real seconds to wait. Default 30, at most 45." }"#,
             observe!(),
         ),
@@ -908,7 +910,7 @@ pub const TOOLS: &[Tool] = &[
         description: "How to use Scanline: the workflow, input events, and what is not built yet, by topic; or a whole skill, the recipe for one kind of job (a wrong pixel, a slow frame, growing memory, working with the person, playing a game). Matches this version exactly.",
         schema: schema!(
             "[]",
-            r#""topic": { "type": "string", "enum": ["workflow", "input", "capture", "analysis", "patch", "page", "handoff", "sql", "testing", "security", "limits", "skills"] }"#,
+            r#""topic": { "type": "string", "enum": ["workflow", "input", "capture", "analysis", "patch", "page", "handoff", "sql", "testing", "loading", "security", "limits", "skills"] }"#,
             r#""skill": { "type": "string", "enum": ["scanline", "scanline-wrong-pixels", "scanline-slow-frame", "scanline-memory", "scanline-with-a-person", "scanline-play", "scanline-debuggable-rendering"], "description": "Print this skill instead of a topic." }"#,
         ),
         read_only: true,
@@ -957,11 +959,14 @@ Principles
 Time
   pause / resume(time_scale) / step(frames) / run_until(until: {expr: \"…\"})
   A stepped frame is exactly 1/60 s of page time, whatever the real time taken.
+  A page that is still loading: launch(url, wait: \"ready\") answers when it has loaded, and
+  run_until(until: {ready: true}) waits later. help(topic: \"loading\").
   requestAnimationFrame, performance.now, Date and timers all read one clock.
   step(frames: 600, fast: true) does not wait for the display: ten seconds of play in under one.
 
 Getting back to where the bug is
-  launch(url, deterministic: true)       seeded random numbers, a fixed step, a clock from zero
+  launch(url, deterministic: true)       seeded random numbers, a fixed step, a clock from zero;
+                                         the page loads first, and frames count from when it is ready
   … play, by step or by the person …
   save_run()                             the input so far, by frame: run_1
   replay_run(run: \"run_1\")             reload and play it again, fast; pause where it ended
@@ -992,7 +997,7 @@ A whole recipe for one kind of job (a wrong pixel, a slow frame, growing memory,
 with the person, playing a game): help(topic: \"skills\") lists them, help(skill: \"…\") prints one.
 
 See help(topic: \"input\") for playing a game, help(topic: \"testing\") for checking a page
-in a test run, help(topic: \"security\") for what you may
+in a test run, help(topic: \"loading\") for when a page is ready, help(topic: \"security\") for what you may
 do, and help(topic: \"limits\") for what is not built.";
 
 const INPUT: &str = "\
@@ -1183,6 +1188,20 @@ Known limits
     moment as each goes in. A response over 24 MB is not kept. What a worker fetches, and
     anything that arrives by WebSocket, is not kept. A deterministic session reads the
     canvas back every 30th frame to fingerprint it.
+  - A run holds across a page's loading because frames count from when the page is ready
+    (help(topic: \"loading\")), and holds only as far as that is right. \"Its loading went
+    quiet\" is a guess from the work Scanline follows: it does not follow what a worker
+    loads, a media element (audio, video) buffering, IndexedDB, or a WebSocket, and a page
+    that goes on loading after it looks quiet (sound fetched on the first click, a level
+    streamed in) does that work on the frames, where a decode or a compile still takes a
+    different number of frames each time. Its requests are kept and given again on their
+    frames; what the page does with them afterwards is not pinned. A page that says ready()
+    itself, after such work, is exact. What a page did in frames it ran while loading
+    (counting them, moving by a fixed amount each) differs from run to run.
+  - A replay puts back localStorage, sessionStorage and cookies as the recorded page found
+    them. IndexedDB and the Cache API are emptied when the recording began in a new
+    browser, and otherwise left as they are. Event time stamps, document.timeline and Web
+    Audio's clock are real time in every session.
   - fast stepping and replay do not present the canvas after every frame. A page that
     relies on the browser clearing its drawing buffer between frames, instead of clearing it
     itself, draws over its last frame.
@@ -1447,6 +1466,9 @@ reads «main / opaque / Floor».
                                                   save the game's state and put it back
   page(call: \"time\", action: \"pause\")           the engine's own time control
 
+A page says when it has loaded with __scanline.loading() as it starts and
+__scanline.ready() when it is about to play: help(topic: \"loading\").
+
 In a capture
   pass_tree(capture)                              the frame as the groups that were named
   draw_list(capture, filter: \"path LIKE 'main%'\")  one group's events
@@ -1528,6 +1550,65 @@ A recorded frame is replayed from the start of the recording, so the later the f
 longer its questions take. Only the frozen frame has a picture from the page to check the
 replay against; the others say so and rest on that one check.";
 
+const LOADING: &str = "\
+When a page is ready, and what happens before it is
+
+A page that is still loading (fetching, decoding pictures and sound, building shaders) is
+not yet the game. Scanline tells when it is ready in one of two ways:
+
+  the page says so      __scanline.loading() as it starts (\"I will say when\"), then
+                        __scanline.ready() when it has loaded and is about to play. The
+                        scanline-hooks package has both. This is exact.
+  its loading goes quiet  for a page that says nothing: no request in flight (the page's
+                        own, and scripts and modules as the browser reports them), no
+                        response body being read, no image, sound, bitmap, font or
+                        WebAssembly still decoding, no shader still building in the
+                        background, WebGPU set up, the document loaded, and all of that for
+                        150 ms. It is a guess, and status says which it went by.
+
+Waiting for it
+  launch(url, wait: \"ready\")             answer once the page is ready, and say how long it took
+  launch(url, deterministic: true)       waits by default (wait: \"none\" not to)
+  run_until(until: {ready: true})        wait later, in any session; pauses there
+  status()                               \"Ready 1.36 s after the page began to load (…)\", or
+                                         \"Still loading after 2.1 s: waiting on 2 requests (…)\"
+  launch(url, ready_timeout_s: 60)       how long loading may take (default 30) before the
+                                         page is taken as ready as it stands, with a warning
+                                         that names what was still in flight
+  An event named ready is queued when it happens: events(), wait(kinds: [\"ready\"]).
+
+Where time is held: frames count from ready
+  In a deterministic session, and in one started paused with wait: \"ready\", the page loads
+  before its time is held. Until it is ready the clock stands still (page time 0), no frame
+  is counted, and from the first sign of loading work the page's frame callbacks and timers
+  run on real time so that it can finish. Then the start line is drawn: that is frame 0,
+  Math.random starts again from the seed, timers still waiting start again from their whole
+  delay, and from there the page only moves when it is stepped or run. step, run_until and
+  policy wait for the line, so there is no polling: the first step is the game's first frame.
+
+  This is what lets a run repeat. How many frames a page needs to load differs every time,
+  so frames counted from the page's first instant land its loading on different frames in
+  every run. Counted from ready, the same input gives the same frames.
+
+  What the page did in the frames it ran while loading is its own: a page that counts its
+  frames, or moves something by a fixed amount each frame, during loading, starts from a
+  slightly different place each time. One that goes by time does not (time stood still).
+  Start the game's loop after loading, or say ready() yourself at the right moment.
+
+Paused and not waiting (start: \"paused\" alone)
+  Time is held from the page's first instant, as it always was: the first step is the
+  page's first frame, which is what you want when the bug is in start-up. A page that needs
+  frames or timers to load does not finish loading until it is stepped; step says so when
+  there is nothing to step and the page is still loading.
+
+A replay starts where the recording started
+  save_run keeps, with the input and the fingerprints: what the network gave the page,
+  what the page found in localStorage, sessionStorage and its cookies when it loaded, and
+  whether the browser was new. replay_run puts those back before it reloads, so a page
+  that remembers its player is not a returning visitor in the replay. Before any page is
+  loaded the pointer is put off the page and held keys and buttons are let go, so the
+  first mouse move is the same distance every time.";
+
 const TESTING: &str = "\
 Checking a page in a test run
 
@@ -1551,7 +1632,8 @@ picture of where it differs, and names both.
 
 For a run that gives the same picture every time
   launch(url, headless: true, start: \"paused\", deterministic: true)
-      a fixed clock, fixed random numbers and frames that only advance when stepped
+      a fixed clock, fixed random numbers and frames that only advance when stepped. The
+      page loads first: frame 0 is when it is ready (help(topic: \"loading\"))
   step(frames: 120)          to the frame the baseline was taken at, the same number each run
   assert(...)
   scanline stop              when the script has finished
@@ -1570,6 +1652,7 @@ pub fn help(topic: Option<&str>) -> String {
         Some("capture") => CAPTURE.to_string(),
         Some("sql") => SQL.to_string(),
         Some("testing" | "ci" | "assert") => TESTING.to_string(),
+        Some("loading" | "ready") => LOADING.to_string(),
         Some("limits") => LIMITS.to_string(),
         Some("security") => SECURITY.to_string(),
         Some("skills") => {

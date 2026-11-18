@@ -4,9 +4,24 @@ import { patch } from './masquerade';
 import { declare } from './mods';
 import { G } from './natives';
 
+let restart: () => void = () => undefined;
+
+// The sequence starts again from the seed. Done when a page is ready (ready.ts), so that what
+// it drew from the sequence while it loaded, which can differ from run to run, does not
+// change what it draws afterwards.
+export function reseedRandom (): void
+{
+    restart();
+}
+
 export function installSeededRandom (seed: number): void
 {
     let state = seed >>> 0;
+
+    restart = () =>
+    {
+        state = seed >>> 0;
+    };
 
     // mulberry32: small, fast, and good enough for games. Not for cryptography, which a
     // deterministic debugging session does not need.

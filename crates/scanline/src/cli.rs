@@ -495,7 +495,11 @@ pub async fn run(args: Vec<String>) -> Result<ExitCode> {
         // A command's name is a topic too.
         let topic = parsed.params["topic"].as_str();
         let is_topic = |topic: &str| {
-            ["workflow", "input", "capture", "analysis", "patch", "page", "handoff", "sql", "testing", "security", "limits", "skills", "help"].contains(&topic)
+            [
+                "workflow", "input", "capture", "analysis", "patch", "page", "handoff", "sql", "testing", "loading", "ready", "security", "limits", "skills",
+                "help",
+            ]
+            .contains(&topic)
         };
         let text = match topic.filter(|topic| !is_topic(topic)).and_then(|topic| command_usage(&topic.replace('-', "_"))) {
             Some(usage) => usage,
@@ -511,7 +515,7 @@ pub async fn run(args: Vec<String>) -> Result<ExitCode> {
             },
             // Something that is neither a topic nor a command: say so, and not the workflow again.
             None if topic.is_some_and(|topic| !is_topic(topic)) => bail!(
-                "There is no help topic or command named \"{}\". Topics: workflow, input, capture, analysis, patch, page, handoff, sql, testing, security, limits, skills. `scanline --help` lists the commands, and `scanline <command> --help` gives one command's arguments.{}",
+                "There is no help topic or command named \"{}\". Topics: workflow, input, capture, analysis, patch, page, handoff, sql, testing, loading, security, limits, skills. `scanline --help` lists the commands, and `scanline <command> --help` gives one command's arguments.{}",
                 topic.unwrap_or(""),
                 if matches!(topic, Some("calls" | "commands")) {
                     "\nThe calls of a captured frame are a table: scanline query cap_1 \"select command, method, args from commands where for_draw = 7\"."

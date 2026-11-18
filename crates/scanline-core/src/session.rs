@@ -197,6 +197,20 @@ pub struct State {
     pub annotating_frame: u64,
     pub checkpoints: HashMap<String, (String, u64)>,
     pub next_checkpoint: u64,
+    /// What the page's probe said when the page was ready (probe/src/ready.ts): why, and how
+    /// long after the document began. None while the page loads.
+    pub ready: Option<Value>,
+    /// What the page's storage held as its document began (its probe's first word), the
+    /// cookies its address had just before it was loaded, and how many documents the session
+    /// has loaded in its top frame. A run starts from these when it is played again (runs.rs).
+    pub load_storage: Value,
+    pub load_cookies: Value,
+    pub loads: u32,
+    /// Requests in flight that a script began, by the browser's name for each, with its
+    /// address: told to the probe while the page loads, as part of whether it is ready.
+    pub net_flight: HashMap<String, String>,
+    /// Requests that failed or were answered with an error status, oldest first.
+    pub net_failed: VecDeque<Value>,
     worker_urls: HashMap<String, String>,
     /// Workers stopped at start, waiting for the instrumentation pause where the probe goes in.
     waiting_workers: HashSet<String>,
@@ -220,6 +234,10 @@ pub struct SessionOptions {
     pub start_paused: bool,
     pub unmodified: bool,
     pub deterministic: Option<(u32, f64)>,
+    /// How long a page is given to finish loading before it is taken as ready as it stands.
+    pub ready_timeout: Duration,
+    /// Let the page load before its time is held, and count frames from when it is ready.
+    pub hold_loading: bool,
     pub browser: Option<PathBuf>,
     /// Where the game is shown: "window" (a browser window), "headless" or "app" (the
     /// Scanline app, docs/APP.md), which is launched as the browser.
@@ -250,6 +268,10 @@ pub struct Session {
     pub(crate) net_gate: tokio::sync::Mutex<()>,
     /// Whether this session fixes the clock and random numbers, and so keeps the network.
     pub(crate) deterministic: bool,
+    /// How long a page is given to finish loading.
+    pub(crate) ready_timeout: Duration,
+    /// Whether the page loads before its time is held, with frames counted from when it is ready.
+    pub(crate) hold_loading: bool,
     /// The origin the session was launched on, which navigate keeps to (tiers.rs).
     pub(crate) launch_origin: String,
     /// The URL it was launched on: for a file, navigation keeps to its directory.
@@ -291,6 +313,9 @@ const REPLAY_URL: &str = "https://replay.scanline.invalid/";
 
 /// The replay page's script, built by `npm run build:replay`.
 const REPLAY: &str = include_str!("../../../replay/dist/replay.js");
+
+/// Where the pointer is put before a page is loaded: just off its top-left corner.
+const PARKED: (f64, f64) = (-1.0, -1.0);
 
 const CONSOLE_LIMIT: usize = 2000;
 const EVENT_LIMIT: usize = 5000;
@@ -401,6 +426,8 @@ impl Session {
             // A page shown in the app: CEF refuses pointer lock outright, so the probe stands
             // in when it does and the app holds the cursor (probe/src/pointerlock.ts).
             "pointerLock": if options.pointer_lock_shim { "shim" } else if options.pointer_lock_app || options.display == "app" { "app" } else { "native" },
+            "readyTimeoutMs": options.ready_timeout.as_millis() as u64,
+            "holdLoading": options.hold_loading,
             "probeVersion": env!("CARGO_PKG_VERSION"),
         });
 
@@ -452,6 +479,8 @@ impl Session {
             page: page.clone(),
             net_gate: tokio::sync::Mutex::new(()),
             deterministic: options.deterministic.is_some(),
+            ready_timeout: options.ready_timeout,
+            hold_loading: options.hold_loading,
             key,
             binding,
             source,
@@ -478,6 +507,8 @@ impl Session {
         client.send("Runtime.enable", json!({}), p).await?;
         client.send("Runtime.addBinding", json!({ "name": session.binding }), p).await?;
         client.send("Log.enable", json!({}), p).await?;
+        // Which requests are in flight (part of whether a page has finished loading), and which fail.
+        client.send("Network.enable", json!({}), p).await?;
 
         let auto = json!({ "autoAttach": true, "waitForDebuggerOnStart": true, "flatten": true });
 
@@ -533,9 +564,77 @@ impl Session {
         outcome
     }
 
+    /// Puts the browser's own input back to where a new browser has it: no key or button
+    /// held, and the pointer off the page. The browser keeps these across a page load, so
+    /// without this a page loaded a second time (a replay, above all) is given its first
+    /// mouse move from wherever the pointer was left, and counts a different distance moved;
+    /// and a pointer left over the page is "inside" from the start.
+    pub async fn park_input(&self) {
+        let (keys, buttons, pointer, person) = {
+            let mut state = self.state.lock().unwrap();
+            let held = (std::mem::take(&mut state.keys_down), state.buttons, state.pointer, state.owner == "human");
+
+            state.buttons = 0;
+            state.pointer = PARKED;
+            held
+        };
+
+        // The person's hands are their own: nothing is sent while they have the input.
+        if person {
+            return;
+        }
+
+        let page = Some(self.page.as_str());
+        let short = Duration::from_secs(5);
+
+        for name in keys {
+            if let Some(key) = crate::keys::lookup(&name) {
+                let _ = self
+                    .client
+                    .send_with_timeout(
+                        "Input.dispatchKeyEvent",
+                        json!({ "type": "keyUp", "key": key.key, "code": key.code, "windowsVirtualKeyCode": key.windows_code }),
+                        page,
+                        short,
+                    )
+                    .await;
+            }
+        }
+
+        for (bit, button) in [(1, "left"), (2, "right"), (4, "middle")] {
+            if buttons & bit != 0 {
+                let _ = self
+                    .client
+                    .send_with_timeout(
+                        "Input.dispatchMouseEvent",
+                        json!({ "type": "mouseReleased", "x": pointer.0, "y": pointer.1, "button": button, "buttons": 0, "clickCount": 1 }),
+                        page,
+                        short,
+                    )
+                    .await;
+            }
+        }
+
+        let _ = self
+            .client
+            .send_with_timeout(
+                "Input.dispatchMouseEvent",
+                json!({ "type": "mouseMoved", "x": PARKED.0, "y": PARKED.1, "button": "none", "buttons": 0 }),
+                page,
+                short,
+            )
+            .await;
+    }
+
     /// Loads a URL and waits for its load event (or 30 seconds, whichever is first).
     pub async fn navigate(&self, url: &str) -> Result<()> {
         crate::network::reset(self);
+        self.park_input().await;
+
+        // The cookies the page is about to be loaded with, for a run kept from this load.
+        let cookies = self.client.send_with_timeout("Network.getCookies", json!({ "urls": [url] }), Some(&self.page), Duration::from_secs(5)).await;
+
+        self.state.lock().unwrap().load_cookies = cookies.ok().map(|reply| reply["cookies"].clone()).unwrap_or(Value::Null);
 
         let events = self.client.subscribe();
         let page = self.page.clone();
@@ -628,16 +727,7 @@ impl Session {
     pub async fn probe(&self, instance: &Instance, method: &str, args: Value, timeout: Duration) -> Result<Value> {
         self.check_alive()?;
 
-        let quote = |text: &str| Value::String(text.to_string()).to_string();
-        let expression = format!("globalThis[Symbol.for({})]({}, {})", quote(&self.key), quote(method), quote(&args.to_string()));
-        let mut params = json!({ "expression": expression, "awaitPromise": true, "returnByValue": true });
-
-        if instance.kind == "window" {
-            if let Some(context) = instance.context_id {
-                params["contextId"] = json!(context);
-            }
-        }
-
+        let params = self.probe_call(instance, method, &args);
         let reply = self.client.send_with_timeout("Runtime.evaluate", params, Some(&instance.cdp_session), timeout).await?;
 
         if let Some(details) = reply.get("exceptionDetails") {
@@ -654,6 +744,63 @@ impl Session {
         }
 
         Ok(parsed["ok"].take())
+    }
+
+    /// The evaluation that calls a method of one probe.
+    fn probe_call(&self, instance: &Instance, method: &str, args: &Value) -> Value {
+        let quote = |text: &str| Value::String(text.to_string()).to_string();
+        let expression = format!("globalThis[Symbol.for({})]({}, {})", quote(&self.key), quote(method), quote(&args.to_string()));
+        let mut params = json!({ "expression": expression, "awaitPromise": true, "returnByValue": true });
+
+        if instance.kind == "window" {
+            if let Some(context) = instance.context_id {
+                params["contextId"] = json!(context);
+            }
+        }
+
+        params
+    }
+
+    /// Whether the page has said it is ready, as far as the host has heard.
+    pub fn is_ready(&self) -> bool {
+        self.state.lock().unwrap().ready.is_some()
+    }
+
+    /// Waits for the page to be ready: loaded, with the start line drawn where the session
+    /// holds its time. Returns what the probe says of it (`state` is "ready" or, if the wait
+    /// ran out, "loading"), with `waited` in real milliseconds where there was a wait.
+    pub async fn wait_ready(&self, timeout: Duration) -> Result<Value> {
+        let top = self.top()?;
+        let said = self.probe(&top, "ready.wait", json!({ "timeout": timeout.as_millis() as u64 }), timeout + Duration::from_secs(10)).await?;
+
+        if said["state"] == "ready" {
+            let mut state = self.state.lock().unwrap();
+
+            if state.ready.is_none() {
+                state.ready = Some(json!({ "reason": said["reason"], "ms": said["ms"], "loadingFrames": said["loadingFrames"] }));
+            }
+        }
+
+        Ok(said)
+    }
+
+    /// Tells the page's probe how many requests are in flight, while the page is loading.
+    fn tell_network(&self) {
+        let (top, count, sample) = {
+            let state = self.state.lock().unwrap();
+
+            if state.ready.is_some() {
+                return;
+            }
+
+            let Some(top) = state.instances.iter().find(|instance| instance.top).cloned() else { return };
+            let sample: Vec<&String> = state.net_flight.values().take(3).collect();
+
+            (top, state.net_flight.len(), json!(sample))
+        };
+
+        let _ =
+            self.client.post("Runtime.evaluate", self.probe_call(&top, "ready.net", &json!({ "inFlight": count, "sample": sample })), Some(&top.cdp_session));
     }
 
     /// Calls a method of every probe at once. Results come back in instance order; a probe
@@ -1325,21 +1472,49 @@ fn handle(session: &Arc<Session>, event: Event) {
 
                     let instance = Instance { cdp_session, context_id: params["executionContextId"].as_i64(), kind, top, url, tag };
 
+                    let is_top = instance.top;
+
                     if instance.top {
                         // A new document in the top frame replaces the old one.
                         state.instances.retain(|other| !other.top);
                         state.net_loading = false;
+                        state.ready = None;
+                        state.load_storage = payload["storage"].clone();
+                        state.loads += 1;
                     }
 
                     state.instances.push(instance);
                     drop(state);
                     session.changed.notify_waiters();
+
+                    if is_top {
+                        session.tell_network();
+                    }
                 }
                 "" => {}
                 // The Debug key: the freeze and the capture are the host's to do.
                 "debug-key" => {
                     session.state.lock().unwrap().actions.push_back("debug:key".into());
                     session.debug.notify_one();
+                }
+                // The page is ready (probe/src/ready.ts). Only the top frame's word is the page's.
+                "ready" => {
+                    let from_top =
+                        session.state.lock().unwrap().instances.iter().any(|instance| {
+                            instance.top && instance.cdp_session == cdp_session && instance.context_id == params["executionContextId"].as_i64()
+                        });
+
+                    if from_top {
+                        let said = json!({
+                            "reason": payload["reason"].as_str().filter(|reason| matches!(*reason, "page" | "quiet" | "timeout")).unwrap_or("quiet"),
+                            "ms": payload["ms"].as_f64().unwrap_or(0.0),
+                            "frame": payload["frame"].as_u64().unwrap_or(0),
+                            "loadingFrames": payload["loadingFrames"].as_u64().unwrap_or(0),
+                        });
+
+                        session.state.lock().unwrap().ready = Some(said.clone());
+                        session.queue("ready", said);
+                    }
                 }
                 // The browser refused the page the pointer lock. The words are the host's:
                 // a page that finds the binding can raise this, and no more than this.
@@ -1413,6 +1588,39 @@ fn handle(session: &Arc<Session>, event: Event) {
 
         // A request or response of the page's, held for a deterministic session (network.rs).
         "Fetch.requestPaused" if event.session.as_deref() == Some(session.page.as_str()) => crate::network::paused(session, params),
+
+        // A request begins. Those a script began are loading work the page's own calls may
+        // not show (a module imported, a script added); what the parser asks for is the document's.
+        "Network.requestWillBeSent" if event.session.as_deref() == Some(session.page.as_str()) => {
+            let kind = params["type"].as_str().unwrap_or("");
+            let by_script = params["initiator"]["type"] == "script";
+
+            if by_script && !matches!(kind, "WebSocket" | "EventSource" | "Media" | "Ping") {
+                if let (Some(id), Some(url)) = (params["requestId"].as_str(), params["request"]["url"].as_str()) {
+                    let loading = {
+                        let mut state = session.state.lock().unwrap();
+
+                        if state.ready.is_none() {
+                            state.net_flight.insert(id.to_string(), crate::commands::page_text(url, 160));
+                        }
+
+                        state.ready.is_none()
+                    };
+
+                    if loading {
+                        session.tell_network();
+                    }
+                }
+            }
+        }
+
+        "Network.loadingFinished" | "Network.loadingFailed" if event.session.as_deref() == Some(session.page.as_str()) => {
+            let was = params["requestId"].as_str().and_then(|id| session.state.lock().unwrap().net_flight.remove(id));
+
+            if was.is_some() {
+                session.tell_network();
+            }
+        }
 
         "Target.attachedToTarget" => attached(session, params),
 

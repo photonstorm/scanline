@@ -25,6 +25,10 @@ dbg.views.register({ id: 'bounds', label: 'Sprite bounds', set: (on) => { game.s
 
 dbg.mark('level loaded');                               // the debugger can run until a mark
 
+dbg.loading();                                          // as the page starts: "I will say when I am ready"
+await loadEverything();
+dbg.ready();                                            // loaded, about to play: frames count from here
+
 dbg.watch.sprite('player', player, { break: true });    // read each frame; stops if a number goes NaN
 ```
 
@@ -36,6 +40,7 @@ It is a thin wrapper round the `__scanline` global that Scanline defines in the 
 | `group(name, fn)`, `push(name)` / `pop()` | A named group round the draws inside. Groups nest and make the pass tree. |
 | `entity(reference, info)` | The draws in the current group belong to a game object: `{ type, name, id, path }` and anything small. |
 | `mark(name, data?)` | A point on the timeline. |
+| `loading()`, `ready()` | `loading()` as the page starts says that it will call `ready()`; `ready()` says it has loaded and is about to play. Scanline waits for it (`launch(wait: "ready")`, `run_until(until: {ready: true})`), and in a deterministic session counts frames from it, so that a recorded run plays again exactly however long loading took. Without them Scanline guesses, from when the page's loading goes quiet. Call `ready()` once, before the game's first frame of play. |
 | `state.provide(fn)`, `state.describe(schema)` | The game's own account of itself, as a small plain object. |
 | `controls.register({ id, label, type, min?, max?, options?, get, set })` | A value the debugger may read and set. Types: `number`, `boolean`, `enum`, `color`, `vector`. |
 | `views.register({ id, label, description, set(on) })` | A debug view the page draws itself. |

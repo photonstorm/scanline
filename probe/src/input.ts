@@ -59,9 +59,40 @@ export function installInputRecorder (): void
         push([currentFrame(), nativeNow(), event.type, event.code, event.key, modifiers(event), event.repeat ? 1 : 0, event.isTrusted ? 1 : 0]);
     };
 
-    const mouse = (event: MouseEvent): void =>
+    const mouse = (event: MouseEvent, type: string = event.type): void =>
     {
-        push([currentFrame(), nativeNow(), event.type, event.clientX, event.clientY, event.button, event.buttons, modifiers(event), event.movementX, event.movementY, event.isTrusted ? 1 : 0]);
+        push([currentFrame(), nativeNow(), type, event.clientX, event.clientY, G.Math.max(0, event.button), event.buttons, modifiers(event), event.movementX, event.movementY, event.isTrusted ? 1 : 0]);
+    };
+
+    // The mouse as the browser delivers it is recorded from its pointer events, not its mouse
+    // events, for two reasons. A pointer event says where the pointer is to a fraction of a
+    // pixel, and a mouse event to a whole one: a page that reads pointer events, played again
+    // from whole pixels, is given a pointer a quarter of a pixel from where it was. And a page
+    // that cancels pointerdown is sent no mouse events at all until the button is let go.
+    const pointer = (event: PointerEvent): void =>
+    {
+        if (!event.isTrusted || event.pointerType !== 'mouse')
+        {
+            return;
+        }
+
+        // A second button pressed or let go while one is held arrives as a move that names a button.
+        const type = event.type === 'pointerdown'
+            ? 'mousedown'
+            : event.type === 'pointerup'
+                ? 'mouseup'
+                : event.button < 0 ? 'mousemove' : ((event.buttons & [1, 4, 2, 8, 16][event.button]) !== 0 ? 'mousedown' : 'mouseup');
+
+        mouse(event, type);
+    };
+
+    // What is left to the mouse events: those a script made (the pointer-lock stand-in's moves).
+    const made = (event: MouseEvent): void =>
+    {
+        if (!event.isTrusted)
+        {
+            mouse(event);
+        }
     };
 
     const wheel = (event: WheelEvent): void =>
@@ -83,9 +114,12 @@ export function installInputRecorder (): void
 
     listen('keydown', key);
     listen('keyup', key);
-    listen('mousedown', mouse);
-    listen('mouseup', mouse);
-    listen('mousemove', mouse);
+    listen('pointerdown', pointer);
+    listen('pointerup', pointer);
+    listen('pointermove', pointer);
+    listen('mousedown', made);
+    listen('mouseup', made);
+    listen('mousemove', made);
     listen('wheel', wheel);
     listen('touchstart', touch);
     listen('touchmove', touch);

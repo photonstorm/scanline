@@ -15,7 +15,7 @@ import { patch } from '../masquerade';
 import { emit } from '../transport';
 import { clearWarning, warn } from '../mods';
 import { clock } from './clock';
-import { drainTimers, onTimerCallback, pendingTimers, resumeTimers, suspendTimers } from './timers';
+import { drainTimers, onTimerCallback, pendingTimers, restartTimers, resumeTimers, setTimersRealtime, suspendTimers } from './timers';
 
 interface Entry
 {
@@ -81,6 +81,108 @@ let errorSeen = false;
 let eventSeen: string | null = null;
 
 let settleWaiters: Array<(value: StopInfo) => void> = [];
+
+// ---- Loading ----
+//
+// A session that holds a page's time (a deterministic one, or one started paused and asked
+// to wait until the page is ready) cannot simply hold it from the first instant: a page
+// that is still fetching, decoding and building shaders needs its frames and its timers to
+// finish doing so, and how many of each that takes differs from run to run. So until the
+// page is ready (ready.ts decides when) the gate is "loading": the clock stands still, no
+// frame is counted, and once the page has begun any loading work its frame callbacks and
+// timers run on real time. (A page that does none is held from its first instant, as it
+// always was.) When the page is ready the start line is drawn: frames count from 0 there,
+// and everything after it is the session's to pause, step and repeat.
+let loading = false;
+let loadingBusy = false;
+let loadingFrames = 0;
+let lastFire = 0;
+let lineWanted: (() => void) | null = null;
+
+const lineHooks: Array<(flag: boolean) => void> = [];
+
+export function isLoading (): boolean
+{
+    return loading;
+}
+
+// Run as the start line is drawn, before any frame after it.
+export function onStartLine (hook: () => void): void
+{
+    lineHooks.push(hook);
+}
+
+// From ready.ts: whether the page has loading work, in flight now or earlier. From its first
+// sign the page's frames, timers and messages run, so that a loader that waits a frame or a
+// moment between two stages is not stopped in the gap.
+export function setLoadingWork (frames: boolean): void
+{
+    if (!loading)
+    {
+        return;
+    }
+
+    setTimersRealtime(frames);
+
+    if (frames === loadingBusy)
+    {
+        // A window nobody can see is given no frames by the browser. Loading frames are run
+        // by hand then, as stepped ones are.
+        if (frames && armed.size > 0 && !inFrame && nativeNow() - lastFire > 100)
+        {
+            manualFrame();
+        }
+
+        return;
+    }
+
+    loadingBusy = frames;
+    lastFire = nativeNow();
+
+    if (frames && held.length)
+    {
+        rearmHeld();
+    }
+}
+
+// Draws the start line, between two frames, and calls `then` once it is drawn.
+export function drawStartLine (then: () => void): void
+{
+    lineWanted = then;
+
+    if (!inFrame && !draining)
+    {
+        startLine();
+    }
+}
+
+function startLine (): void
+{
+    const then = lineWanted;
+
+    lineWanted = null;
+
+    if (loading)
+    {
+        loading = false;
+        loadingBusy = false;
+        restartTimers();
+        samples.length = 0;
+
+        for (const hook of lineHooks)
+        {
+            guarded(hook);
+        }
+
+        if (!paused)
+        {
+            rearmHeld();
+            startHeartbeat();
+        }
+    }
+
+    then?.();
+}
 
 export interface StopInfo
 {
@@ -154,6 +256,7 @@ export function notePageEvent (name: string): void
 export function gateState (): {
     frame: number; paused: boolean; fixed: boolean; stepDt: number; time: number; scale: number;
     inFrame: boolean; sawRaf: boolean; pendingCallbacks: number; pendingTimers: number; stop: typeof stopInfo;
+    loading: boolean; loadingFrames: number;
 }
 {
     return {
@@ -167,7 +270,9 @@ export function gateState (): {
         sawRaf,
         pendingCallbacks: armed.size + held.length,
         pendingTimers: pendingTimers(),
-        stop: stopInfo
+        stop: stopInfo,
+        loading,
+        loadingFrames
     };
 }
 
@@ -176,7 +281,8 @@ export function gateState (): {
 // (a draw, an error, a texture fetched) carries the same number as the image it produces.
 export function currentFrame (): number
 {
-    return inFrame ? frame + 1 : frame;
+    // What happens while a page loads happens at frame 0: before the first.
+    return inFrame && !loading ? frame + 1 : frame;
 }
 
 // An exception leaving a page callback is reported by the browser only after the probe's
@@ -219,7 +325,9 @@ export function frameAtWall (wall: number): number
         }
     }
 
-    return samples.length ? samples[0].frame : frame;
+    // Before the earliest frame on record: the frame before it, which for a line logged while
+    // the page loaded is frame 0.
+    return samples.length ? G.Math.max(0, samples[0].frame - 1) : frame;
 }
 
 function armEntry (entry: Entry): void
@@ -245,6 +353,8 @@ function rearmHeld (): void
 
 function fire (entry: Entry, stamp: number): void
 {
+    lastFire = nativeNow();
+
     if (stamp !== nativeStamp)
     {
         // First callback of a new native frame. Everything armed before now fires in it.
@@ -259,7 +369,7 @@ function fire (entry: Entry, stamp: number): void
 
         current = armed;
         armed = new Set();
-        frameOpen = !draining && (!paused || budget > 0);
+        frameOpen = !draining && (loading ? loadingBusy : (!paused || budget > 0));
 
         if (frameOpen)
         {
@@ -305,12 +415,12 @@ function beginFrame (stamp: number): void
     inFrame = true;
     frameStart = nativeNow();
 
-    if (paused)
+    if (paused && !loading)
     {
         budget--;
     }
 
-    if (clock.frozen)
+    if (clock.frozen && !loading)
     {
         // One step after the previous frame's timestamp, so stepped frames are exactly
         // stepDt apart even though the clock froze a little after that frame began.
@@ -415,6 +525,14 @@ function endFrame (): void
     const cpu = nativeNow() - frameStart;
 
     inFrame = false;
+
+    if (loading)
+    {
+        endLoadingFrame();
+
+        return;
+    }
+
     frame++;
 
     samples.push({
@@ -496,6 +614,43 @@ function endFrame (): void
     }
 }
 
+// A frame run while the page loads: not counted, with the clock where it was.
+function endLoadingFrame (): void
+{
+    loadingFrames++;
+
+    const pausedNow = !paused && pauseRequested;
+
+    if (pausedNow)
+    {
+        doPause('pause');
+    }
+
+    const grab = grabRequested;
+
+    grabRequested = false;
+
+    for (const hook of frameEndHooks)
+    {
+        guarded(hook, grab);
+    }
+
+    for (const hook of settledHooks)
+    {
+        guarded(hook);
+    }
+
+    if (lineWanted !== null)
+    {
+        startLine();
+    }
+
+    if (pausedNow)
+    {
+        settle();
+    }
+}
+
 // ---- A hold ----
 //
 // The host sometimes has to hand the page something from outside at a known frame: a
@@ -546,8 +701,14 @@ function takeHold (): boolean
     return true;
 }
 
-export function hold (): Promise<{ frame: number }>
+export function hold (): Promise<{ frame: number; loading?: boolean }>
 {
+    // While the page loads there are no frames to come between: what arrives, arrives at frame 0.
+    if (loading)
+    {
+        return G.Promise.resolve({ frame, loading: true });
+    }
+
     if (holding || (paused && budget === 0 && !inFrame && !draining))
     {
         return G.Promise.resolve({ frame });
@@ -597,6 +758,11 @@ function afterFrame (): void
     for (const hook of settledHooks)
     {
         guarded(hook);
+    }
+
+    if (lineWanted !== null)
+    {
+        startLine();
     }
 
     // A hold is taken here, between two frames. A page that was running or part-way
@@ -789,7 +955,7 @@ function startHeartbeat (): void
             return;
         }
 
-        if (current.size === 0 && armed.size === 0 && held.length === 0 && !inFrame && !draining && pendingTimers() > 0)
+        if (!loading && current.size === 0 && armed.size === 0 && held.length === 0 && !inFrame && !draining && pendingTimers() > 0)
         {
             timerFrame();
         }
@@ -841,7 +1007,7 @@ export function pause (): Promise<StopInfo>
         }
     };
 
-    if (!inFrame && armed.size === 0 && current.size === 0)
+    if (!inFrame && ((armed.size === 0 && current.size === 0) || (loading && !loadingBusy)))
     {
         // No frame is coming. Pause where we are.
         pauseNow();
@@ -874,6 +1040,12 @@ export function resume (options: { scale?: number } = {}): { frame: number }
 
     if (!fixed)
     {
+        // A page set running on real time is no longer held for its loading: it runs.
+        if (loading)
+        {
+            startLine();
+        }
+
         clock.thaw();
         resumeTimers();
     }
@@ -1006,8 +1178,10 @@ export function setFixedStep (options: { fixed?: boolean; dt?: number }): void
     }
 }
 
-export function installGate (startPaused: boolean): void
+export function installGate (startPaused: boolean, holdsTime: boolean): void
 {
+    loading = holdsTime;
+
     if (hasRaf)
     {
         patch(G, 'requestAnimationFrame', () => function requestAnimationFrame (callback: Fn): number

@@ -12,7 +12,7 @@
 // becomes a timer of this module. While the clock tracks real time both go straight to
 // the browser.
 
-import { G, nClearTimeout, nextTask, nIndirectEval, nSetTimeout, ownPorts, type Fn } from '../natives';
+import { G, nativeNow, nClearTimeout, nextTask, nIndirectEval, nSetTimeout, ownPorts, type Fn } from '../natives';
 import { patch } from '../masquerade';
 import { clock } from './clock';
 
@@ -26,6 +26,68 @@ interface Timer
     native: number;     // native handle while armed, else 0
     nesting: number;
     order: number;
+    full: number;       // the delay it was set with (its interval, for one that repeats)
+    left: number;       // real ms still to wait, while timers run on real time under a frozen clock
+    armedAt: number;    // the real time it was last armed at
+}
+
+// While a page is loading (ready.ts) its clock stands still, but its loader's timers must
+// still run or it would never finish. So for that stretch timers are armed natively, by
+// real time, although the clock is frozen; and when loading ends, each timer still waiting
+// starts again from the whole of its delay, on the virtual clock, so that where it falls
+// does not depend on how long loading took.
+let realtime = false;
+
+export function timersRealtime (): boolean
+{
+    return realtime;
+}
+
+export function setTimersRealtime (on: boolean): void
+{
+    if (on === realtime)
+    {
+        return;
+    }
+
+    realtime = on;
+
+    if (on)
+    {
+        sendHeld();
+
+        for (const timer of timers.values())
+        {
+            arm(timer);
+        }
+    }
+    else
+    {
+        const now = nativeNow();
+
+        for (const timer of timers.values())
+        {
+            if (timer.native !== 0)
+            {
+                timer.left = G.Math.max(0, timer.left - (now - timer.armedAt));
+                nClearTimeout(timer.native);
+                timer.native = 0;
+            }
+        }
+    }
+}
+
+// Loading is over: every timer still waiting starts again from now, on the virtual clock.
+export function restartTimers (): void
+{
+    setTimersRealtime(false);
+
+    for (const timer of timers.values())
+    {
+        timer.due = clock.now() + timer.full;
+        timer.left = timer.full;
+        timer.order = order++;
+    }
 }
 
 const timers = new Map<number, Timer>();
@@ -131,12 +193,14 @@ function run (timer: Timer): void
 
 function arm (timer: Timer): void
 {
-    if (clock.frozen || timer.native !== 0)
+    if ((clock.frozen && !realtime) || timer.native !== 0)
     {
         return;
     }
 
-    const delay = G.Math.max(0, (timer.due - clock.now()) / clock.scale);
+    const delay = realtime ? timer.left : G.Math.max(0, (timer.due - clock.now()) / clock.scale);
+
+    timer.armedAt = nativeNow();
 
     timer.native = nSetTimeout(() =>
     {
@@ -147,11 +211,14 @@ function arm (timer: Timer): void
             return;
         }
 
-        if (clock.frozen)
+        if (clock.frozen && !realtime)
         {
             // The clock froze between arming and firing. The drain will run it.
             return;
         }
+
+        // One that repeats waits its whole interval again.
+        timer.left = timer.full;
 
         try
         {
@@ -204,7 +271,10 @@ function create (handler: unknown, delay: unknown, args: any[], repeat: boolean)
         interval: repeat ? G.Math.max(ms, 1) : 0,
         native: 0,
         nesting: level,
-        order: order++
+        order: order++,
+        full: repeat ? G.Math.max(ms, 1) : ms,
+        left: ms,
+        armedAt: 0
     };
 
     timers.set(timer.id, timer);
@@ -227,6 +297,12 @@ function clear (id: unknown): void
 // The clock has frozen: native timers must not fire.
 export function suspendTimers (): void
 {
+    // A page that is paused while it loads still loads.
+    if (realtime)
+    {
+        return;
+    }
+
     for (const timer of timers.values())
     {
         disarm(timer);
@@ -273,6 +349,14 @@ const DRAIN_LIMIT = 10000;
 export function drainTimers (done: (ran: number) => void): void
 {
     let ran = 0;
+
+    // On real time the browser runs them itself.
+    if (realtime)
+    {
+        done(0);
+
+        return;
+    }
 
     const step = (): void =>
     {
@@ -346,7 +430,7 @@ export function installTimers (): void
     {
         postNative = patch(G.MessagePort.prototype, 'postMessage', (native) => function postMessage (this: any, ...args: any[]): void
         {
-            if (!clock.frozen || ownPorts.has(this))
+            if (!clock.frozen || realtime || ownPorts.has(this))
             {
                 return native.apply(this, args);
             }
@@ -390,7 +474,7 @@ export function installTimers (): void
                 handler.set!.call(this, function wrapped (this: unknown, ...args: any[]): unknown
                 {
                     // Posted before the pause and arriving after it: not yet.
-                    if (clock.frozen)
+                    if (clock.frozen && !realtime)
                     {
                         if (inFlight > 0)
                         {

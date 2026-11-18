@@ -13,6 +13,8 @@ Tools are `gfx_*` over MCP or `scanline <command>` in a shell. The `scanline` sk
 
 `gfx_launch(url, start: "paused", deterministic: true)`. Random numbers are seeded, each frame is a fixed step, and the clock starts at zero, so the same input gives the same frames. Without it a saved run will drift.
 
+The launch answers when the page has finished loading, and says how long that took and how it knew ("the page said so", or "its loading went quiet"). Frame 0 is that moment: the first step is the game's first frame, with nothing to poll for. `gfx_help(topic: "loading")` has the rest.
+
 ## Know the game's state before pressing anything
 
 Pixels are a poor way to know where the player is. In order of preference:
@@ -63,7 +65,7 @@ Once the moment you need is on screen: `gfx_save_run()`. It keeps every input si
 
 After each code change: `gfx_replay_run(run: "run_N")`. The page reloads and the input is played again as fast as it will go, pausing where the run ended. `to_frame: n` stops earlier: that is also how to go back a few frames, since a game cannot be stepped backwards.
 
-The replay compares frame fingerprints with the original and says where they first differ. If your change alters what is drawn, a difference from that point on is your change showing. A difference before it means the run has drifted: check that the session is deterministic and that the game does not read the wall clock or the network. In a deterministic session the network's responses are kept with the run and given back on the same frames.
+The replay compares frame fingerprints with the original and says where they first differ. If your change alters what is drawn, a difference from that point on is your change showing. A difference before it means the run has drifted: check that the session is deterministic and that the game does not read the wall clock or the network. In a deterministic session the network's responses are kept with the run and given back on the same frames, and the page's localStorage, sessionStorage and cookies are put back as they were when the run's page loaded, so a game that remembers its player starts the replay as it started the recording.
 
 ## Takes: runs with names
 

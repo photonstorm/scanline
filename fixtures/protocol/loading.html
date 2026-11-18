@@ -1,0 +1,282 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Loading fixture</title>
+<style>html, body { margin: 0; background: #111; } canvas { display: block; }</style>
+</head>
+<body>
+<canvas id="game" width="320" height="240"></canvas>
+<script type="module">
+// A page that loads the way a small web game does, with everything that makes a recording
+// of one hard to play again:
+//
+//   - its loop runs from the first instant, drawing a loading colour until its assets are in;
+//   - images (new Image), JSON (fetch and json()), sound (fetch, arrayBuffer(), decodeAudioData)
+//     and a bitmap (createImageBitmap) are asked for at once and arrive when they arrive;
+//   - its shaders are built in the background and asked after once a frame
+//     (KHR_parallel_shader_compile), which takes however many frames it takes;
+//   - a second stage of loading starts a frame after the first ends, then a timer is waited for;
+//   - it keeps a visitor's id in localStorage and a cookie, made from random numbers on the
+//     first visit only, a moment after it has loaded;
+//   - it follows the pointer, and counts a move only when the pointer moved some distance.
+//
+// What it draws depends on all of these, on page time and on Math.random, so two runs
+// that differ in any of them draw different pictures.
+//
+//   ?slow=120   each asset is asked for through the test server's /__jitter/120/ route, which
+//               answers after a random wait of up to 120 ms
+//   ?say        the page says when it is loading and when it is ready (__scanline.loading / ready)
+
+const query = new URLSearchParams(location.search);
+const slow = Number(query.get('slow') ?? 0);
+const asset = (name) => (slow > 0 ? `/__jitter/${slow}/fixtures/protocol/${name}` : name);
+const say = query.has('say');
+
+if (say)
+{
+    window.__scanline?.loading();
+}
+
+const canvas = document.getElementById('game');
+
+// As sharp as the screen: at a pixel ratio of 2 a canvas pixel is half a CSS pixel, and the
+// pointer falls between whole ones.
+canvas.style.width = '320px';
+canvas.style.height = '240px';
+canvas.width = 320 * devicePixelRatio;
+canvas.height = 240 * devicePixelRatio;
+
+const gl = canvas.getContext('webgl2', { antialias: false, preserveDrawingBuffer: false });
+const parallel = gl.getExtension('KHR_parallel_shader_compile');
+
+const game = window.game = {
+    frame: 0, loaded: false, t: 0, id: null, moves: 0, away: true, pointer: [160, 120], player: [160, 200], held: [], events: [], tiles: 0, sound: 0
+};
+
+window.__scanline?.state.provide(() => ({
+    frame: game.frame, loaded: game.loaded, t: Math.round(game.t * 1000) / 1000, id: game.id, moves: game.moves, away: game.away,
+    pointer: game.pointer, player: game.player, sound: game.sound, events: game.events.slice(-12)
+}));
+
+// ---- Shaders, built in the background ----
+
+function program (vertex, fragment)
+{
+    const made = gl.createProgram();
+
+    for (const [type, source] of [[gl.VERTEX_SHADER, vertex], [gl.FRAGMENT_SHADER, fragment]])
+    {
+        const shader = gl.createShader(type);
+
+        gl.shaderSource(shader, source);
+        gl.compileShader(shader);
+        gl.attachShader(made, shader);
+    }
+
+    gl.linkProgram(made);
+
+    return made;
+}
+
+const quad = program(`#version 300 es
+    uniform vec4 uRect;
+    out vec2 vUv;
+    void main () {
+        vec2 corner = vec2(float(gl_VertexID & 1), float((gl_VertexID >> 1) & 1));
+        vUv = corner;
+        gl_Position = vec4((uRect.xy + corner * uRect.zw) / vec2(160.0, 120.0) - 1.0, 0.0, 1.0);
+        gl_Position.y = -gl_Position.y;
+    }`, `#version 300 es
+    precision mediump float;
+    uniform sampler2D uTex;
+    uniform vec4 uTint;
+    uniform float uTextured;
+    in vec2 vUv;
+    out vec4 colour;
+    void main () { colour = mix(uTint, texture(uTex, vUv) * uTint, uTextured); }`);
+
+async function built ()
+{
+    if (parallel)
+    {
+        // Asked once a frame, so the page keeps moving meanwhile.
+        while (!gl.getProgramParameter(quad, parallel.COMPLETION_STATUS_KHR))
+        {
+            await new Promise(requestAnimationFrame);
+        }
+    }
+
+    if (!gl.getProgramParameter(quad, gl.LINK_STATUS))
+    {
+        throw new Error(gl.getProgramInfoLog(quad));
+    }
+}
+
+// ---- Assets ----
+
+function texture (source)
+{
+    const made = gl.createTexture();
+
+    gl.bindTexture(gl.TEXTURE_2D, made);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+
+    return made;
+}
+
+const image = (name) => new Promise((resolve, reject) =>
+{
+    const img = new Image();
+
+    img.onload = () => resolve(texture(img));
+    img.onerror = reject;
+    img.src = asset(name);
+});
+
+const art = {};
+
+async function load ()
+{
+    const [levels, a, b, sound, bitmap] = await Promise.all([
+        fetch(asset('levels.json')).then((response) => response.json()),
+        image('tile-a.png'),
+        image('tile-b.png'),
+        fetch(asset('tone.wav')).then((response) => response.arrayBuffer()).then((data) => new OfflineAudioContext(1, 1, 44100).decodeAudioData(data)),
+        fetch(asset('tile-b.png')).then((response) => response.blob()).then((blob) => createImageBitmap(blob))
+    ]);
+
+    await built();
+
+    Object.assign(art, { a, b, c: texture(bitmap), speed: levels.speed });
+    game.tiles = levels.tiles;
+    game.sound = sound.length;
+
+    // A second stage, begun a frame after the first has ended, as an engine's loader does;
+    // then a moment's wait on a timer.
+    await new Promise(requestAnimationFrame);
+    art.second = (await fetch(asset('levels.json') + '?again').then((response) => response.json())).tiles;
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    game.loaded = true;
+
+    if (say)
+    {
+        window.__scanline?.ready();
+    }
+}
+
+load().catch((error) => console.error(error));
+
+// ---- Input ----
+
+document.documentElement.addEventListener('pointerleave', () => { game.away = true; });
+document.documentElement.addEventListener('pointerenter', () => { game.away = false; });
+
+for (const type of ['pointerdown', 'pointerup', 'pointermove'])
+{
+    addEventListener(type, (event) =>
+    {
+        game.events.push([type, event.clientX, event.clientY, event.movementX, event.movementY]);
+        game.pointer = [event.clientX, event.clientY];
+
+        // Only a pointer that has moved some distance counts as a move.
+        if (type === 'pointermove' && (event.movementX || event.movementY))
+        {
+            game.moves++;
+        }
+    });
+}
+
+addEventListener('keydown', (event) => { if (!game.held.includes(event.code)) { game.held.push(event.code); } game.events.push(['keydown', event.code]); });
+addEventListener('keyup', (event) => { game.held = game.held.filter((code) => code !== event.code); game.events.push(['keyup', event.code]); });
+
+// ---- The loop, running from the first instant ----
+
+const uRect = gl.getUniformLocation(quad, 'uRect');
+const uTint = gl.getUniformLocation(quad, 'uTint');
+const uTextured = gl.getUniformLocation(quad, 'uTextured');
+
+function draw (x, y, w, h, tint, tex)
+{
+    gl.uniform4f(uRect, x, y, w, h);
+    gl.uniform4f(uTint, ...tint);
+    gl.uniform1f(uTextured, tex ? 1 : 0);
+
+    if (tex)
+    {
+        gl.bindTexture(gl.TEXTURE_2D, tex);
+    }
+
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+}
+
+let last = null;
+
+function frame (now)
+{
+    const dt = last === null ? 0 : Math.min(0.05, (now - last) / 1000);
+
+    last = now;
+    requestAnimationFrame(frame);
+
+    if (!game.loaded)
+    {
+        gl.clearColor(0.2, 0.05, 0.05, 1);
+        gl.clear(gl.COLOR_BUFFER_BIT);
+
+        return;
+    }
+
+    game.frame++;
+    game.t += dt;
+
+    // The visitor's id: made on the first visit, found on every later one.
+    if (game.id === null)
+    {
+        const hex = (bytes) => [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+
+        game.id = localStorage.getItem('loading-id') ?? document.cookie.match(/(?:^|; )loading-id=([0-9a-f]{12})/)?.[1] ?? hex(crypto.getRandomValues(new Uint8Array(6)));
+        localStorage.setItem('loading-id', game.id);
+        document.cookie = `loading-id=${game.id}; max-age=31536000; path=/; samesite=lax`;
+    }
+
+    if (game.held.includes('ArrowLeft')) { game.player[0] -= 90 * dt; }
+    if (game.held.includes('ArrowRight')) { game.player[0] += 90 * dt; }
+
+    gl.viewport(0, 0, canvas.width, canvas.height);
+    gl.clearColor(0.02, 0.03, 0.08, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.useProgram(quad);
+
+    // Tiles that drift with page time.
+    for (let i = 0; i < game.tiles; i++)
+    {
+        draw(20 + i * 48 + Math.sin(game.t * art.speed * 3 + i) * 12, 30 + Math.cos(game.t * 2 + i) * 10, 32, 32, [1, 1, 1, 1], i % 2 ? art.b : art.a);
+    }
+
+    // Sparks, wherever Math.random puts them.
+    for (let i = 0; i < 4; i++)
+    {
+        draw(Math.random() * 312, 80 + Math.random() * 60, 4, 4, [1, 0.8, 0.2, 1], null);
+    }
+
+    // The visitor's own colour, from the id.
+    draw(4, 4, 24, 8, [parseInt(game.id.slice(0, 2), 16) / 255, parseInt(game.id.slice(2, 4), 16) / 255, parseInt(game.id.slice(4, 6), 16) / 255, 1], null);
+
+    // The pointer, while it is over the page, and how far it has been moved.
+    if (!game.away)
+    {
+        draw(game.pointer[0] - 8, game.pointer[1] - 8, 16, 16, [0.4, 1, 0.6, 1], art.c);
+    }
+
+    draw(4, 228, Math.min(300, game.moves * 20), 6, [0.9, 0.3, 0.9, 1], null);
+    draw(game.player[0] - 10, game.player[1] - 10, 20, 20, [1, 1, 1, 1], art.a);
+}
+
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

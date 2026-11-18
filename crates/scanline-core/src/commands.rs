@@ -101,6 +101,20 @@ pub async fn launch(host: &Arc<Host>, params: &Value) -> Result<Value> {
         options => Some((options["seed"].as_u64().unwrap_or(1) as u32, options["fixed_dt"].as_f64().unwrap_or(1000.0 / 60.0))),
     };
 
+    // Whether to wait for the page to be ready before answering. A deterministic session
+    // does unless told not to, and counts its frames from there: what a page does while it
+    // loads differs from run to run, and what it does afterwards need not.
+    let wait = params["wait"].as_str();
+
+    if !matches!(wait, None | Some("ready" | "none")) {
+        bail!("wait is \"ready\" (answer once the page has finished loading) or \"none\", not \"{}\".", wait.unwrap_or(""));
+    }
+
+    let ready_timeout = Duration::from_secs_f64(params["ready_timeout_s"].as_f64().unwrap_or(30.0).clamp(0.5, 300.0));
+    let wait_ready = wait == Some("ready") || (wait.is_none() && deterministic.is_some());
+    // The page loads before its time is held, where time is held at all.
+    let hold_loading = wait_ready && (start == "paused" || deterministic.is_some());
+
     let id = host.new_session_id();
 
     // Where the game is shown. The Scanline app is launched as the browser and told which
@@ -138,6 +152,8 @@ pub async fn launch(host: &Arc<Host>, params: &Value) -> Result<Value> {
         start_paused: start == "paused",
         unmodified: params["unmodified"].as_bool().unwrap_or(false),
         deterministic,
+        ready_timeout,
+        hold_loading,
         // The browser named, else SCANLINE_BROWSER (read where the browser is found), else the
         // pinned one if it has been installed, else whatever is on the machine.
         browser: app.or_else(|| {
@@ -230,6 +246,12 @@ pub async fn launch(host: &Arc<Host>, params: &Value) -> Result<Value> {
         }
 
         tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    if wait_ready {
+        // The probe gives up by itself when the time allowed runs out, and says what was
+        // still in flight; a little longer is allowed here so that its word is heard.
+        let _ = session.wait_ready(ready_timeout + Duration::from_secs(2)).await;
     }
 
     let mut value = status(&session).await?;
@@ -344,6 +366,8 @@ pub async fn status(session: &Arc<Session>) -> Result<Value> {
         }
     }
 
+    lines.push(ready_line(&top["ready"], session.hold_loading));
+
     if top["deterministic"].is_object() {
         lines.push(format!(
             "Deterministic session: random numbers are seeded ({}), every frame is {} ms of page time, page time starts at 0 and the date at 1 January 2026. The same input replays to the same frames: save_run keeps it, replay_run plays it again.",
@@ -422,6 +446,7 @@ pub async fn status(session: &Arc<Session>) -> Result<Value> {
         "request": session.state.lock().unwrap().request.as_ref().map(|request| json!({ "id": request.id, "instruction": request.instruction })),
         "paused": top["paused"],
         "frame": top["frame"],
+        "ready": top["ready"],
         "time_ms": top["time"],
         "time_scale": top["scale"],
         "level": top["level"],
@@ -440,6 +465,65 @@ pub async fn status(session: &Arc<Session>) -> Result<Value> {
     });
 
     Ok(result(lines.join("\n"), data))
+}
+
+/// Why a page was taken as ready, in words.
+fn ready_reason(said: &Value) -> &'static str {
+    match said["reason"].as_str() {
+        Some("page") => "the page said so",
+        Some("timeout") => "it had not finished loading in the time allowed, and was taken as it stood",
+        _ => "its loading went quiet",
+    }
+}
+
+/// What status says of a page's loading.
+fn ready_line(ready: &Value, held: bool) -> String {
+    let seconds = ready["ms"].as_f64().unwrap_or(0.0) / 1000.0;
+    let frames = ready["loadingFrames"].as_u64().unwrap_or(0);
+
+    if ready["state"] == "ready" {
+        format!(
+            "Ready {seconds:.2} s after the page began to load ({}){}.",
+            ready_reason(ready),
+            match (held, frames) {
+                (true, 0) => "; frames count from there".to_string(),
+                (true, frames) => format!("; frames count from there, and the {frames} it ran while loading are not counted"),
+                _ => String::new(),
+            }
+        )
+    } else {
+        format!(
+            "Still loading after {seconds:.1} s: waiting on {}.{}",
+            page_text(ready["waiting"].as_str().unwrap_or("nothing Scanline follows"), 300),
+            if ready["held"] == true { " Time is held until it is ready: step and run_until wait for that." } else { "" }
+        )
+    }
+}
+
+/// Waits for a page that is still loading, before something that needs it loaded. Says how
+/// long it took, where there was a wait.
+pub(crate) async fn await_ready(session: &Arc<Session>, lines: &mut Vec<String>) -> Result<Value> {
+    // Only where the page loads by itself with its time held. A page paused from its first
+    // instant may need the very frames it is being denied, and would be waited for in vain.
+    if !session.hold_loading || session.is_ready() {
+        return Ok(Value::Null);
+    }
+
+    let said = session.wait_ready(session.ready_timeout + Duration::from_secs(2)).await?;
+    let waited = said["waited"].as_f64().unwrap_or(0.0);
+
+    if said["state"] != "ready" {
+        lines.push(format!("The page is still loading (waiting on {}).", page_text(said["waiting"].as_str().unwrap_or("nothing Scanline follows"), 300)));
+    } else if waited >= 1.0 {
+        lines.push(format!(
+            "Waited {:.2} s for the page to be ready ({}): it was {:.2} s after it began to load.",
+            waited / 1000.0,
+            ready_reason(&said),
+            said["ms"].as_f64().unwrap_or(0.0) / 1000.0
+        ));
+    }
+
+    Ok(json!({ "waited_ms": waited, "reason": said["reason"], "ms": said["ms"], "state": said["state"] }))
 }
 
 pub async fn navigate(session: &Arc<Session>, params: &Value) -> Result<Value> {
@@ -589,6 +673,10 @@ fn error_lines(session: &Session, after: u64) -> Vec<String> {
 pub async fn step(session: &Arc<Session>, params: &Value) -> Result<Value> {
     let frames = params["frames"].as_u64().unwrap_or(1).clamp(1, 100_000);
     let console_before = session.state.lock().unwrap().console_seq;
+    let mut lines = Vec::new();
+
+    // Input is for the game, not for its loading screen: a page still loading is waited for.
+    let readied = await_ready(session, &mut lines).await?;
 
     if !params["hold"].is_null() {
         hold(session, &params["hold"]).await?;
@@ -634,10 +722,21 @@ pub async fn step(session: &Arc<Session>, params: &Value) -> Result<Value> {
 
     let stop = primary(&last)?.clone();
     let frame = stop["frame"].clone();
-    let mut lines = Vec::new();
 
     if stop["reason"] == "idle" {
         lines.push(format!("Nothing to step at frame {frame}: {}", stop["detail"].as_str().unwrap_or("the page has nothing scheduled.")));
+
+        // A page held from its first instant that has not finished loading: say so, and what would let it.
+        if let Ok(top) = session.top() {
+            if let Ok(ready) = session.probe(&top, "ready.state", json!({}), SHORT).await {
+                if ready["state"] == "loading" {
+                    lines.push(format!(
+                        "The page is still loading (waiting on {}), and its time has been held since its first instant. Step again in a moment; or launch with wait: \"ready\", which lets the page load first and counts frames from when it is ready.",
+                        page_text(ready["waiting"].as_str().unwrap_or("nothing Scanline follows"), 300)
+                    ));
+                }
+            }
+        }
     } else {
         lines.push(format!("Frame {frame} (stepped {frames}). Paused."));
     }
@@ -660,6 +759,10 @@ pub async fn step(session: &Arc<Session>, params: &Value) -> Result<Value> {
     }
 
     let mut value = result("", json!({ "frame": frame, "reason": stop["reason"], "errors": errors }));
+
+    if !readied.is_null() {
+        value["data"]["ready"] = readied;
+    }
 
     page_state(session, &params["observe"], &mut value, &mut lines).await;
     observe(session, &params["observe"], &mut value, &mut lines).await?;
@@ -684,6 +787,11 @@ pub async fn policy(session: &Arc<Session>, params: &Value) -> Result<Value> {
         )
     })?;
     let frames = params["frames"].as_u64().unwrap_or(120).clamp(1, 5000);
+    let mut waited = Vec::new();
+
+    // The policy plays the game, not its loading screen.
+    await_ready(session, &mut waited).await?;
+
     let top = session.top()?;
     let convert = Converter::new(session, params["context"].as_str()).await;
     let console_before = session.state.lock().unwrap().console_seq;
@@ -773,6 +881,8 @@ pub async fn policy(session: &Arc<Session>, params: &Value) -> Result<Value> {
         }
     )];
 
+    lines.extend(waited);
+
     if !log.is_empty() {
         lines.push(format!(
             "What it logged (frame: value){}:",
@@ -843,8 +953,12 @@ pub async fn run_until(session: &Arc<Session>, params: &Value) -> Result<Value> 
 
     if !until.is_object() {
         bail!(
-            "run_until needs until: one of {{frame: n}}, {{frames: n}}, {{ms: n}}, {{expr: \"…\"}}, {{event: \"name\"}} (a mark the page makes), {{error: true}}, {{frame_ms_over: n}}."
+            "run_until needs until: one of {{ready: true}} (the page has finished loading), {{frame: n}}, {{frames: n}}, {{ms: n}}, {{expr: \"…\"}}, {{event: \"name\"}} (a mark the page makes), {{error: true}}, {{frame_ms_over: n}}."
         );
+    }
+
+    if until["ready"] == true {
+        return until_ready(session, params).await;
     }
 
     let mut condition = json!({});
@@ -865,7 +979,7 @@ pub async fn run_until(session: &Arc<Session>, params: &Value) -> Result<Value> 
     }
 
     if condition.as_object().is_some_and(|object| object.is_empty()) {
-        bail!("until has none of: frame, frames, ms, expr, event, error, frame_ms_over.");
+        bail!("until has none of: ready, frame, frames, ms, expr, event, error, frame_ms_over.");
     }
 
     let timeout = Duration::from_secs_f64(params["timeout_s"].as_f64().unwrap_or(30.0).clamp(0.1, 45.0));
@@ -908,6 +1022,54 @@ pub async fn run_until(session: &Arc<Session>, params: &Value) -> Result<Value> 
     }
 
     let mut value = result("", json!({ "met": met, "frame": frame, "errors": errors }));
+
+    page_state(session, &params["observe"], &mut value, &mut lines).await;
+    observe(session, &params["observe"], &mut value, &mut lines).await?;
+    value["summary"] = json!(lines.join("\n"));
+
+    Ok(value)
+}
+
+/// run_until(until: {ready: true}): runs until the page has finished loading, and pauses there.
+async fn until_ready(session: &Arc<Session>, params: &Value) -> Result<Value> {
+    let timeout = Duration::from_secs_f64(params["timeout_s"].as_f64().unwrap_or(30.0).clamp(0.1, 45.0));
+    let top = session.top()?;
+    let before = session.probe(&top, "ready.state", json!({}), SHORT).await?;
+
+    // A page whose time is held loads by itself and stops at its start line. Any other has
+    // to be running to load.
+    if before["state"] != "ready" && before["held"] != true {
+        session.probe_all("resume", json!({}), SHORT).await;
+    }
+
+    let said = session.wait_ready(timeout).await?;
+    let paused = session.probe_all("pause", json!({}), SHORT).await;
+    let frame = primary(&paused)?["frame"].clone();
+    let met = said["state"] == "ready";
+    let waited = said["waited"].as_f64().unwrap_or(0.0) / 1000.0;
+
+    let mut lines = vec![if met {
+        format!(
+            "{} {:.2} s after the page began to load ({}){}. Paused at frame {frame}.",
+            if waited > 0.0 { "Ready" } else { "Already ready:" },
+            said["ms"].as_f64().unwrap_or(0.0) / 1000.0,
+            ready_reason(&said),
+            if waited > 0.0 { format!(", after a wait of {waited:.2} s") } else { String::new() }
+        )
+    } else {
+        format!(
+            "Not ready after {} s of real time: still waiting on {}. Paused at frame {frame}. Call run_until again to keep waiting.",
+            timeout.as_secs_f64(),
+            page_text(said["waiting"].as_str().unwrap_or("nothing Scanline follows"), 300)
+        )
+    }];
+
+    session.settle().await;
+
+    let mut value = result(
+        "",
+        json!({ "met": met, "frame": frame, "ready": { "state": said["state"], "reason": said["reason"], "ms": said["ms"], "waited_ms": said["waited"], "pending": said["pending"] } }),
+    );
 
     page_state(session, &params["observe"], &mut value, &mut lines).await;
     observe(session, &params["observe"], &mut value, &mut lines).await?;

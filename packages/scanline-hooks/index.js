@@ -20,6 +20,12 @@ export const pop = dbg ? () => dbg.pop() : nothing;
 export const entity = dbg ? (reference, info) => dbg.entity(reference, info) : nothing;
 export const mark = dbg ? (name, data) => dbg.mark(name, data) : nothing;
 
+// Loading: call loading() as the page starts, and ready() when everything is loaded and the
+// game is about to play. Scanline then waits for ready() instead of guessing, and in a
+// session that holds the page's time, frames count from that moment.
+export const loading = dbg ? () => dbg.loading() : nothing;
+export const ready = dbg ? () => dbg.ready() : nothing;
+
 export const frame = {
     begin: dbg ? () => dbg.frame.begin() : nothing,
     end: dbg ? () => dbg.frame.end() : nothing
@@ -50,4 +56,4 @@ export const watch = Object.assign(dbg ? (name, object, options) => dbg.watch(na
 });
 export const unwatch = dbg ? (name) => dbg.unwatch(name) : nothing;
 
-export default { active, version, label, group, push, pop, entity, mark, frame, time, checkpoint, state, views, controls, uniforms, passes, watch, unwatch };
+export default { active, version, label, group, push, pop, entity, mark, loading, ready, frame, time, checkpoint, state, views, controls, uniforms, passes, watch, unwatch };

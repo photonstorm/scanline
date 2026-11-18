@@ -15,7 +15,8 @@ const TYPES = {
     '.wasm': 'application/wasm',
     '.png': 'image/png',
     '.jpg': 'image/jpeg',
-    '.css': 'text/css'
+    '.css': 'text/css',
+    '.wav': 'audio/wav'
 };
 
 export function serve ({ root = repoRoot, headers = {}, port = 0 } = {})
@@ -49,7 +50,16 @@ export function serve ({ root = repoRoot, headers = {}, port = 0 } = {})
             return;
         }
 
-        const file = normalize(join(root, path));
+        // A file that takes a while, and a different while each time: /__jitter/120/<path>
+        // answers after a random wait of up to 120 ms. What a page's loading has to cope with.
+        const jitter = /^\/__jitter\/(\d+)(\/.*)$/.exec(path);
+
+        if (jitter)
+        {
+            await new Promise((done) => setTimeout(done, Math.random() * Number(jitter[1])));
+        }
+
+        const file = normalize(join(root, jitter ? jitter[2] : path));
 
         if (file !== root && !file.startsWith(root + sep))
         {

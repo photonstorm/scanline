@@ -276,6 +276,13 @@ Built and tested on the PC through the host and pictures of its own window, whic
 21. **A capture file.** `scanline export --capture cap_1 --path $HOME\Desktop\frame.scanline`, then right-click the file › Open with › Choose another app › `Scanline.exe`: a new window opens on its Captures panel with that capture.
 22. **The zip.** `npm run package:app` writes `dist\Scanline-app-0.0.1-windows-x64.zip`. Unpack it into `%LOCALAPPDATA%\Programs` (so that `%LOCALAPPDATA%\Programs\Scanline\Scanline.exe` exists), stop any host (`scanline stop`), and open it from there: it works with no `SCANLINE_APP` set, and `scanline launch <url> --display app` from a terminal finds it. Windows may warn that it is unsigned.
 
+### Loading, replays and recordings (18 November 2026)
+
+What the tests cannot see of the work of 18 November (`DEPARTURES.md`, "Smoke testing, replays and recordings for games").
+
+23. **A take recorded by hand still plays.** The mouse is now recorded from the page's pointer events, to the fraction of a pixel, and before a page is loaded the pointer is put off the page. Do item 14 again (record a take on `fixtures/protocol/menu.html` with real clicks and keys, then Play): it walks to the same place. Do it once more in a window at a display scale that is not a whole number, where the pointer falls between pixels.
+24. **A game that loads, in the app.** Open a game with a real loading screen from the address bar. It loads and plays as before: nothing waits and nothing is held (the app's own sessions are not deterministic). Then, in a terminal, `scanline launch <the same address> --display app --deterministic true --paused`: the window shows the game's loading screen moving, then holds on its first frame of play, and the command answers "Ready … frames count from there".
+
 ## The desktop app prototype
 
 [prototypes/app](../prototypes/app/README.md). On the Mac, already done by hand on 12 November 2026: it runs games and is fast. Still to look at:

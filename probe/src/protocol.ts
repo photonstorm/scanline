@@ -14,6 +14,7 @@ import { entryOf } from './registry';
 import { emit, expose } from './transport';
 import { pageUnwatch, pageWatch } from './watch';
 import { labelAudio } from './sound';
+import { pageLoading, pageReady } from './ready';
 
 export const PROTOCOL_VERSION = 1;
 
@@ -356,6 +357,14 @@ function build (): object
             notePageEvent(mark.name);
             emit('mark', mark);
         }),
+
+        // ---- Loading ----
+
+        // "I will say when I am ready": Scanline then waits for ready() and does not guess.
+        loading: safe('loading', () => pageLoading()),
+
+        // Loaded, and about to play. In a session that holds the page's time, frames count from here.
+        ready: safe('ready', () => pageReady()),
 
         // ---- Frames and time ----
 

@@ -14,7 +14,7 @@ import './adapters/phaser';
 import './adapters/babylon';
 import './adapters/playcanvas';
 import { clock, startClockAtZero, installClock } from './clock/clock';
-import { frameAtWall, frameSamples, gateState, hold, installGate, letGo, notePageEvent, onFrameEnd, pause, resume, runUntil, setFixedStep, step } from './clock/gate';
+import { frameAtWall, frameSamples, gateState, hold, installGate, isLoading, letGo, notePageEvent, onFrameEnd, onStartLine, pause, resume, runUntil, setFixedStep, step } from './clock/gate';
 import { installTimers } from './clock/timers';
 import { config, type Level } from './config';
 import { allContexts, contextHandlers, describe, installContextDiscovery, knownAdapters, webgpuStarting } from './contexts';
@@ -34,7 +34,8 @@ import { installInventory } from './inventory';
 import { installMasquerade } from './masquerade';
 import { currentWarnings, declare, modifications } from './mods';
 import { G, isWindow, nextTask } from './natives';
-import { installSeededRandom } from './random';
+import { installSeededRandom, reseedRandom } from './random';
+import { installReady, readyReport, whenReady } from './ready';
 import { gpuSamples, gpuWorkDone, installTiming, timingHandlers, timingNotes } from './timing';
 import { installReadback } from './readback';
 import { bindingLeftBehind, emit, expose, installTransport } from './transport';
@@ -131,6 +132,51 @@ function gpuReport (first: number): Record<string, unknown>
     };
 }
 
+// What the page's own storage held as the document began, before any of its script ran. A
+// run kept from this load starts from it when it is played again: a page that finds its
+// player's name or its settings already there is not the page that was recorded.
+function storageAsFound (): { local: string[][]; session: string[][]; truncated: boolean } | null
+{
+    const LIMIT = 512 * 1024;
+
+    let size = 0;
+    let truncated = false;
+
+    const read = (name: string): string[][] =>
+    {
+        const out: string[][] = [];
+
+        try
+        {
+            const store = G[name];
+
+            for (let i = 0; i < store.length; i++)
+            {
+                const key = store.key(i);
+                const value = store.getItem(key);
+
+                size += key.length + value.length;
+
+                if (size > LIMIT)
+                {
+                    truncated = true;
+                    break;
+                }
+
+                out.push([key, value]);
+            }
+        }
+        catch
+        {
+            // A page with no storage of its own (a data: address, a sandboxed frame) has none to keep.
+        }
+
+        return out;
+    };
+
+    return { local: read('localStorage'), session: read('sessionStorage'), truncated };
+}
+
 function boot (): void
 {
     if (!installTransport())
@@ -141,7 +187,7 @@ function boot (): void
     installMasquerade();
     installClock();
     installTimers();
-    installGate(config.startPaused);
+    installGate(config.startPaused, config.holdLoading);
     installHooks({ ...contextHandlers, ...glHandlers, ...gpuHandlers, ...gpuPatchHandlers, ...gpuPatchIntercepts, ...timingHandlers });
     installContextDiscovery();
     installGlTracking();
@@ -163,6 +209,14 @@ function boot (): void
     installSound();
     installAudio();
     installWatches();
+    installReady();
+
+    // What was counted and drawn from while the page loaded is not part of what follows.
+    onStartLine(() =>
+    {
+        perFrame.length = 0;
+        reseedRandom();
+    });
 
     setLevel(config.level);
 
@@ -249,6 +303,7 @@ function boot (): void
             deterministic: config.deterministic,
             debugKey: config.debugKey,
             ...gate,
+            ready: readyReport(),
             clockEngaged: clock.engaged,
             contexts,
             adapters: knownAdapters(),
@@ -287,7 +342,18 @@ function boot (): void
         return stop;
     };
 
-    expose('step', (args) => (args?.fast === true ? step(args) : heard(step(args))));
+    // There is nothing to step until the page has loaded and the start line is drawn.
+    const stepped = async (args: any): Promise<unknown> =>
+    {
+        if (isLoading())
+        {
+            await whenReady();
+        }
+
+        return step(args);
+    };
+
+    expose('step', (args) => (args?.fast === true ? stepped(args) : heard(stepped(args))));
     expose('runUntil', (args) => heard(runUntil(args)));
     expose('setFixedStep', (args) => setFixedStep(args));
 
@@ -343,7 +409,8 @@ function boot (): void
         kind: isWindow ? 'window' : 'worker',
         top: isWindow ? G === G.top : false,
         url: isWindow ? G.String(G.location.href) : '',
-        probe: config.probeVersion
+        probe: config.probeVersion,
+        storage: isWindow && G === G.top ? storageAsFound() : undefined
     });
 }
 

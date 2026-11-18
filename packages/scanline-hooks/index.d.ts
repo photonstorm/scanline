@@ -31,6 +31,19 @@ export function entity (reference: object | null, info: EntityInfo): void;
 /** A point on the timeline, such as "level loaded". The debugger can run until it. */
 export function mark (name: string, data?: unknown): void;
 
+/**
+ * Says that the page will call ready() when it has loaded. Call it as the page starts, before
+ * anything is fetched. Scanline then waits for ready() and does not guess from the network.
+ */
+export function loading (): void;
+
+/**
+ * Loaded, and about to play. Call it once: after the last asset is in and before the game's
+ * first frame of play. In a deterministic session frames count from this moment (it is
+ * frame 0, page time 0), which is what lets a recorded run be played again exactly.
+ */
+export function ready (): void;
+
 export const frame: {
     /** Explicit frame markers, for loops not driven by requestAnimationFrame. */
     begin (): void;
@@ -154,7 +167,7 @@ export function unwatch (name: string): void;
 
 declare const all: {
     active: typeof active; version: typeof version; label: typeof label; group: typeof group; push: typeof push; pop: typeof pop;
-    entity: typeof entity; mark: typeof mark; frame: typeof frame; time: typeof time; checkpoint: typeof checkpoint;
+    entity: typeof entity; mark: typeof mark; loading: typeof loading; ready: typeof ready; frame: typeof frame; time: typeof time; checkpoint: typeof checkpoint;
     state: typeof state; views: typeof views; controls: typeof controls; uniforms: typeof uniforms; passes: typeof passes;
     watch: typeof watch; unwatch: typeof unwatch;
 };

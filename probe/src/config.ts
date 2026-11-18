@@ -30,6 +30,14 @@ export interface Config
     // stands in when it is refused, and the app holds the cursor.
     pointerLock: 'native' | 'shim' | 'app';
 
+    // Let the page load before its time is held: frames count from when it is ready (clock/gate.ts).
+    holdLoading: boolean;
+
+    // How long a page's loading must be quiet before it is taken as ready, and how long is
+    // waited for that before the page is taken as ready as it stands (ready.ts).
+    readyQuietMs: number;
+    readyTimeoutMs: number;
+
     probeVersion: string;
 }
 
@@ -46,6 +54,9 @@ export const config: Config = {
     deterministic: null,
     debugKey: 'F9',
     pointerLock: 'native',
+    holdLoading: false,
+    readyQuietMs: 150,
+    readyTimeoutMs: 30000,
     probeVersion: '0.0.1',
     ...given
 };

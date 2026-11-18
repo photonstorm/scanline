@@ -134,6 +134,24 @@ pub(crate) async fn collect(session: &Arc<Session>) -> Result<Value> {
 
     // What the page was given from the network, and on which frame (deterministic sessions).
     let network: Vec<Value> = session.state.lock().unwrap().net_log.clone();
+
+    // What the page found in its storage and its cookies when it loaded.
+    let storage = {
+        let state = session.state.lock().unwrap();
+
+        if state.load_storage.is_object() {
+            json!({
+                "local": state.load_storage["local"],
+                "session": state.load_storage["session"],
+                "truncated": state.load_storage["truncated"],
+                "cookies": state.load_cookies,
+                // The first page of a session is loaded into a browser profile made for it: nothing at all is kept there yet.
+                "fresh": state.loads <= 1,
+            })
+        } else {
+            Value::Null
+        }
+    };
     let (every, taken) = prints(session, 0).await;
 
     Ok(json!({
@@ -146,6 +164,8 @@ pub(crate) async fn collect(session: &Arc<Session>) -> Result<Value> {
         "dropped": dropped,
         "profile": session.profile.name(),
         "network": network,
+        "storage": storage,
+        "ready": session.state.lock().unwrap().ready.clone(),
     }))
 }
 
@@ -257,6 +277,98 @@ pub async fn replay_run(host: &Arc<Host>, session: &Arc<Session>, params: &Value
     replay(session, &run, handle, params).await
 }
 
+/// Puts the page's storage and cookies back as they were when a run's page was loaded, so
+/// that the page played again finds what the page recorded found. Without this a page that
+/// keeps anything (a player's id, a best score, "seen the intro") is a returning visitor in
+/// every replay, and does something else.
+async fn restore_storage(session: &Arc<Session>, storage: &Value) -> Option<String> {
+    if !storage.is_object() {
+        return None;
+    }
+
+    let url = session.url();
+    let mut problems = Vec::new();
+
+    // Cookies: those the address has now go, and those it had come back.
+    if let Ok(now) = session.page_command("Network.getCookies", json!({ "urls": [url] })).await {
+        for cookie in now["cookies"].as_array().into_iter().flatten() {
+            let _ = session.page_command("Network.deleteCookies", json!({ "name": cookie["name"], "domain": cookie["domain"], "path": cookie["path"] })).await;
+        }
+    }
+
+    let cookies: Vec<Value> = storage["cookies"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|cookie| {
+            let mut param = json!({ "name": cookie["name"], "value": cookie["value"], "domain": cookie["domain"], "path": cookie["path"], "secure": cookie["secure"], "httpOnly": cookie["httpOnly"] });
+
+            if cookie["sameSite"].is_string() {
+                param["sameSite"] = cookie["sameSite"].clone();
+            }
+
+            // A cookie that lasts only as long as the browser has no date to put back.
+            if cookie["session"] != true && cookie["expires"].as_f64().is_some_and(|expires| expires > 0.0) {
+                param["expires"] = cookie["expires"].clone();
+            }
+
+            param
+        })
+        .collect();
+
+    if !cookies.is_empty() && session.page_command("Network.setCookies", json!({ "cookies": cookies })).await.is_err() {
+        problems.push("its cookies");
+    }
+
+    // localStorage and sessionStorage, which a reload keeps.
+    let script = format!(
+        "(() => {{ const put = (store, items) => {{ store.clear(); for (const [key, value] of items) {{ store.setItem(key, value); }} }}; try {{ put(localStorage, {}); put(sessionStorage, {}); return true; }} catch (error) {{ return false; }} }})()",
+        if storage["local"].is_array() { storage["local"].to_string() } else { "[]".to_string() },
+        if storage["session"].is_array() { storage["session"].to_string() } else { "[]".to_string() },
+    );
+
+    // A page with no storage of its own (a file opened from a data: address) has none to put back.
+    let had = storage["local"].as_array().is_some_and(|items| !items.is_empty()) || storage["session"].as_array().is_some_and(|items| !items.is_empty());
+
+    if session.evaluate(&script, false).await.ok() != Some(json!(true)) && had {
+        problems.push("its localStorage and sessionStorage");
+    }
+
+    // What cannot be copied (IndexedDB, the Cache API, a service worker) can at least be
+    // emptied, where the recording began with none: its page was the first the browser loaded.
+    if storage["fresh"] == true {
+        let origin = crate::tiers::origin_of(&url);
+
+        if origin.starts_with("http") {
+            let _ = session
+                .page_command(
+                    "Storage.clearDataForOrigin",
+                    json!({ "origin": origin, "storageTypes": "indexeddb,cache_storage,service_workers,websql,file_systems" }),
+                )
+                .await;
+        }
+    }
+
+    let mut said = Vec::new();
+
+    if !problems.is_empty() {
+        said.push(format!(
+            "The page's storage could not be put back as it was when the run was recorded ({}), so the page may not start as it did.",
+            problems.join(" and ")
+        ));
+    }
+
+    if storage["truncated"] == true {
+        said.push("The page's storage was too large to keep whole when the run was recorded, so only part of it was put back.".to_string());
+    }
+
+    if storage["fresh"] != true {
+        said.push("The run was recorded on a page loaded after others in its session: its localStorage, sessionStorage and cookies were put back as they were then, but IndexedDB and the Cache API are as they are now.".to_string());
+    }
+
+    (!said.is_empty()).then(|| said.join(" "))
+}
+
 /// Why a replay should stop now: a watch's breaking rule broke, or the page made the mark asked for,
 /// since the event cursor `since`.
 pub(crate) fn stop_reason(session: &Session, since: u64, mark: Option<&str>) -> Option<String> {
@@ -297,6 +409,11 @@ pub(crate) async fn replay(session: &Arc<Session>, run: &Value, handle: &str, pa
 
     if networked {
         crate::network::replay(session, kept).await;
+    }
+
+    // The page starts from the storage and the cookies it had when the run was recorded.
+    if let Some(said) = restore_storage(session, &run["storage"]).await {
+        notes.push(said);
     }
 
     let reloaded = session.reload_paused().await;

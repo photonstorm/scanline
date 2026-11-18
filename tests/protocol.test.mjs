@@ -764,3 +764,220 @@ describe('watchable engine objects (docs/GAME.md, W3)', () =>
         });
     }
 });
+
+// A page that loads the way a small game does (fixtures/protocol/loading.html): assets that
+// arrive when they arrive, shaders built in the background, a second stage of loading, and
+// a visitor's id kept in storage. `?slow=150` has the test server answer each asset after a
+// random wait, so that no two loads go the same way.
+describe('waiting until a page is ready', () =>
+{
+    const page = (query = 'slow=150') => server.url(`fixtures/protocol/loading.html?${query}`);
+    const state = async () => JSON.parse((await scanline('page', '--json')).json.data.state.text);
+
+    test('a deterministic launch answers once the page has loaded, says how long it took, and counts frames from there', async () =>
+    {
+        const launched = await scanline('launch', page(), '--headless', '--paused', '--deterministic', 'true', '--json');
+
+        assert.equal(launched.code, 0, launched.out);
+        assert.match(launched.json.summary, /Paused at frame 0\./);
+        assert.match(launched.json.summary, /Ready \d+\.\d\d s after the page began to load \(its loading went quiet\); frames count from there, and the \d+ it ran while loading are not counted\./);
+        assert.equal(launched.json.data.ready.state, 'ready');
+        assert.equal(launched.json.data.ready.reason, 'quiet');
+        assert.equal(launched.json.data.ready.held, false, 'the start line is drawn');
+        assert.ok(launched.json.data.ready.loadingFrames > 0, 'its shaders were asked after once a frame, which took frames');
+        assert.equal(launched.json.data.frame, 0);
+
+        // Everything it loads is in, though no frame has been counted, and page time has not moved.
+        assert.equal((await state()).loaded, true);
+        assert.equal(launched.json.data.time_ms, 0);
+
+        // The first step is the game's first frame after loading: no polling for it.
+        const stepped = await scanline('step', '--json');
+
+        assert.equal(stepped.json.data.frame, 1);
+        assert.equal(stepped.json.data.reason, 'step');
+        assert.doesNotMatch(stepped.json.summary, /Nothing to step/);
+        assert.match((await scanline('events')).out, /ready: \{"frame":0,"loadingFrames":\d+,"ms":[\d.]+,"reason":"quiet"\}/);
+    });
+
+    test('a page that says when it is ready is taken at its word', async () =>
+    {
+        const launched = await scanline('launch', page('slow=150&say'), '--headless', '--paused', '--deterministic', 'true', '--json');
+
+        assert.match(launched.json.summary, /Ready \d+\.\d\d s after the page began to load \(the page said so\); frames count from there/);
+        assert.equal(launched.json.data.ready.reason, 'page');
+        assert.equal((await state()).loaded, true);
+    });
+
+    test('a running page can be waited for, at launch or later; a page held from its first instant says it is still loading', async () =>
+    {
+        // Asked for at launch, in a session that holds nothing.
+        const waited = await scanline('launch', page(), '--headless', '--wait', 'ready', '--json');
+
+        assert.match(waited.json.summary, /Running at frame \d+\./);
+        assert.match(waited.json.summary, /Ready \d+\.\d\d s after the page began to load \(its loading went quiet\)\./);
+        assert.equal(waited.json.data.ready.loadingFrames, 0, 'its frames were counted as they ran');
+        assert.equal((await state()).loaded, true);
+        await scanline('close');
+
+        // Not asked for: the launch answers at once, and run_until waits.
+        const quick = await scanline('launch', page('slow=400'), '--headless', '--json');
+
+        assert.match(quick.json.summary, /Still loading after \d+\.\d s: waiting on /);
+
+        const until = await scanline('run_until', '--until', '{"ready": true}', '--json');
+
+        assert.equal(until.json.data.met, true, until.out);
+        assert.match(until.json.summary, /Ready \d+\.\d\d s after the page began to load \(its loading went quiet\), after a wait of \d+\.\d\d s\. Paused at frame \d+\./);
+        assert.equal((await state()).loaded, true);
+        assert.match((await scanline('run_until', '--until', '{"ready": true}')).out, /Already ready:/);
+        await scanline('close');
+
+        // Paused, and not asked to wait: time is held from the first instant, as it always was,
+        // and the page's loading stops where it needs a frame. Step says so.
+        const held = await scanline('launch', page(), '--headless', '--paused', '--json');
+
+        assert.equal(held.json.data.ready.state, 'loading');
+        assert.match(held.json.summary, /Still loading after \d+\.\d s: waiting on /);
+        assert.equal((await scanline('step', '--json')).json.data.frame, 1, 'the first frame is the page\'s first, loading or not');
+        await scanline('close');
+
+        // Paused and asked to wait: it loads first, then holds.
+        const patient = await scanline('launch', page(), '--headless', '--paused', '--wait', 'ready', '--json');
+
+        assert.match(patient.json.summary, /Paused at frame 0\./);
+        assert.match(patient.json.summary, /frames count from there/);
+        assert.equal((await state()).loaded, true);
+
+        assert.match((await scanline('launch', page(), '--headless', '--wait', 'soon')).out, /wait is "ready" \(answer once the page has finished loading\) or "none", not "soon"\./);
+    });
+
+    test('wait: none keeps time held from the page\'s first instant in a deterministic session', async () =>
+    {
+        const launched = await scanline('launch', page(), '--headless', '--paused', '--deterministic', 'true', '--wait', 'none', '--json');
+
+        assert.equal(launched.json.data.ready.held, false);
+        assert.doesNotMatch(launched.json.summary, /frames count from there/);
+
+        await scanline('step', 3);
+        assert.equal((await scanline('status', '--json')).json.data.frame, 3);
+        assert.equal((await state()).loaded, false, 'three frames in, it is still loading: they were counted');
+    });
+
+    test('a page with nothing to load is held from its first instant, and is ready at once', async () =>
+    {
+        const launched = await scanline('launch', server.url('fixtures/matrix/game.html'), '--headless', '--paused', '--deterministic', 'true', '--json');
+
+        assert.match(launched.json.summary, /Ready \d+\.\d\d s after the page began to load \(its loading went quiet\); frames count from there\./);
+        assert.equal(launched.json.data.ready.loadingFrames, 0, 'none of its frames ran before the line');
+        assert.equal(launched.json.data.frame, 0);
+    });
+});
+
+describe('replays that hold across loading', () =>
+{
+    const page = (query = 'slow=150') => server.url(`fixtures/protocol/loading.html?${query}`);
+    const state = async () =>
+    {
+        const { frame, events, ...rest } = JSON.parse((await scanline('page', '--json')).json.data.state.text);
+
+        return JSON.stringify({ ...rest, events });
+    };
+
+    // A pointer between whole pixels (the page is at a pixel ratio of 2), a drag, and keys.
+    const play = [
+        { at: 10, pointer: 'move', x: 201, y: 121 },
+        { at: 30, pointer: 'down', x: 201, y: 121 },
+        { at: 40, pointer: 'move', x: 401, y: 301 },
+        { at: 60, pointer: 'up', x: 401, y: 301 },
+        { at: 70, key: 'ArrowLeft', down: true },
+        { at: 100, key: 'ArrowLeft', down: false },
+        { at: 110, pointer: 'move', x: 99, y: 77 }
+    ];
+
+    test('a run recorded on a page whose assets arrive at different moments replays with every fingerprint matching', async () =>
+    {
+        const launched = await scanline('launch', page(), '--headless', '--paused', '--deterministic', 'true', '--dpr', 2);
+
+        assert.match(launched.out, /frames count from there/, launched.out);
+
+        const stepped = await scanline('step', 150, '--fast', '--events', JSON.stringify(play));
+
+        assert.match(stepped.out, /Frame 150 \(stepped 150\)/, stepped.out);
+
+        const recorded = await state();
+        const first = JSON.parse(recorded);
+
+        assert.equal(first.loaded, true);
+        assert.match(first.id, /^[0-9a-f]{12}$/, 'a first visit: the id was made, from the seeded sequence');
+        assert.deepEqual(first.pointer, [49.75, 38.75], 'the pointer is between whole pixels');
+        assert.equal(first.moves, 2, 'the first move of all goes no distance and is not counted; the two after it are');
+
+        const saved = await scanline('save_run', '--json');
+
+        assert.equal(saved.json.data.prints, 5);
+
+        for (let time = 0; time < 3; time++)
+        {
+            const replayed = await scanline('replay_run', saved.json.data.run, '--json');
+
+            assert.equal(replayed.json.data.diverged, null, replayed.json.summary);
+            assert.equal(replayed.json.data.matched, 5, replayed.json.summary);
+            assert.match(replayed.json.summary, /All 5 fingerprints along the way match the original/);
+
+            // And the page itself is where it was: the same id made again (not found, as a
+            // returning visitor's would be), the same pointer to the quarter pixel, the same events.
+            assert.equal(await state(), recorded, `replay ${time + 1}`);
+        }
+    });
+
+    test('a second launch of the same page, given the same input, draws the same frames', async () =>
+    {
+        const prints = [];
+
+        for (let time = 0; time < 2; time++)
+        {
+            await scanline('launch', page('slow=250'), '--headless', '--paused', '--deterministic', 'true', '--dpr', 2);
+            await scanline('step', 90, '--fast', '--events', JSON.stringify(play.slice(0, 5)));
+
+            const saved = await scanline('save_run', '--json');
+            const run = JSON.parse(readFileSync(saved.json.data.path, 'utf8'));
+
+            prints.push(run.prints.map((print) => `${print.frame}:${print.draws}:${print.hash}`).join(' '));
+            assert.deepEqual(run.storage, { cookies: [], fresh: true, local: [], session: [], truncated: false }, 'the run keeps what the page found in its storage: nothing');
+            await scanline('close');
+        }
+
+        assert.equal(prints[0].split(' ').length, 3);
+        assert.equal(prints[1], prints[0]);
+    });
+
+    test('a run recorded by a returning visitor is replayed as one', async () =>
+    {
+        await scanline('launch', page('slow=60'), '--headless', '--paused', '--deterministic', 'true');
+        await scanline('step', 5, '--fast');
+
+        const id = JSON.parse(await state()).id;
+
+        // The second load finds the id the first one made.
+        await scanline('navigate', '--reload', 'true');
+        await scanline('step', 40, '--fast');
+        assert.equal(JSON.parse(await state()).id, id);
+
+        const saved = await scanline('save_run', '--json');
+        const run = JSON.parse(readFileSync(saved.json.data.path, 'utf8'));
+
+        assert.deepEqual(run.storage.local, [['loading-id', id]]);
+        assert.equal(run.storage.cookies[0].name, 'loading-id');
+        assert.equal(run.storage.fresh, false);
+
+        // Even after the page's storage has been emptied behind its back.
+        await scanline('eval', 'localStorage.clear(); document.cookie = "loading-id=; max-age=0; path=/"; 1');
+
+        const replayed = await scanline('replay_run', saved.json.data.run, '--json');
+
+        assert.equal(replayed.json.data.diverged, null, replayed.json.summary);
+        assert.equal(replayed.json.data.matched, 1);
+        assert.equal(JSON.parse(await state()).id, id);
+    });
+});
