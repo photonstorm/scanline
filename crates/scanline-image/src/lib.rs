@@ -373,6 +373,169 @@ impl Image {
     }
 }
 
+// ---- Words on a picture ----
+//
+// The host has no font of its own and should not need the system's. What it writes on a
+// picture is short (a frame number, a time), so it carries its own letters: capitals,
+// digits and a little punctuation, each five pixels wide and seven tall.
+
+/// The rows of a character, top to bottom, five bits each with the leftmost highest.
+fn glyph(character: char) -> [u8; 7] {
+    match character.to_ascii_uppercase() {
+        '0' => [0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110],
+        '1' => [0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
+        '2' => [0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b01000, 0b11111],
+        '3' => [0b11111, 0b00010, 0b00100, 0b00010, 0b00001, 0b10001, 0b01110],
+        '4' => [0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010],
+        '5' => [0b11111, 0b10000, 0b11110, 0b00001, 0b00001, 0b10001, 0b01110],
+        '6' => [0b00110, 0b01000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110],
+        '7' => [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000],
+        '8' => [0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110],
+        '9' => [0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00010, 0b01100],
+        'A' => [0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001],
+        'B' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10001, 0b10001, 0b11110],
+        'C' => [0b01110, 0b10001, 0b10000, 0b10000, 0b10000, 0b10001, 0b01110],
+        'D' => [0b11100, 0b10010, 0b10001, 0b10001, 0b10001, 0b10010, 0b11100],
+        'E' => [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111],
+        'F' => [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000],
+        'G' => [0b01110, 0b10001, 0b10000, 0b10111, 0b10001, 0b10001, 0b01111],
+        'H' => [0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001],
+        'I' => [0b01110, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
+        'J' => [0b00111, 0b00010, 0b00010, 0b00010, 0b00010, 0b10010, 0b01100],
+        'K' => [0b10001, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010, 0b10001],
+        'L' => [0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111],
+        'M' => [0b10001, 0b11011, 0b10101, 0b10101, 0b10001, 0b10001, 0b10001],
+        'N' => [0b10001, 0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001],
+        'O' => [0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
+        'P' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000],
+        'Q' => [0b01110, 0b10001, 0b10001, 0b10001, 0b10101, 0b10010, 0b01101],
+        'R' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001],
+        'S' => [0b01111, 0b10000, 0b10000, 0b01110, 0b00001, 0b00001, 0b11110],
+        'T' => [0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100],
+        'U' => [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
+        'V' => [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01010, 0b00100],
+        'W' => [0b10001, 0b10001, 0b10001, 0b10101, 0b10101, 0b11011, 0b10001],
+        'X' => [0b10001, 0b10001, 0b01010, 0b00100, 0b01010, 0b10001, 0b10001],
+        'Y' => [0b10001, 0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b00100],
+        'Z' => [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b11111],
+        ' ' => [0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000],
+        '.' => [0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b01100, 0b01100],
+        ',' => [0b00000, 0b00000, 0b00000, 0b00000, 0b01100, 0b00100, 0b01000],
+        ':' => [0b00000, 0b01100, 0b01100, 0b00000, 0b01100, 0b01100, 0b00000],
+        '-' => [0b00000, 0b00000, 0b00000, 0b11111, 0b00000, 0b00000, 0b00000],
+        '+' => [0b00000, 0b00100, 0b00100, 0b11111, 0b00100, 0b00100, 0b00000],
+        '/' => [0b00001, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b10000],
+        '%' => [0b11001, 0b11001, 0b00010, 0b00100, 0b01000, 0b10011, 0b10011],
+        '(' => [0b00010, 0b00100, 0b01000, 0b01000, 0b01000, 0b00100, 0b00010],
+        ')' => [0b01000, 0b00100, 0b00010, 0b00010, 0b00010, 0b00100, 0b01000],
+        _ => [0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b00000, 0b00100],
+    }
+}
+
+/// How wide and tall a line of text is, drawn at a scale (each font pixel is scale × scale).
+pub fn text_size(text: &str, scale: u32) -> (u32, u32) {
+    let count = text.chars().count() as u32;
+
+    (if count == 0 { 0 } else { (count * 6 - 1) * scale }, 7 * scale)
+}
+
+impl Image {
+    /// A plain image of one colour.
+    pub fn filled(width: u32, height: u32, colour: [u8; 4]) -> Image {
+        Image { width, height, data: colour.repeat(width as usize * height as usize) }
+    }
+
+    /// Fills a rectangle, clipped to the image.
+    pub fn fill(&mut self, x: u32, y: u32, width: u32, height: u32, colour: [u8; 4]) {
+        for row in y.min(self.height)..(y.saturating_add(height)).min(self.height) {
+            for column in x.min(self.width)..(x.saturating_add(width)).min(self.width) {
+                let i = (row as usize * self.width as usize + column as usize) * 4;
+
+                self.data[i..i + 4].copy_from_slice(&colour);
+            }
+        }
+    }
+
+    /// Copies another image in, with its top-left corner at (x, y), clipped to this one.
+    pub fn paste(&mut self, other: &Image, x: u32, y: u32) {
+        if x >= self.width || y >= self.height {
+            return;
+        }
+
+        let width = other.width.min(self.width - x) as usize;
+
+        for row in 0..other.height.min(self.height - y) {
+            let from = row as usize * other.width as usize * 4;
+            let to = ((y + row) as usize * self.width as usize + x as usize) * 4;
+
+            self.data[to..to + width * 4].copy_from_slice(&other.data[from..from + width * 4]);
+        }
+    }
+
+    /// Writes a line of text with its top-left corner at (x, y), clipped to the image.
+    /// Capitals, digits and a little punctuation; lower case is written as capitals.
+    pub fn text(&mut self, x: u32, y: u32, text: &str, scale: u32, colour: [u8; 4]) {
+        let scale = scale.max(1);
+
+        for (index, character) in text.chars().enumerate() {
+            let left = x + index as u32 * 6 * scale;
+
+            for (row, bits) in glyph(character).iter().enumerate() {
+                for column in 0..5u32 {
+                    if bits & (0b10000 >> column) != 0 {
+                        self.fill(left + column * scale, y + row as u32 * scale, scale, scale, colour);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Several pictures as one, in reading order, each under a line of words: a contact sheet.
+/// Every picture is shrunk by a whole factor to fit `cell` pixels along its longer edge.
+/// Returns the sheet and how many pictures are in a row.
+pub fn contact_sheet(pictures: &[(Image, String)], cell: u32, most_wide: u32) -> Result<(Image, u32)> {
+    if pictures.is_empty() {
+        bail!("A contact sheet needs at least one picture.");
+    }
+
+    const GAP: u32 = 6;
+    const BACK: [u8; 4] = [24, 24, 28, 255];
+    const WORDS: [u8; 4] = [235, 235, 235, 255];
+
+    let small: Vec<Image> = pictures.iter().map(|(picture, _)| picture.opaque().fit(cell).0).collect();
+    let width = small.iter().map(|picture| picture.width).max().unwrap_or(1);
+    let height = small.iter().map(|picture| picture.height).max().unwrap_or(1);
+
+    // Words at twice the font's size where the longest line fits the picture's width.
+    let longest = pictures.iter().map(|(_, words)| words.chars().count()).max().unwrap_or(0);
+    let scale = if text_size(&"M".repeat(longest), 2).0 <= width { 2 } else { 1 };
+    let strip = 7 * scale + 6;
+
+    // As near square as the pictures allow, and no wider than asked.
+    let count = small.len() as u32;
+    let fits = ((most_wide.max(width + 2 * GAP) - GAP) / (width + GAP)).max(1);
+    let square = ((count as f64 * (height + strip + GAP) as f64 / (width + GAP) as f64).sqrt().ceil() as u32).clamp(1, count);
+    let columns = square.min(fits);
+    let rows = count.div_ceil(columns);
+
+    let mut sheet = Image::filled(columns * (width + GAP) + GAP, rows * (height + strip + GAP) + GAP, BACK);
+
+    for (index, (picture, (_, words))) in small.iter().zip(pictures).enumerate() {
+        let left = GAP + (index as u32 % columns) * (width + GAP);
+        let top = GAP + (index as u32 / columns) * (height + strip + GAP);
+
+        // Words that are too long for the picture are cut, not run into the next one.
+        let room = ((width + scale) / (6 * scale)) as usize;
+        let shown: String = words.chars().take(room).collect();
+
+        sheet.text(left, top + 3, &shown, scale, WORDS);
+        sheet.paste(picture, left, top + strip);
+    }
+
+    Ok((sheet, columns))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -494,5 +657,52 @@ mod tests {
         let decoded = Image::from_png(&image.to_png().unwrap()).unwrap();
 
         assert_eq!(decoded, image);
+    }
+
+    #[test]
+    fn text_is_written_in_the_built_in_letters() {
+        let mut image = Image::filled(40, 10, [0, 0, 0, 255]);
+
+        image.text(1, 1, "f 10", 1, [255, 255, 255, 255]);
+
+        // "F": its top row is five pixels across, and its foot is only the left one.
+        assert_eq!((0..5).map(|x| image.pixel(1 + x, 1)[0]).collect::<Vec<_>>(), [255, 255, 255, 255, 255]);
+        assert_eq!((0..5).map(|x| image.pixel(1 + x, 7)[0]).collect::<Vec<_>>(), [255, 0, 0, 0, 0]);
+        // The space is empty, and the "1" stands in the third place.
+        assert!((0..7).all(|y| (0..5).all(|x| image.pixel(7 + x, 1 + y)[0] == 0)));
+        assert_eq!(image.pixel(13 + 2, 1)[0], 255);
+        assert_eq!(text_size("f 10", 1), (23, 7));
+        assert_eq!(text_size("f 10", 2), (46, 14));
+        assert_eq!(text_size("", 3), (0, 21));
+
+        // Clipped at the edge, not wrapped and not a panic.
+        image.text(36, 6, "WWW", 2, [255, 0, 0, 255]);
+    }
+
+    #[test]
+    fn a_contact_sheet_lays_pictures_out_in_reading_order_under_their_words() {
+        let picture = |shade: u8| Image::filled(64, 48, [shade, shade, shade, 255]);
+        let pictures: Vec<(Image, String)> = (0..5u8).map(|index| (picture(50 + index * 40), format!("F {}", index * 30))).collect();
+        let (sheet, columns) = contact_sheet(&pictures, 32, 1000).unwrap();
+
+        // Five pictures of 32×24 with their words: three across, two rows.
+        assert_eq!(columns, 3);
+        assert_eq!((sheet.width, sheet.height), (3 * 38 + 6, 2 * (24 + 13 + 6) + 6));
+
+        // Each picture is where reading order puts it, under its strip of words.
+        for index in 0..5u32 {
+            let (left, top) = (6 + (index % 3) * 38, 6 + (index / 3) * 43 + 13);
+
+            assert_eq!(sheet.pixel(left + 16, top + 12)[0], 50 + index as u8 * 40, "picture {index}");
+        }
+
+        // The words are written (something light in the strip above the first picture)...
+        assert!((0..32).any(|x| (0..13).any(|y| sheet.pixel(6 + x, 6 + y)[0] > 200)));
+        // ...and the last place, which has no picture, is left as the background.
+        assert_eq!(sheet.pixel(6 + 2 * 38 + 16, 6 + 43 + 13 + 12), [24, 24, 28, 255]);
+
+        // No wider than asked.
+        assert_eq!(contact_sheet(&pictures, 32, 60).unwrap().1, 1);
+        assert!(contact_sheet(&[], 32, 100).is_err());
     }
 }

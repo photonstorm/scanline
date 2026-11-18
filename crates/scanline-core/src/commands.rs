@@ -693,8 +693,11 @@ pub async fn step(session: &Arc<Session>, params: &Value) -> Result<Value> {
         bail!("An event is due at frame offset {}, but the step is only {frames} frames. Offsets count from 0.", timed.last().unwrap().0);
     }
 
-    if !timed.is_empty() {
-        // Make sure the page is paused before the first event is injected.
+    // Pictures along the way, at the frames asked for (shots.rs).
+    let mut shots = crate::shots::Shots::parse(&params["shots"], frames)?;
+
+    if !timed.is_empty() || shots.is_some() {
+        // Make sure the page is paused before the first event is injected, or the first picture taken.
         session.probe_all("pause", json!({}), SHORT).await;
     }
 
@@ -703,13 +706,21 @@ pub async fn step(session: &Arc<Session>, params: &Value) -> Result<Value> {
     let mut last = Vec::new();
     let mut index = 0;
 
+    if let Some(shots) = shots.as_mut().filter(|shots| shots.due(0)) {
+        let before = primary(&session.probe_all("status", json!({}), SHORT).await)?["frame"].clone();
+
+        shots.take(session, &before).await?;
+    }
+
     while done < frames {
         while index < timed.len() && timed[index].0 == done {
             dispatch(session, timed[index].1, &convert).await?;
             index += 1;
         }
 
+        // To the next event, the next picture, or the end, whichever is first.
         let until = timed.get(index).map(|entry| entry.0).unwrap_or(frames);
+        let until = shots.as_ref().and_then(|shots| shots.next(done, frames)).map_or(until, |next| until.min(next));
         let count = until - done;
         let timeout = Duration::from_millis(15_000 + count * 250);
 
@@ -718,6 +729,10 @@ pub async fn step(session: &Arc<Session>, params: &Value) -> Result<Value> {
 
         if primary(&last)?["reason"] == "idle" {
             break;
+        }
+
+        if let Some(shots) = shots.as_mut().filter(|shots| shots.due(done)) {
+            shots.take(session, &primary(&last)?["frame"]).await?;
         }
     }
 
@@ -767,6 +782,11 @@ pub async fn step(session: &Arc<Session>, params: &Value) -> Result<Value> {
 
     page_state(session, &params["observe"], &mut value, &mut lines).await;
     observe(session, &params["observe"], &mut value, &mut lines).await?;
+
+    if let Some(shots) = shots {
+        shots.finish(session, &mut value, &mut lines)?;
+    }
+
     value["summary"] = json!(lines.join("\n"));
 
     Ok(value)
@@ -800,6 +820,14 @@ pub async fn policy(session: &Arc<Session>, params: &Value) -> Result<Value> {
     let limit = Duration::from_secs_f64(params["timeout_s"].as_f64().unwrap_or(40.0).clamp(1.0, 45.0));
 
     session.probe_all("pause", json!({}), SHORT).await;
+
+    let mut shots = crate::shots::Shots::parse(&params["shots"], frames)?;
+
+    if let Some(shots) = shots.as_mut().filter(|shots| shots.due(0)) {
+        let before = primary(&session.probe_all("status", json!({}), SHORT).await)?["frame"].clone();
+
+        shots.take(session, &before).await?;
+    }
 
     let mut held: Option<Vec<String>> = None;
     let mut log: Vec<(Value, Value)> = Vec::new();
@@ -859,6 +887,10 @@ pub async fn policy(session: &Arc<Session>, params: &Value) -> Result<Value> {
             break;
         }
 
+        if let Some(shots) = shots.as_mut().filter(|shots| shots.due(ran)) {
+            shots.take(session, &frame).await?;
+        }
+
         if started.elapsed() > limit {
             ended = "the time allowed ran out";
             break;
@@ -906,6 +938,11 @@ pub async fn policy(session: &Arc<Session>, params: &Value) -> Result<Value> {
 
     page_state(session, &params["observe"], &mut value, &mut lines).await;
     observe(session, &params["observe"], &mut value, &mut lines).await?;
+
+    if let Some(shots) = shots {
+        shots.finish(session, &mut value, &mut lines)?;
+    }
+
     value["summary"] = json!(lines.join("\n"));
 
     Ok(value)

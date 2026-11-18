@@ -22,6 +22,7 @@ mod page;
 mod patch;
 mod runs;
 mod session;
+mod shots;
 pub mod skills;
 mod smoke;
 mod takes;

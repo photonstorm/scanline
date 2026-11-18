@@ -630,9 +630,11 @@ function endLoadingFrame (): void
 
     grabRequested = false;
 
+    // A page that will be held at its start line may be looked at there before a frame is
+    // counted: the picture of each frame it runs while loading is kept, so the last is to hand.
     for (const hook of frameEndHooks)
     {
-        guarded(hook, grab);
+        guarded(hook, grab || paused);
     }
 
     for (const hook of settledHooks)

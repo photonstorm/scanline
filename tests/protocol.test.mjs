@@ -1000,7 +1000,7 @@ describe('a smoke test', () =>
         assert.match(smoked.json.summary, /Errors: none\.\n {2}Warnings: none\.\n {2}Failed requests: none\./);
         assert.match(smoked.json.summary, /A frame: 5 draws \(worst 5, frame \d+\), 10 triangles \(worst 10, frame \d+\), \d+ API calls \(worst \d+, frame \d+\)\./);
         assert.match(smoked.json.summary, /Time: CPU in frame callbacks mean \d+\.\d\d ms, worst \d+\.\d\d ms, frame \d+\./);
-        assert.match(smoked.json.summary, /Pictures of the page at frames 0, 60, 120, 180 \(below\)\./);
+        assert.match(smoked.json.summary, /Pictures at frames 0, 60, 120, 180: one sheet, \d across in reading order, each under its frame number \(below\)\./);
 
         const data = smoked.json.data;
 
@@ -1008,12 +1008,17 @@ describe('a smoke test', () =>
         assert.equal(data.figures.frames, 180, 'every frame of the play was measured');
         assert.equal(data.figures.draws.worst.value, 5);
         assert.deepEqual(data.shots.map((shot) => shot.frame), [0, 60, 120, 180]);
-        assert.equal(smoked.json.images.length, 4);
 
-        for (const image of smoked.json.images)
+        for (const shot of data.shots)
         {
-            assert.ok(existsSync(image.view) && existsSync(image.original), image.view);
+            assert.ok(existsSync(shot.original), shot.original);
         }
+
+        // What comes back to look at is one picture: the sheet.
+        assert.equal(smoked.json.images.length, 1);
+        assert.equal(smoked.json.images[0].space, 'contact_sheet');
+        assert.deepEqual(smoked.json.images[0].frames, [0, 60, 120, 180]);
+        assert.ok(existsSync(data.sheet.path));
 
         // The input reached the game as real input, of every kind the rule gives.
         const state = JSON.parse((await scanline('page', '--json')).json.data.state.text);
@@ -1063,9 +1068,10 @@ describe('a smoke test', () =>
         assert.equal(smoked.json.data.met, false);
         assert.match(smoked.json.summary, /^Smoke test FAILED: .*smoke\.html\?broken: 2 errors; 1 failed request\./);
         assert.match(smoked.json.summary, /\[frame 40\] exception: «Error: the player fell through the floor/);
-        assert.match(smoked.json.summary, /\[frame 4[01]\] error: «Failed to load resource: the server responded with a status of 404 \(Not Found\): http:\/\/127\.0\.0\.1:\d+\/fixtures\/protocol\/no-such-sprite\.png»/);
+        // (The request is made on frame 40 and answered when it is answered: a frame or a few later.)
+        assert.match(smoked.json.summary, /\[frame 4\d\] error: «Failed to load resource: the server responded with a status of 404 \(Not Found\): http:\/\/127\.0\.0\.1:\d+\/fixtures\/protocol\/no-such-sprite\.png»/);
         assert.match(smoked.json.summary, /Warnings: 1 .*\n {4}\[frame 40\] warning: «the larder is nearly empty»/);
-        assert.match(smoked.json.summary, /Failed requests: 1\.\n {4}404 Not Found {2}GET «http:\/\/127\.0\.0\.1:\d+\/fixtures\/protocol\/no-such-sprite\.png» {2}\(frame 4[01]\)/);
+        assert.match(smoked.json.summary, /Failed requests: 1\.\n {4}404 Not Found {2}GET «http:\/\/127\.0\.0\.1:\d+\/fixtures\/protocol\/no-such-sprite\.png» {2}\(frame 4\d\)/);
         assert.equal(smoked.json.data.frames, 120, 'it is played to the end all the same');
         assert.equal(smoked.json.data.failed_requests[0].status, 404);
         assert.deepEqual(smoked.json.data.faults, ['2 errors', '1 failed request']);
@@ -1119,7 +1125,7 @@ describe('a smoke test', () =>
         assert.ok(state.touches > 0, JSON.stringify(state));
 
         // The pictures are the page as composited, at the phone's pixels (390×844 at 3).
-        assert.equal(smoked.json.images[0].width * (1 / smoked.json.images[0].scale), 1170);
+        assert.deepEqual(smoked.json.data.shots.map((shot) => [shot.frame, shot.width, shot.height]), [[0, 1170, 2532], [120, 1170, 2532]]);
     });
 
     test('what is asked wrongly is refused before a browser is opened', async () =>
@@ -1129,5 +1135,92 @@ describe('a smoke test', () =>
         assert.match((await scanline('smoke', page(), '--keys', '["Sideways"]')).out, /Unknown key "Sideways" in keys/);
         assert.match((await scanline('help', 'smoke')).out, /A smoke test: does the page load, play and stay healthy\?/);
         assert.match((await scanline('sessions')).out, /No sessions are open/);
+    });
+});
+
+// Pictures at chosen frames, or every so many, while a step or a policy runs: back as one
+// sheet with the frame written over each, and as files.
+describe('pictures along the way', () =>
+{
+    test('a step takes them at the frames asked for and returns one labelled sheet', async () =>
+    {
+        await scanline('launch', server.url('fixtures/protocol/loading.html'), '--headless', '--paused', '--deterministic', 'true');
+
+        const stepped = await scanline('step', 120, '--fast', '--shots', '{"every": 20, "at": [0, 5]}', '--events', '[{"at": 10, "pointer": "move", "x": 100, "y": 100}]', '--json');
+
+        assert.equal(stepped.code, 0, stepped.out);
+        assert.match(stepped.json.summary, /8 pictures taken along the way, at frames 0, 5, 20, 40, 60, 80, 100, 120: one sheet, 3 across in reading order, each under its frame number\./);
+        assert.equal(stepped.json.data.frame, 120);
+        assert.deepEqual(stepped.json.data.shots.map((shot) => shot.frame), [0, 5, 20, 40, 60, 80, 100, 120]);
+
+        // One picture to look at: eight cells of 160×120 under a strip of words, three across.
+        assert.equal(stepped.json.images.length, 1);
+
+        const sheet = stepped.json.images[0];
+
+        assert.equal(sheet.space, 'contact_sheet');
+        assert.equal(sheet.columns, 3);
+        assert.deepEqual([sheet.width, sheet.height], [3 * 166 + 6, 3 * 146 + 6]);
+        assert.ok(existsSync(sheet.view));
+
+        // The files are the frames themselves: the last is what the canvas shows now, and
+        // the one at frame 5 is not.
+        const now = await scanline('screenshot', '--json');
+        const last = readFileSync(stepped.json.data.shots[7].original);
+
+        assert.ok(last.equals(readFileSync(now.json.images[0].original)), 'the picture at frame 120 is frame 120');
+        assert.ok(!last.equals(readFileSync(stepped.json.data.shots[1].original)), 'and frame 5 is another picture');
+
+        // The events still fell on their frames: stopping for a picture moves nothing.
+        assert.deepEqual(JSON.parse((await scanline('page', '--json')).json.data.state.text).events, [['pointermove', 100, 100, 0, 0]]);
+
+        // With a screenshot asked for as well, both come back.
+        const both = await scanline('step', 10, '--shots', '{"at": [10], "max_edge": 64}', '--observe', '{"screenshot": true}', '--json');
+
+        assert.deepEqual(both.json.images.map((image) => image.space), ['canvas_px', 'contact_sheet']);
+    });
+
+    test('a policy takes them too, of the page as composited', async () =>
+    {
+        await scanline('launch', server.url('fixtures/protocol/smoke.html'), '--headless', '--paused', '--deterministic', 'true');
+
+        const played = await scanline('policy', '(s, i) => ({keys_down: i.frame % 40 < 20 ? ["ArrowLeft"] : ["ArrowRight"]})', '--frames', 90, '--shots', '{"every": 30, "source": "page", "max_edge": 200}', '--json');
+
+        assert.equal(played.code, 0, played.out);
+        assert.match(played.json.summary, /3 pictures taken along the way, at frames 30, 60, 90: one sheet/);
+        assert.deepEqual(played.json.data.shots.map((shot) => [shot.frame, shot.width]), [[30, 1280], [60, 1280], [90, 1280]], 'the page is 1280 wide, where the canvas is 320');
+        assert.equal(played.json.images.at(-1).space, 'contact_sheet');
+        assert.equal(played.json.data.frames, 90);
+    });
+
+    test('what cannot be taken is said plainly', async () =>
+    {
+        // Time held from the first instant: nothing has been drawn at frame 0.
+        await scanline('launch', server.url('fixtures/protocol/smoke.html'), '--headless', '--paused');
+
+        const early = await scanline('step', 4, '--shots', '{"at": [0, 4]}', '--json');
+
+        assert.match(early.json.summary, /No picture could be taken at one of the frames asked for \(none at frame 0: the canvas had not been drawn to yet\)\./);
+        assert.deepEqual(early.json.data.shots.map((shot) => shot.frame), [4]);
+
+        assert.match((await scanline('step', 100, '--shots', '{"every": 1}')).out, /That is 100 pictures in one call, and the most is 64/);
+        assert.match((await scanline('step', 10, '--shots', '{"at": [12]}')).out, /A picture is asked for after 12 frames, but this call runs only 10/);
+        assert.match((await scanline('step', 10, '--shots', '{"every": 5, "source": "screen"}')).out, /shots\.source is "canvas" .* or "page"/);
+        assert.match((await scanline('step', 10, '--shots', '{}')).out, /shots names no frames/);
+        assert.equal((await scanline('status', '--json')).json.data.frame, 4, 'a refused step runs no frames');
+    });
+
+    test('a smoke test spreads them over the play, or takes them where asked', async () =>
+    {
+        const smoked = await scanline('smoke', server.url('fixtures/protocol/smoke.html'), '--seconds', 2, '--shots', '{"every": 40, "at": [0], "source": "canvas", "max_edge": 96}', '--json');
+
+        assert.equal(smoked.code, 0, smoked.out);
+        // This page loads nothing, so none of its frames ran before the play: at frame 0 its
+        // canvas has not been drawn to, and the report says so.
+        assert.deepEqual(smoked.json.data.shots.map((shot) => shot.frame), [40, 80, 120]);
+        assert.match(smoked.json.summary, /No picture could be taken at one of the frames asked for \(none at frame 0: the canvas had not been drawn to yet\)\./);
+        assert.deepEqual([smoked.json.data.shots[1].width, smoked.json.data.shots[1].height], [320, 240], 'the canvas, not the page');
+        assert.equal(smoked.json.images.length, 1);
+        assert.match((await scanline('smoke', server.url('fixtures/protocol/smoke.html'), '--shots', 40)).out, /shots is at most 24 pictures spread over the play/);
     });
 });

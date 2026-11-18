@@ -34,6 +34,7 @@ macro_rules! context {
     };
 }
 macro_rules! region { () => { r#""region": { "type": "object", "description": "Part of the canvas, in canvas pixels from the top-left.", "properties": { "x": { "type": "number" }, "y": { "type": "number" }, "w": { "type": "number" }, "h": { "type": "number" } } }"# }; }
+macro_rules! shots { () => { r#""shots": { "type": "object", "description": "Pictures along the way, returned as one sheet with the frame written over each, and as files: {\"every\": 60}, or {\"at\": [0, 30, 90]} (after that many frames of this call), or both. Also source (\"canvas\", the default, or \"page\"), max_edge (each picture's size on the sheet, default 256), context, region. At most 64.", "properties": { "every": { "type": "integer" }, "at": { "type": "array", "items": { "type": "integer" } }, "source": { "type": "string", "enum": ["canvas", "page"] }, "max_edge": { "type": "integer" } } }"# }; }
 macro_rules! observe { () => { r#""observe": { "type": "object", "description": "What to return with the result.", "properties": { "screenshot": { "description": "true, or screenshot arguments such as {\"max_edge\": 512}." }, "stats": { "type": "boolean" } } }"# }; }
 
 pub const TOOLS: &[Tool] = &[
@@ -74,7 +75,7 @@ pub const TOOLS: &[Tool] = &[
             r#""dpr": { "type": "number", "description": "Device pixel ratio to emulate." }"#,
             r#""touch": { "type": "boolean", "description": "Taps and drags as one finger, not the mouse. Default: as phone." }"#,
             r#""keys": { "type": "array", "items": { "type": "string" }, "description": "The keys the rule may hold. Default: the arrows, Space, Enter, Z, X and WASD. [] for none." }"#,
-            r#""shots": { "type": "integer", "description": "Pictures of the page, spread from the start to the end. Default 4, at most 12; 0 for none." }"#,
+            r#""shots": { "description": "Pictures of the page, returned as one sheet with the frame written over each, and as files. A number spreads them from the first frame to the last (default 4, at most 24; 0 for none); or {\"every\": 300}, or {\"at\": [0, 600]} in frames of the play. Also source (\"page\", the default, or \"canvas\") and max_edge (each picture's size on the sheet, default 320)." }"#,
             r#""max_draws": { "type": "number", "description": "Budget: most draws in any frame." }"#,
             r#""max_triangles": { "type": "number" }"#,
             r#""max_calls": { "type": "number", "description": "Budget: most graphics API calls in any frame." }"#,
@@ -124,6 +125,7 @@ pub const TOOLS: &[Tool] = &[
             r#""fast": { "type": "boolean", "description": "Do not wait for the display between frames: many times quicker for covering ground. The canvas is presented only now and then." }"#,
             r#""hold": { "type": "object", "description": "Keys held from now on: {\"keys_down\": [\"ArrowRight\"]}. An empty list releases everything.", "properties": { "keys_down": { "type": "array", "items": { "type": "string" } } } }"#,
             r#""events": { "type": "array", "description": "Input events, each with an optional \"at\" frame offset (default 0). See help(topic: \"input\").", "items": { "type": "object" } }"#,
+            shots!(),
             observe!(),
             context!(),
         ),
@@ -889,6 +891,7 @@ pub const TOOLS: &[Tool] = &[
             r#""source": { "type": "string", "description": "A function: (state, info) => ({keys_down: state.obstacleAhead < 40 ? [\"Space\"] : []}). info is {frame, time, memory}: memory is an object of yours kept between frames." }"#,
             r#""frames": { "type": "integer", "description": "At most this many frames. Default 120." }"#,
             r#""timeout_s": { "type": "number", "description": "Real seconds allowed. Default 40." }"#,
+            shots!(),
         ),
         read_only: false,
     },
@@ -992,6 +995,9 @@ Time
   run_until(until: {ready: true}) waits later. help(topic: \"loading\").
   requestAnimationFrame, performance.now, Date and timers all read one clock.
   step(frames: 600, fast: true) does not wait for the display: ten seconds of play in under one.
+  step(frames: 600, fast: true, shots: {every: 100}) takes a picture every 100 frames on the
+  way and returns them as one sheet, the frame written over each, with the full-size files
+  on disk; shots: {at: [0, 30, 90]} names the frames. policy and smoke take shots too.
 
 Getting back to where the bug is
   launch(url, deterministic: true)       seeded random numbers, a fixed step, a clock from zero;
@@ -1668,8 +1674,9 @@ The report
   Time        CPU in frame callbacks and GPU time: the mean, the worst frame and which
   PASS / FAIL for each budget asked for (max_draws, max_triangles, max_calls: the worst
               frame; max_cpu_ms, max_gpu_ms: the mean)
-  Pictures    of the page as composited, spread from the first frame to the last
-              (shots: n, default 4)
+  Pictures    one sheet of the page as composited, the frame written over each picture,
+              spread from the first frame to the last (shots: n, default 4), or where
+              asked (shots: {every: 300}, {at: [0, 600]}); the full-size files are on disk
   run_N       the play, kept: replay_run gives it again to a changed page
 
 It FAILS, and from a shell exits 2, when the page logged an error or threw, a request

@@ -285,6 +285,8 @@ What the tests cannot see of the work of 18 November (`DEPARTURES.md`, "Smoke te
 
 25. **A smoke test, watched.** `scanline smoke <a game's address> --seconds 20 --headless false`: a window opens, the game loads, and for about twenty seconds it is played by keys and a pointer that taps and drags about the page, faster than real time. The window closes and the report is printed. With `--phone` added the window's page is a phone's shape and the game responds as to a finger. Open one of the pictures the report names: it is the page as it looked, with its HUD.
 
+26. **A contact sheet, read.** `scanline launch <a game's address> --headless --deterministic true --paused`, then `scanline step 600 --fast --shots '{"every": 100, "source": "page"}'`. Open the sheet it names: six pictures in reading order, each under "FRAME 100", "FRAME 200" and so on in plain white capitals that can be read at a glance, and each picture the game as it looked on that frame.
+
 ## The desktop app prototype
 
 [prototypes/app](../prototypes/app/README.md). On the Mac, already done by hand on 12 November 2026: it runs games and is fast. Still to look at:

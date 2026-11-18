@@ -652,6 +652,17 @@ Measured on the game: 30 s of play as a phone (1,800 frames, 498 touch events) t
 
 Tested: `tests/protocol.test.mjs`, "a smoke test" (6 tests) on `fixtures/protocol/smoke.html`, a small game that counts its input and can be told to throw, to ask for files that are not there, to draw 300 quads a frame, or to stop: a healthy page passes and its play replays; the same seed gives the same input and pictures and another seed others; errors and failed requests carry their frames and addresses and the exit is 2; budgets; a stall; a phone played by touch. `tests/security.test.mjs` checks the tier and the MCP tool.
 
+### A contact sheet of chosen shots
+
+`step`, `policy` and `smoke` take `shots` (`crates/scanline-core/src/shots.rs`): `{every: n}`, `{at: [frames of the call]}`, or both, with `source` (the canvas as the GPU drew it, or the page as composited with its HUD), `max_edge`, `context` and `region`. The call stops at each frame asked for, as it does for an event due on a frame, takes the picture with `screenshot`, and goes on. What comes back to look at is one image: the pictures in reading order, each under "FRAME n", as near square as they allow. The full-size files are named in the result's data, so the one that matters can be opened or compared. `smoke` also takes a number, spread from the first frame to the last, and makes one sheet of the whole play.
+
+- **The host has letters of its own now.** It had no font (a note's pins carry their words beside the picture for that reason), and a labelled sheet needs one. `scanline-image` holds capitals, digits and a little punctuation at five pixels by seven, and draws them at a whole multiple. Nothing is loaded from the system, so a sheet is the same on every machine.
+- **At most 64 pictures a call**: each is a readback and a file. For every frame, a flight recording is the tool (`capture(when: {frames: n}, flight_frames: n)`), whose own sheet is unchanged and still unlabelled.
+- **Frame 0 of the canvas.** In a session that holds loading, the picture of each frame run while loading is now kept when the page will be held at its start line, so the canvas can be looked at there. A page that drew nothing before the line (it loads nothing) has no picture at frame 0: the call says so and takes the rest.
+- **The page source in a fast step** is what the compositor has when asked, which the browser brings up to date for the screenshot; on the fixtures it was the frame just stepped. The canvas source is the frame exactly, by readback, and is the default for `step` and `policy`; `smoke` defaults to the page, because what a smoke test wants to show is what a player would see.
+
+Tested: two unit tests in `scanline-image` (the letters, and the sheet's layout), and `tests/protocol.test.mjs`, "pictures along the way" (4 tests): a step's eight pictures at the frames asked, the sheet's size and columns, the last file identical to a screenshot taken afterwards, events still on their frames; a policy's; what is refused; a smoke test's.
+
 ## Known gaps in what is built
 
 - Unlabelled WebGPU objects are not given generated labels, which the specification lists as a modification. They are named by handle in results instead.

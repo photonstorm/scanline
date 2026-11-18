@@ -4,7 +4,7 @@
 //! It is made of the commands an agent would call by hand, in the order it would call them:
 //! `launch` (headless, deterministic, waiting until the page is ready), `policy` (the rule,
 //! run in the page once a frame, its answers sent as real input), `console`, `stats`,
-//! `screenshot`, `save_run` and `close`. Nothing here reaches past them, so what a smoke
+//! pictures along the way (`shots`), `save_run` and `close`. Nothing here reaches past them, so what a smoke
 //! test finds can be looked at again with the same commands: the same address and the same
 //! seed play the same game.
 //!
@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Result, anyhow, bail};
 use serde_json::{Value, json};
 
-use crate::commands::{SHORT, console, is_error, launch, number, page_text, policy, screenshot, stats};
+use crate::commands::{SHORT, console, is_error, launch, number, page_text, policy, stats};
 use crate::session::Session;
 use crate::{Host, result};
 
@@ -244,6 +244,55 @@ pub(crate) fn request_line(row: &Value) -> String {
     )
 }
 
+/// The frames of the play to picture, counted from its start: what `shots` asks for.
+fn picture_frames(wanted: &Value, total: u64) -> Result<Vec<u64>> {
+    let spread = |count: u64| -> Vec<u64> {
+        match count {
+            0 => Vec::new(),
+            // One picture is of the end: where the play got to.
+            1 => vec![total],
+            count => (0..count).map(|nth| (nth * total + (count - 1) / 2) / (count - 1)).collect(),
+        }
+    };
+
+    let mut frames = match wanted {
+        Value::Null => spread(4),
+        Value::Number(count) => {
+            let count = count.as_u64().ok_or_else(|| anyhow!("shots is how many pictures to take (0 to 24), or {{every: n}}, or {{at: [frames]}}."))?;
+
+            if count > 24 {
+                bail!("shots is at most 24 pictures spread over the play; for more, {{every: n}} takes up to 64.");
+            }
+
+            spread(count)
+        }
+        Value::Object(_) => {
+            let mut frames: Vec<u64> = wanted["at"].as_array().into_iter().flatten().filter_map(Value::as_u64).filter(|at| *at <= total).collect();
+
+            match wanted["every"].as_u64() {
+                Some(0) => bail!("shots.every is a whole number of frames, 1 or more."),
+                Some(every) => frames.extend((1..=total / every).map(|nth| nth * every)),
+                None if frames.is_empty() => {
+                    bail!("shots names no frames: {{every: n}} or {{at: [frames of the play, from 0 to {total}]}}, or a number of pictures to spread over it.")
+                }
+                None => {}
+            }
+
+            frames
+        }
+        _ => bail!("shots is how many pictures to take (0 to 24), or {{every: n}}, or {{at: [frames]}}."),
+    };
+
+    frames.sort_unstable();
+    frames.dedup();
+
+    if frames.len() > 64 {
+        bail!("That is {} pictures, and the most is 64: each is read back and written to disk. Ask for fewer (a larger every).", frames.len());
+    }
+
+    Ok(frames)
+}
+
 pub async fn smoke(host: &Arc<Host>, params: &Value) -> Result<Value> {
     let url = params["url"].as_str().ok_or_else(|| anyhow!("smoke needs a url, for example smoke(url: \"http://localhost:5173\", seconds: 20)."))?;
     let seconds = params["seconds"].as_f64().unwrap_or(20.0);
@@ -255,7 +304,10 @@ pub async fn smoke(host: &Arc<Host>, params: &Value) -> Result<Value> {
     let seed = params["seed"].as_u64().unwrap_or(1).min(u32::MAX as u64);
     let phone = params["phone"] == true;
     let touch = params["touch"].as_bool().unwrap_or(phone);
-    let wanted_shots = params["shots"].as_u64().unwrap_or(4).min(12);
+    // Which frames of the play to picture: a number spread from the first frame to the last
+    // (4 unless told), or {every: n} or {at: [...]} as step and policy take them.
+    let total = (seconds * RATE).round().max(1.0) as u64;
+    let pictured = picture_frames(&params["shots"], total)?;
     let keys: Vec<String> = match params["keys"].as_array() {
         Some(given) => given.iter().filter_map(|key| key.as_str().map(str::to_string)).collect(),
         None => KEYS.iter().map(|key| key.to_string()).collect(),
@@ -306,7 +358,7 @@ pub async fn smoke(host: &Arc<Host>, params: &Value) -> Result<Value> {
     let session = host.session(&json!({ "session": id }))?;
 
     // Whatever happens from here, the browser is not left running with nobody driving it.
-    let played = play(host, &session, params, url, seed, seconds, touch, &keys, wanted_shots, &launched, started).await;
+    let played = play(host, &session, params, url, seed, seconds, touch, &keys, &pictured, &launched, started).await;
     let keep = params["keep"] == true && played.is_ok();
 
     if !keep {
@@ -342,7 +394,7 @@ async fn play(
     seconds: f64,
     touch: bool,
     keys: &[String],
-    wanted_shots: u64,
+    pictured: &[u64],
     launched: &Value,
     started: Instant,
 ) -> Result<Value> {
@@ -355,7 +407,7 @@ async fn play(
 
     // The play is cut into stretches: short enough that nothing the probe keeps is lost
     // (the last 600 frames of console frames and figures), and one for each picture wanted.
-    let stretches = total.div_ceil(STRETCH).max(wanted_shots.saturating_sub(1)).max(1);
+    let stretches = total.div_ceil(STRETCH).max(1);
     let length = total.div_ceil(stretches);
     // Real time allowed in all: generous, since a slow page is a finding and not a fault of the test.
     let allowed = Duration::from_secs_f64(params["timeout_s"].as_f64().unwrap_or((seconds * 6.0).max(90.0)).clamp(10.0, 3600.0));
@@ -364,6 +416,7 @@ async fn play(
     let mut lines_seen: Vec<Value> = Vec::new();
     let mut requests: Vec<Value> = Vec::new();
     let mut shots: Vec<Value> = Vec::new();
+    let mut missed: Vec<String> = Vec::new();
     let mut images: Vec<Value> = Vec::new();
     let (mut console_cursor, mut request_cursor) = (0u64, 0u64);
     let (mut frame, mut sent) = (0u64, 0u64);
@@ -386,29 +439,22 @@ async fn play(
         }};
     }
 
-    macro_rules! shot {
-        () => {{
-            if (shots.len() as u64) < wanted_shots {
-                // The page as a player sees it, with whatever it draws outside its canvas.
-                match screenshot(session, &json!({ "source": "page", "max_edge": params["shot_edge"].as_u64().unwrap_or(512) })).await {
-                    Ok(taken) => {
-                        if let Some(image) = taken["images"].get(0) {
-                            let mut image = image.clone();
-
-                            image["frame"] = json!(frame);
-                            shots.push(json!({ "frame": frame, "view": image["view"], "original": image["original"] }));
-                            images.push(image);
-                        }
-                    }
-                    Err(error) => shots.push(json!({ "frame": frame, "error": format!("{error:#}") })),
-                }
-            }
-        }};
-    }
-
     // Loading is part of the test: what it logged and what it could not fetch.
     gather!();
-    shot!();
+
+    // What every picture is: the page as a player sees it (with what it draws outside its
+    // canvas) unless the caller asked for the canvas.
+    let picture = |at: Vec<u64>| {
+        let mut asked = json!({ "at": at, "sheet": false, "source": "page" });
+
+        for name in ["source", "context", "region"] {
+            if !params["shots"][name].is_null() {
+                asked[name] = params["shots"][name].clone();
+            }
+        }
+
+        asked
+    };
 
     if loaded {
         let mut stretch = 0u64;
@@ -421,7 +467,16 @@ async fn play(
                 .replace("__KEYS__", &json!(keys).to_string())
                 .replace("__TOUCH__", if touch { "true" } else { "false" });
 
-            let ran = match policy(session, &json!({ "source": source, "frames": frames, "timeout_s": 45, "observe": { "state": false } })).await {
+            // The pictures that fall in this stretch, counted from its start.
+            let due: Vec<u64> =
+                pictured.iter().filter(|at| (**at == 0 && frame == 0) || (**at > frame && **at <= frame + frames)).map(|at| at - frame).collect();
+            let mut asked = json!({ "source": source, "frames": frames, "timeout_s": 45, "observe": { "state": false } });
+
+            if !due.is_empty() {
+                asked["shots"] = picture(due);
+            }
+
+            let ran = match policy(session, &asked).await {
                 Ok(ran) => ran,
                 Err(error) => {
                     stopped = Some(format!("the play could not go on at frame {frame}: {error:#}"));
@@ -448,10 +503,8 @@ async fn play(
             gather!();
             stretch += 1;
 
-            // A picture after each stretch that ends on one of the frames wanted.
-            if (1..wanted_shots).any(|nth| (nth * stretches).div_ceil(wanted_shots - 1) == stretch) {
-                shot!();
-            }
+            shots.extend(ran["data"]["shots"].as_array().cloned().unwrap_or_default());
+            missed.extend(ran["data"]["shots_missed"].as_array().into_iter().flatten().filter_map(|why| why.as_str().map(str::to_string)));
 
             match ran["data"]["ended"].as_str() {
                 Some("the page has nothing more scheduled") => {
@@ -654,12 +707,28 @@ async fn play(
         ));
     }
 
+    if !missed.is_empty() {
+        lines.push(format!("  No picture could be taken at one of the frames asked for ({}).", missed.join("; ")));
+    }
+
+    // The pictures as one sheet, each under its frame number.
+    let mut sheet = Value::Null;
+
     if !shots.is_empty() {
-        lines.push(format!(
-            "  Pictures of the page at frame{} {} (below).",
-            if shots.len() == 1 { "" } else { "s" },
-            shots.iter().map(|shot| shot["frame"].to_string()).collect::<Vec<_>>().join(", ")
-        ));
+        let cell = params["shots"]["max_edge"].as_u64().unwrap_or(320).clamp(32, 1024) as u32;
+
+        match crate::shots::sheet_of(session, &shots, cell) {
+            Ok((made, columns, path)) => {
+                lines.push(format!(
+                    "  Pictures at frame{} {}: one sheet, {columns} across in reading order, each under its frame number (below). The full-size files are in the result's data.",
+                    if shots.len() == 1 { "" } else { "s" },
+                    shots.iter().map(|shot| shot["frame"].to_string()).collect::<Vec<_>>().join(", ")
+                ));
+                sheet = json!({ "path": path, "columns": columns, "width": made.width, "height": made.height });
+                images.push(json!({ "view": path, "original": path, "width": made.width, "height": made.height, "scale": 1.0, "space": "contact_sheet", "columns": columns, "frames": shots.iter().map(|shot| shot["frame"].clone()).collect::<Vec<_>>() }));
+            }
+            Err(error) => lines.push(format!("  The pictures could not be made into a sheet ({error:#}); the files are in the result's data.")),
+        }
     }
 
     if let Some(run) = &run {
@@ -686,6 +755,7 @@ async fn play(
             "figures": figured,
             "checks": checks,
             "shots": shots,
+            "sheet": sheet,
             "run": run,
         }),
     );
