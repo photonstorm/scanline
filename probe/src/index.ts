@@ -19,6 +19,7 @@ import { installTimers } from './clock/timers';
 import { config, type Level } from './config';
 import { allContexts, contextHandlers, describe, installContextDiscovery, knownAdapters, webgpuStarting } from './contexts';
 import { installErrors } from './errors';
+import { installFilm } from './film';
 import { glHandlers, installGlTracking } from './gl/tracker';
 import { gpuPatchHandlers, gpuPatchIntercepts } from './gpu/patch';
 import { gpuHandlers, installGpuTracking } from './gpu/tracker';
@@ -210,6 +211,7 @@ function boot (): void
     installAudio();
     installWatches();
     installReady();
+    installFilm();
 
     // What was counted and drawn from while the page loaded is not part of what follows.
     onStartLine(() =>

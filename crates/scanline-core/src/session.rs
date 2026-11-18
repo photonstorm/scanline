@@ -152,6 +152,9 @@ pub struct State {
     pub recorder: Option<ContextRef>,
     /// A video under way (video(action: "start")), and when it began.
     pub video: Option<std::time::Instant>,
+    /// A film under way (film.rs): when it began, the probe that holds it, and whether it is
+    /// of the page as composited (which the host takes a picture of after every frame).
+    pub film: Option<(std::time::Instant, Instance, bool)>,
     /// The browser's name for the probe script it runs in every new document of the page.
     probe_script: Option<String>,
     /// The control strip's protocol session, while its window is open.

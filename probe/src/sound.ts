@@ -1344,6 +1344,50 @@ export function seeContext (context: unknown): void
     }
 }
 
+// For a film (film.ts): each context that plays in real time, with the node that hears what
+// reaches its destination, and a way to listen to that node which the page's graph does not show.
+export function listenable (): Array<{ id: string; context: any; tap: any }>
+{
+    const out: Array<{ id: string; context: any; tap: any }> = [];
+
+    for (const info of contexts.values())
+    {
+        const context = info.ref.deref();
+
+        if (!context || context.state === 'closed' || typeof context.suspend !== 'function' || typeof context.startRendering === 'function')
+        {
+            continue;
+        }
+
+        const tap = tapOf(context);
+
+        if (tap)
+        {
+            out.push({ id: info.id, context, tap });
+        }
+    }
+
+    return out;
+}
+
+export function listenTo (from: any, to: any): void
+{
+    nodeIds.set(to, '');
+    nativeConnect?.call(from, to);
+}
+
+export function stopListening (node: any): void
+{
+    try
+    {
+        nativeDisconnect?.call(node);
+    }
+    catch
+    {
+        // Gone with its context.
+    }
+}
+
 // ---- Clips (A6): the last seconds of what each context played ----
 
 interface Recorder { context: string; node: any; sink: any; rate: number; channels: Float32Array[]; at: number; filled: number }

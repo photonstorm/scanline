@@ -287,6 +287,10 @@ What the tests cannot see of the work of 18 November (`DEPARTURES.md`, "Smoke te
 
 26. **A contact sheet, read.** `scanline launch <a game's address> --headless --deterministic true --paused`, then `scanline step 600 --fast --shots '{"every": 100, "source": "page"}'`. Open the sheet it names: six pictures in reading order, each under "FRAME 100", "FRAME 200" and so on in plain white capitals that can be read at a glance, and each picture the game as it looked on that frame.
 
+27. **A film, watched and heard.** With a game served locally: `scanline launch <address> --headless --deterministic true --paused --viewport '{"width":390,"height":844}' --dpr 3 --mobile`, give it the click or key that starts it (`scanline step 60 --events '[{"at": 30, "pointer": "down", "x": 195, "y": 474, "space": "css_px"}, {"at": 34, "pointer": "up", "x": 195, "y": 474, "space": "css_px"}]'`), then `scanline film --frames 1800 --path ~/Desktop/clip.mp4`. Open the file in QuickTime: thirty seconds of the game, smooth, at its right speed, with its music and effects in time with what is on screen and no clicks or gaps in the sound. Scrub through it: it seeks. Then the same with `--source page`: the score and the game's other HTML are in the picture.
+28. **A film, posted.** Upload one of those files to X as a draft post (and anywhere else clips go). It is accepted without being asked to convert, and plays there with sound. This is the one thing about a film no test here can check: the tests play it back with ffmpeg, which takes anything.
+29. **A film of play.** In the app, record a take of a game by hand (item 14). In a terminal, `scanline take play <its name> --film '{}'` plays it again with a film begun as it starts, and `scanline film stop --path ~/Desktop/play.mp4` writes it: the film is of that play, with its sound.
+
 ## The desktop app prototype
 
 [prototypes/app](../prototypes/app/README.md). On the Mac, already done by hand on 12 November 2026: it runs games and is fast. Still to look at:

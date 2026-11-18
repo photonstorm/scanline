@@ -43,7 +43,7 @@ What a client may do is fixed when the host starts. No command changes it.
 | Tier | Commands | Default |
 |---|---|---|
 | Read | Looking, inventory, capture, analysis, the viewer | Always on |
-| Control | `pause`, `resume`, `step`, `run_until`, `input`, `request_human`, `take_control`, `debug`, `strip`, `replay_run`, `live_view`, `smoke`, and the `page` calls that change the game | On |
+| Control | `pause`, `resume`, `step`, `run_until`, `input`, `request_human`, `take_control`, `debug`, `strip`, `replay_run`, `live_view`, `smoke`, `film`, and the `page` calls that change the game | On |
 | Patch and evaluate | `patch_*`, `experiment`, `eval`, `policy`, and an expression given to `run_until` or `capture(when)` | On for pages served from this machine (`localhost`, `127.x.x.x`, `[::1]`, `*.localhost`, files, `about:blank`). Off for every other origin |
 | Files and navigation | `export`, `import`, `diff`, `assert` baselines and `patch_texture` images outside the artefact directory; `navigate` | Files on. `navigate` keeps to the origin the session was launched on, and a session launched on a file keeps to that file's directory |
 | Live views and patches | `live_view` with one of Scanline's own views (overdraw, wireframe, draw_id, depth) is a patch, and is in the patch tier | As the patch tier |

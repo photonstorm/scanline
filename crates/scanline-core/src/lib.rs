@@ -13,9 +13,11 @@ mod audio;
 mod capture;
 mod check;
 mod commands;
+mod film;
 mod handoff;
 mod inventory;
 mod keys;
+mod mp4;
 mod network;
 mod notes;
 mod page;
@@ -316,7 +318,7 @@ impl Host {
 
         // One owner of the input at a time. While the person has it, the agent may look but
         // may not move time or send input: that would fight them for the game.
-        if matches!(method, "input" | "step" | "run_until" | "resume" | "navigate" | "replay_run" | "policy")
+        if matches!(method, "input" | "step" | "run_until" | "resume" | "navigate" | "replay_run" | "policy" | "film")
             || (method == "take" && params["action"] == "play")
         {
             if let Ok(session) = self.session(&params) {
@@ -344,6 +346,7 @@ impl Host {
             "viewer" => viewer::viewer(self, &live()?, &params).await,
             "progress" => Ok(progress(&*self.session(&params)?)),
             "video" => handoff::video(self, &live()?, &params).await,
+            "film" => film::film(self, &live()?, &params).await,
             // The Scanline app's texture gallery.
             "thumbnails" => inventory::thumbnails(&live()?, &params).await,
             // The Scanline app's Send to agent button, as the viewer's.

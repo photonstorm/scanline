@@ -1,0 +1,77 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Film fixture</title>
+<style>html, body { margin: 0; background: #111; } canvas { display: block; }</style>
+</head>
+<body>
+<canvas id="game" width="320" height="240"></canvas>
+<script>
+// A page whose every frame can be told from every other, and whose sound says when it was
+// made, for checking a film (scanline film) against what it should hold.
+//
+// Pictures: frame n (counted from 1) has a white bar 8 pixels wide whose left edge is at
+// x = (n * 4) % 320, on a background that is dark red for the first half of each second of
+// frames and dark blue for the second half.
+//
+// Sound: a quiet 220 Hz tone all the time, and a 880 Hz beep of 50 ms begun on frames 30,
+// 90, 150 and so on: half a second in, then every second.
+//
+//   ?silent   no sound at all
+
+const canvas = document.getElementById('game');
+const gl = canvas.getContext('webgl2', { antialias: false });
+const silent = new URLSearchParams(location.search).has('silent');
+const game = window.game = { frame: 0, beeps: [] };
+
+let audio = null;
+
+if (!silent)
+{
+    audio = new AudioContext({ sampleRate: 48000 });
+
+    const hum = audio.createOscillator();
+    const quiet = audio.createGain();
+
+    hum.frequency.value = 220;
+    quiet.gain.value = 0.05;
+    hum.connect(quiet).connect(audio.destination);
+    hum.start();
+}
+
+window.__scanline?.state.provide(() => ({ frame: game.frame, beeps: game.beeps, audio: audio ? audio.state : null, time: audio ? Math.round(audio.currentTime * 1000) / 1000 : null }));
+
+function frame ()
+{
+    requestAnimationFrame(frame);
+    game.frame++;
+
+    if (audio && game.frame % 60 === 30)
+    {
+        const beep = audio.createOscillator();
+        const loud = audio.createGain();
+
+        beep.frequency.value = 880;
+        loud.gain.value = 0.6;
+        beep.connect(loud).connect(audio.destination);
+        beep.start(audio.currentTime);
+        beep.stop(audio.currentTime + 0.05);
+        game.beeps.push(game.frame);
+    }
+
+    const first = (game.frame - 1) % 60 < 30;
+
+    gl.disable(gl.SCISSOR_TEST);
+    gl.clearColor(first ? 0.5 : 0, 0, first ? 0 : 0.5, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.enable(gl.SCISSOR_TEST);
+    gl.scissor((game.frame * 4) % 320, 0, 8, 240);
+    gl.clearColor(1, 1, 1, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+}
+
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

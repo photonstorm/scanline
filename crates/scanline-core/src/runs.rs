@@ -464,7 +464,19 @@ pub(crate) async fn replay(session: &Arc<Session>, run: &Value, handle: &str, pa
     let mut diverged: Option<String> = None;
     let mut skipped_keys = 0usize;
 
+    // A film of the replay (film.rs), from a frame of it: begun once the page has loaded.
+    let film_from = if params["film"].is_object() { Some(params["film"]["from_frame"].as_u64().unwrap_or(0)) } else { None };
+    let mut filming = false;
+
     while frame < target && diverged.is_none() {
+        if let Some(from) = film_from.filter(|from| !filming && frame >= *from) {
+            let _ = from;
+
+            crate::commands::await_ready(session, &mut notes).await?;
+            crate::film::start(session, &params["film"]).await?;
+            filming = true;
+        }
+
         // What the network gave the page by this frame is handed over before the page moves on.
         crate::network::release(session, frame).await;
 
@@ -472,6 +484,8 @@ pub(crate) async fn replay(session: &Arc<Session>, run: &Value, handle: &str, pa
         // or to the next frame a kept response is due on, if that is sooner.
         let stop = if every > 0 { ((frame / every + 1) * every).min(target) } else { (frame + 120).min(target) };
         let stop = crate::network::next_frame(session, frame).map_or(stop, |due| stop.min(due).max(frame + 1));
+        // And no further than where the film is to begin.
+        let stop = film_from.filter(|from| !filming && *from > frame).map_or(stop, |from| stop.min(from));
         let mut chunk = Vec::new();
 
         while next_event < events.len() && events[next_event].0 < stop {

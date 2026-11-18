@@ -8,7 +8,7 @@
 // frame resolves to an engine object.
 
 import assert from 'node:assert/strict';
-import { execFile } from 'node:child_process';
+import { execFile, spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -1222,5 +1222,315 @@ describe('pictures along the way', () =>
         assert.deepEqual([smoked.json.data.shots[1].width, smoked.json.data.shots[1].height], [320, 240], 'the canvas, not the page');
         assert.equal(smoked.json.images.length, 1);
         assert.match((await scanline('smoke', server.url('fixtures/protocol/smoke.html'), '--shots', 40)).out, /shots is at most 24 pictures spread over the play/);
+    });
+});
+
+// A recording made by stepping, as an MP4 (fixtures/protocol/film.html: every frame's picture
+// says which frame it is, and a beep is begun on frames 30, 90, 150…).
+describe('a film', () =>
+{
+    const page = (query = '') => server.url(`fixtures/protocol/film.html${query}`);
+    const scratch = mkdtempSync(join(tmpdir(), 'scanline-film-'));
+
+    after(() => rmSync(scratch, { recursive: true, force: true }));
+
+    // The boxes of an MP4, by path, with where each one's body is.
+    function boxes (file, from = 0, to = file.length, path = '', out = [])
+    {
+        let at = from;
+
+        while (at + 8 <= to)
+        {
+            const size = file.readUInt32BE(at);
+            const kind = file.toString('latin1', at + 4, at + 8);
+            const here = `${path}/${kind}`;
+
+            assert.ok(size >= 8 && at + size <= to, `${here} does not fit in its parent`);
+            out.push({ path: here, at: at + 8, size: size - 8 });
+
+            if (['moov', 'trak', 'mdia', 'minf', 'stbl', 'edts'].includes(kind))
+            {
+                boxes(file, at + 8, at + size, here, out);
+            }
+
+            at += size;
+        }
+
+        return out;
+    }
+
+    const stbl = '/moov/trak/mdia/minf/stbl';
+
+    // What a film's file says of itself: its tracks, their clocks and how many samples each has.
+    function described (path)
+    {
+        const file = readFileSync(path);
+        const found = boxes(file);
+        const all = (name) => found.filter((box) => box.path === name);
+
+        return {
+            order: found.filter((box) => box.path.split('/').length === 2).map((box) => box.path),
+            tracks: all('/moov/trak').length,
+            movie: { scale: file.readUInt32BE(all('/moov/mvhd')[0].at + 12), duration: file.readUInt32BE(all('/moov/mvhd')[0].at + 16) },
+            media: all('/moov/trak/mdia/mdhd').map((box) => ({ scale: file.readUInt32BE(box.at + 12), duration: file.readUInt32BE(box.at + 16) })),
+            samples: all(`${stbl}/stsz`).map((box) => file.readUInt32BE(box.at + 8)),
+            size: [file.readUInt32BE(all('/moov/trak/tkhd')[0].at + 76) >>> 16, file.readUInt32BE(all('/moov/trak/tkhd')[0].at + 80) >>> 16],
+            keys: file.readUInt32BE(all(`${stbl}/stss`)[0].at + 4),
+            entries: all(`${stbl}/stsd`).map((box) => file.toString('latin1', box.at + 12, box.at + 16)),
+            skip: all('/moov/trak/edts/elst').map((box) => file.readUInt32BE(box.at + 12))
+        };
+    }
+
+    // ffmpeg, where the machine has it, to play the file back: the pictures and the sound.
+    const ffmpeg = spawnSync('ffmpeg', ['-version']).status === 0;
+
+    test('the next frames in one call: every frame is in the file, a sixtieth of a second each, with the page\'s sound', async (t) =>
+    {
+        await scanline('launch', page(), '--headless', '--paused', '--deterministic', 'true');
+
+        const filmed = await scanline('film', '--frames', 150, '--json');
+
+        assert.equal(filmed.code, 0, filmed.out);
+        assert.match(filmed.json.summary, /^The film is .*film-001\.mp4: 150 frames at 60 a second \(2\.5 s\), 320×240 H\.264 with AAC sound \(48 kHz stereo\), \d+\.\d MB\. Every frame stepped is in it, each lasting exactly 1\/60 s; it took \d+ s to make\.\nThe page is paused at frame 150\.$/);
+
+        const data = filmed.json.data;
+
+        assert.equal(data.frames, 150);
+        assert.deepEqual(data.notes, []);
+        assert.equal(data.audio.samples, 120000, 'two and a half seconds of sound at 48 kHz: as long as the pictures, to the sample');
+        assert.ok(existsSync(data.film));
+
+        // The page ran exactly the frames filmed, and its sound exactly as long.
+        const state = JSON.parse((await scanline('page', '--json')).json.data.state.text);
+
+        assert.equal(state.frame, 150);
+        assert.deepEqual(state.beeps, [30, 90, 150]);
+        // (A context renders 128 sample frames at a time and is stopped from the page's own
+        // thread, so it stands a few milliseconds past the mark: more if that thread was kept waiting.)
+        assert.ok(Math.abs(state.time - 2.5) < 0.03, `the page's audio clock stands at ${state.time} s`);
+
+        // The file: the index first, two tracks, 150 pictures at 1/60 s each and the sound beside them.
+        const file = described(data.film);
+
+        assert.deepEqual(file.order, ['/ftyp', '/moov', '/mdat']);
+        assert.equal(file.tracks, 2);
+        assert.deepEqual(file.entries, ['avc1', 'mp4a']);
+        assert.deepEqual(file.movie, { scale: 1000, duration: 2500 });
+        assert.deepEqual(file.media[0], { scale: 60000, duration: 150000 });
+        assert.equal(file.media[1].scale, 48000);
+        assert.equal(file.samples[0], 150);
+        assert.equal(file.keys, 3, 'a frame to start from each second');
+        assert.deepEqual(file.size, [320, 240]);
+        assert.deepEqual(file.skip, [data.audio.skip], 'the sound starts past what its decoder drops');
+
+        if (!ffmpeg)
+        {
+            t.diagnostic('ffmpeg is not installed, so the film was not played back');
+
+            return;
+        }
+
+        // Played back: frame n of the film is frame n of the page, to the pixel.
+        const raw = join(scratch, 'frames.rgb');
+
+        assert.equal(spawnSync('ffmpeg', ['-v', 'error', '-y', '-i', data.film, '-vf', 'select=eq(n\\,0)+eq(n\\,99)+eq(n\\,149)', '-fps_mode', 'passthrough', '-pix_fmt', 'rgb24', '-f', 'rawvideo', raw]).status, 0);
+
+        const pictures = readFileSync(raw);
+
+        assert.equal(pictures.length, 3 * 320 * 240 * 3);
+
+        for (const [index, frame] of [1, 100, 150].entries())
+        {
+            const row = pictures.subarray(index * 320 * 240 * 3 + 120 * 320 * 3).subarray(0, 320 * 3);
+            const bar = [...Array(320).keys()].filter((x) => row[x * 3] > 200 && row[x * 3 + 1] > 200);
+            const beside = (bar[0] + 100) % 320;
+
+            assert.deepEqual([bar[0], bar.length], [(frame * 4) % 320, 8], `the bar of frame ${frame}`);
+            assert.ok((frame - 1) % 60 < 30 ? row[beside * 3] > 100 && row[beside * 3 + 2] < 30 : row[beside * 3] < 30 && row[beside * 3 + 2] > 100, `the background of frame ${frame}`);
+        }
+
+        // And its sound: as long as the pictures, with each beep where the frame that made it is.
+        const sound = join(scratch, 'sound.raw');
+
+        assert.equal(spawnSync('ffmpeg', ['-v', 'error', '-y', '-i', data.film, '-f', 'f32le', '-ac', '1', '-ar', '48000', sound]).status, 0);
+
+        const heard = new Float32Array(new Uint8Array(readFileSync(sound)).buffer);
+
+        assert.equal(heard.length, 120000, 'decoded, the sound is 2.5 s to the sample');
+
+        const onsets = [];
+        let quiet = true;
+
+        for (let at = 0; at + 240 < heard.length; at += 48)
+        {
+            let energy = 0;
+
+            for (let i = at; i < at + 240; i++) { energy += heard[i] * heard[i]; }
+
+            const loud = Math.sqrt(energy / 240);
+
+            if (loud > 0.15 && quiet)
+            {
+                let first = at;
+
+                while (Math.abs(heard[first]) < 0.1) { first++; }
+
+                onsets.push(first / 48000);
+                quiet = false;
+            }
+            else if (loud < 0.08)
+            {
+                quiet = true;
+            }
+        }
+
+        // Frame 30 is shown from 29/60 s. The audio context renders 128 sample frames at a
+        // time, so the beep begins a few milliseconds after that (2 to 5 on a quiet machine),
+        // never before; on a busy one, by as long as the page's thread was kept from stopping it.
+        assert.equal(onsets.length, 3, `beeps heard at ${onsets}`);
+
+        for (const [index, onset] of onsets.entries())
+        {
+            const late = (onset - (29 + index * 60) / 60) * 1000;
+
+            assert.ok(late > -1 && late < 30, `beep ${index + 1} is ${late.toFixed(1)} ms after its frame`);
+        }
+    });
+
+    test('started and stopped round any stepping, at a size asked for, to a file named', async () =>
+    {
+        await scanline('launch', page(), '--headless', '--paused', '--deterministic', 'true');
+        await scanline('step', 10, '--fast');
+
+        const started = await scanline('film', 'start', '--width', 160, '--bitrate', 2000000);
+
+        assert.match(started.out, /^Filming ctx_1 at 160×120 \(the canvas is 320×240\), 60 frames a second, H\.264 at 2\.0 Mbit\/s, with the page's sound\. Every frame the page is stepped through from now is in the film/);
+        assert.match((await scanline('status')).out, /A film is being made: every frame stepped is in it/);
+        assert.match((await scanline('film', 'start')).out, /A film is already being made/);
+
+        await scanline('step', 60, '--fast');
+        await scanline('policy', '() => ({})', '--frames', 30);
+        await scanline('step', 1);
+
+        const path = join(scratch, 'small.mp4');
+        const stopped = await scanline('film', 'stop', '--path', path, '--json');
+
+        assert.equal(stopped.code, 0, stopped.out);
+        assert.equal(stopped.json.data.frames, 91, 'the frames of the fast step, the policy and the slow step, and none from before');
+        assert.equal(stopped.json.data.film, path);
+        assert.deepEqual(described(path).size, [160, 120]);
+        assert.equal(described(path).samples[0], 91);
+        assert.equal((await scanline('status', '--json')).json.data.frame, 101);
+        assert.equal((await scanline('status', '--json')).json.data.filming, false);
+
+        assert.match((await scanline('film', 'stop')).out, /No film is being made/);
+        assert.match((await scanline('film', 'start', '--max_edge', 8)).out, /max_edge is a size in pixels from 16 to 4096/);
+        assert.match((await scanline('film')).out, /film needs one of: action: "start"/);
+
+        // A path that will not do loses nothing: the film is still there to be stopped properly.
+        await scanline('film', 'start');
+        await scanline('step', 5, '--fast');
+        assert.match((await scanline('film', 'stop', '--path', join(scratch, 'film.txt'))).out, /must end in \.mp4/);
+        assert.equal((await scanline('film', 'stop', '--json')).json.data.frames, 5);
+    });
+
+    test('with no sound asked for, or none played, the file has pictures only', async () =>
+    {
+        await scanline('launch', page(), '--headless', '--paused', '--deterministic', 'true');
+
+        const mute = await scanline('film', '--frames', 30, '--sound', 'false', '--json');
+
+        assert.match(mute.json.summary, /H\.264 with no sound \(none was asked for\)/);
+        assert.equal(described(mute.json.data.film).tracks, 1);
+        await scanline('close');
+
+        await scanline('launch', page('?silent'), '--headless', '--paused', '--deterministic', 'true');
+
+        const silent = await scanline('film', '--frames', 30, '--json');
+
+        assert.match(silent.json.summary, /H\.264 with no sound \(the page played none through Web Audio while it was filmed\)/);
+        assert.equal(silent.json.data.audio, null);
+        assert.equal(described(silent.json.data.film).samples[0], 30);
+    });
+
+    test('the page as composited can be filmed instead of the canvas: each picture is still of its own frame', async (t) =>
+    {
+        await scanline('launch', page(), '--headless', '--paused', '--deterministic', 'true');
+
+        const started = await scanline('film', 'start', '--source', 'page');
+
+        assert.match(started.out, /^Filming the page as composited at 1280×\d+/);
+        await scanline('step', 40, '--fast');
+        await scanline('policy', '() => ({})', '--frames', 20);
+
+        const stopped = await scanline('film', 'stop', '--json');
+
+        assert.equal(stopped.code, 0, stopped.out);
+        assert.equal(stopped.json.data.frames, 60);
+        assert.equal(stopped.json.data.width, 1280, 'the page is 1280 wide, where its canvas is 320');
+        assert.equal(described(stopped.json.data.film).samples[0], 60);
+        assert.equal(stopped.json.data.audio.samples, 48000);
+        assert.match((await scanline('film', 'start', '--source', 'window')).out, /source is "canvas" .* or "page"/);
+
+        if (!ffmpeg)
+        {
+            t.diagnostic('ffmpeg is not installed, so the film was not played back');
+
+            return;
+        }
+
+        const raw = join(scratch, 'page.rgb');
+        const { width, height } = stopped.json.data;
+
+        assert.equal(spawnSync('ffmpeg', ['-v', 'error', '-y', '-i', stopped.json.data.film, '-vf', 'select=eq(n\\,0)+eq(n\\,39)+eq(n\\,59)', '-fps_mode', 'passthrough', '-pix_fmt', 'rgb24', '-f', 'rawvideo', raw]).status, 0);
+
+        const pictures = readFileSync(raw);
+
+        // The canvas is at the page's top-left: frame n's bar is where frame n put it, though
+        // the picture was taken by the browser after the step and not by the page during it.
+        for (const [index, frame] of [1, 40, 60].entries())
+        {
+            const row = pictures.subarray(index * width * height * 3 + 120 * width * 3).subarray(0, 320 * 3);
+            const bar = [...Array(320).keys()].filter((x) => row[x * 3] > 200 && row[x * 3 + 1] > 200);
+
+            assert.deepEqual([bar[0], bar.length], [(frame * 4) % 320, 8], `the bar of frame ${frame}`);
+        }
+    });
+
+    test('a kept run is played again and filmed, the whole of it or a part', async () =>
+    {
+        await scanline('launch', page(), '--headless', '--paused', '--deterministic', 'true');
+        await scanline('step', 120, '--fast', '--events', '[{"at": 20, "key": "ArrowLeft", "press": true}]');
+
+        const run = (await scanline('save_run', '--json')).json.data.run;
+        const part = await scanline('film', '--run', run, '--from_frame', 30, '--to_frame', 90, '--json');
+
+        assert.equal(part.code, 0, part.out);
+        assert.match(part.json.summary, /^The film is .*: 60 frames at 60 a second \(1\.0 s\), 320×240 H\.264 with AAC sound/);
+        assert.match(part.json.summary, new RegExp(`Replayed ${run} to frame 90 of 120\\. Paused\\.`));
+        assert.equal(part.json.data.played.diverged, null);
+        assert.equal(described(part.json.data.film).samples[0], 60);
+
+        const whole = await scanline('film', '--run', run, '--json');
+
+        assert.equal(whole.json.data.frames, 120);
+
+        // A take is filmed as it is played: the film begins with it, and is stopped afterwards.
+        await scanline('take', 'start', 'beeps');
+        await scanline('step', 45, '--fast');
+        await scanline('take', 'stop');
+
+        const played = await scanline('take', 'play', 'beeps', '--film', '{"sound": false, "max_edge": 160}');
+
+        assert.match(played.out, /Played take «beeps» to frame \d+/, played.out);
+
+        const taken = await scanline('film', 'stop', '--json');
+
+        assert.equal(taken.json.data.frames, 165, 'the take plays from the page\'s load: the 120 frames before it and its own 45');
+        assert.equal(taken.json.data.width, 160);
+        assert.equal(taken.json.data.audio, null);
+        await scanline('take', 'remove', 'beeps');
+        assert.match(whole.json.summary, /All 4 fingerprints along the way match the original/);
+        assert.match((await scanline('film', '--run', 'run_999')).out, /No run "run_999"/);
     });
 });

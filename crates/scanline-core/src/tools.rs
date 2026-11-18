@@ -90,6 +90,30 @@ pub const TOOLS: &[Tool] = &[
         read_only: false,
     },
     Tool {
+        name: "film",
+        description: "A recording made by stepping, as an MP4 to share: every frame the page is stepped through is taken from the canvas at the size asked and lasts exactly 1/60 s in the file, however slow the machine, with the page's Web Audio sound. H.264 with AAC. Start it, step or replay, stop it; or frames: n for the next n frames; or run: \"run_N\" to film a kept run played again.",
+        schema: schema!(
+            "[]",
+            session!(),
+            context!(),
+            r#""action": { "type": "string", "enum": ["start", "stop"], "description": "start: every frame stepped from now is filmed. stop: writes the MP4." }"#,
+            r#""frames": { "type": "integer", "description": "In one call: film the next n frames (stepped fast), then write the file." }"#,
+            r#""run": { "type": "string", "description": "In one call: play a kept run again from the page's load, filming it. from_frame and to_frame film a part." }"#,
+            r#""from_frame": { "type": "integer", "description": "With run: the frame the film begins at. Default 0." }"#,
+            r#""to_frame": { "type": "integer", "description": "With run: the frame it ends at. Default: the run's end." }"#,
+            r#""source": { "type": "string", "enum": ["canvas", "page"], "description": "canvas (default): the canvas as the GPU drew it. page: the page as composited, with what it draws in HTML over the canvas (a HUD); several times slower to make." }"#,
+            r#""max_edge": { "type": "integer", "description": "The longer side of the picture, in pixels. Default 1920; the canvas's own size if it is smaller." }"#,
+            r#""width": { "type": "integer", "description": "The picture's width. With height too, the canvas is fitted inside with black at the sides." }"#,
+            r#""height": { "type": "integer" }"#,
+            r#""bitrate": { "type": "integer", "description": "Bits a second of video. Default: a tenth of a bit a pixel a frame, from 3 to 25 Mbit/s." }"#,
+            r#""sound": { "type": "boolean", "description": "Default true: the page's Web Audio sound is in the film." }"#,
+            r#""path": { "type": "string", "description": "With stop, frames or run: where to write the .mp4. Default: in the session's own folder." }"#,
+            r#""hold": { "type": "object", "description": "With frames: keys held, as step takes them." }"#,
+            r#""events": { "type": "array", "description": "With frames: input on exact frames, as step takes it.", "items": { "type": "object" } }"#,
+        ),
+        read_only: false,
+    },
+    Tool {
         name: "status",
         description: "Where a session stands: running or paused, frame number, rendering contexts with their handles, what Scanline changed in the page, warnings, and how many errors were logged.",
         schema: schema!("[]", session!()),
@@ -524,6 +548,7 @@ pub const TOOLS: &[Tool] = &[
             r#""then": { "type": "string", "enum": ["pause", "capture", "screenshot"], "description": "For play: what to do where it ends." }"#,
             r#""to_frame": { "type": "integer", "description": "For play: stop at this frame." }"#,
             r#""until_mark": { "type": "string", "description": "For play: stop where the page makes this mark." }"#,
+            r#""film": { "type": "object", "description": "For play: begin a film as the take starts ({} for the defaults, or film's own arguments: source, max_edge, sound, from_frame). film(action: \"stop\") then writes it." }"#,
             r#""speed": { "type": "string", "enum": ["fast", "real"], "description": "For play. Default fast." }"#,
             r#""to": { "type": "string", "description": "For rename: the new name." }"#
         ),
@@ -942,7 +967,7 @@ pub const TOOLS: &[Tool] = &[
         description: "How to use Scanline: the workflow, input events, and what is not built yet, by topic; or a whole skill, the recipe for one kind of job (a wrong pixel, a slow frame, growing memory, working with the person, playing a game). Matches this version exactly.",
         schema: schema!(
             "[]",
-            r#""topic": { "type": "string", "enum": ["workflow", "input", "capture", "analysis", "patch", "page", "handoff", "sql", "testing", "smoke", "loading", "security", "limits", "skills"] }"#,
+            r#""topic": { "type": "string", "enum": ["workflow", "input", "capture", "analysis", "patch", "page", "handoff", "sql", "testing", "smoke", "film", "loading", "security", "limits", "skills"] }"#,
             r#""skill": { "type": "string", "enum": ["scanline", "scanline-wrong-pixels", "scanline-slow-frame", "scanline-memory", "scanline-with-a-person", "scanline-play", "scanline-debuggable-rendering"], "description": "Print this skill instead of a topic." }"#,
         ),
         read_only: true,
@@ -1027,6 +1052,10 @@ The calls of a captured frame are a table: query(capture, \"select command, meth
 from commands where for_draw = 7\"). help(topic: \"sql\") lists the tables.
 
 Sending a frame to someone: export(capture) writes it to one file; import(path) reads one in.
+
+Sending a clip of the game: film(frames: 1800) steps the page and writes an MP4 (H.264 with
+the game's sound, exactly 60 frames a second however slow the machine); film(run: \"run_1\")
+films a kept run. help(topic: \"film\").
 
 A whole recipe for one kind of job (a wrong pixel, a slow frame, growing memory, working
 with the person, playing a game): help(topic: \"skills\") lists them, help(skill: \"…\") prints one.
@@ -1692,6 +1721,58 @@ busy: give a GPU budget room.
 Related: console(requests: true) lists failed requests in any session;
 launch(mobile: true) starts any session as a phone.";
 
+const FILM: &str = "\
+A film: a recording made by stepping, as an MP4 to share
+
+  film(frames: 600)                       film the next 600 frames (10 s) and write the file
+  film(action: \"start\")                   then step(frames: n, fast: true), policy, replay_run…
+  film(action: \"stop\")                    …and this writes the file
+  film(run: \"run_3\")                      play a kept run again from the page's load, filmed;
+                                          from_frame and to_frame film a part of it
+
+What it is. Every frame the page is stepped through while the film is on is in the file,
+and each lasts exactly 1/60 s there, however long it took to draw or to encode: a slow
+machine makes the same film, more slowly. Nothing is dropped and nothing is doubled. The
+file is H.264 (High profile) with AAC sound at 48 kHz in an MP4 with its index first, which
+is what sites that take video ask for.
+
+The picture
+  source: \"canvas\" (default)   the canvas as the GPU drew it, taken as each frame ends
+  source: \"page\"               the page as composited, with what it draws in HTML over its
+                               canvas (a score, a logo). The browser takes a picture after
+                               every frame, which is several times slower to make
+  max_edge: 1920 (default)     the longer side, in pixels; never larger than the source
+  width, height                one of them scales in proportion; both fit the picture
+                               inside with black at the sides
+  bitrate                      default a tenth of a bit a pixel a frame, 3 to 25 Mbit/s
+
+The sound. A stepped page's audio contexts are held, so their clocks do not run ahead of
+its frames. While a film is on, between each frame and the next every held context is let
+play until its clock has moved on by exactly the film's length so far, and held again;
+what reaches each context's destination is heard through a tap and encoded. The sound is
+unbroken and as long as the pictures to the sample, and a sound a frame begins is heard
+within a few milliseconds of that frame (a context renders 128 sample frames at a time).
+sound: false makes a silent film. A page that plays nothing has no sound track.
+
+To film a game being played: play it (step, policy, or a person in the app), save_run,
+then film(run: …). The replay is the same game, and the film is of the replay. A take is
+filmed as it is played: take(action: \"play\", name, film: {}) begins a film as the take
+starts (film: {source: \"page\", max_edge: 1080} to say what kind), and film(action:
+\"stop\") writes it. To film what a rule plays: film(action: \"start\"), policy(…), film(action: \"stop\").
+
+What is not in it, or not right in it
+  - Sound that does not go through Web Audio: an <audio> or <video> element plays on real
+    time and is not heard by the film.
+  - An audio context the page itself has suspended (waiting for a first click) is silent
+    until the page resumes it: give the game its click first.
+  - With source: \"page\", what the page animates with CSS (transitions, keyframes) runs on
+    real time while frames are stepped, so it moves faster in the film than in play.
+  - A canvas drawn in a worker, or offscreen, cannot be filmed as a canvas: use source: \"page\".
+  - The film is kept in the page until it is stopped: about 90 MB a minute at 12 Mbit/s.
+
+video is the other kind: the last few hundred frames of a page as it runs in real time,
+silent, for a quick look. film is for something to keep.";
+
 const TESTING: &str = "\
 Checking a page in a test run
 
@@ -1741,6 +1822,7 @@ pub fn help(topic: Option<&str>) -> String {
         Some("testing" | "ci" | "assert") => TESTING.to_string(),
         Some("loading" | "ready") => LOADING.to_string(),
         Some("smoke") => SMOKE.to_string(),
+        Some("film") => FILM.to_string(),
         Some("limits") => LIMITS.to_string(),
         Some("security") => SECURITY.to_string(),
         Some("skills") => {

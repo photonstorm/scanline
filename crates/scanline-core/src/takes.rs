@@ -216,7 +216,8 @@ async fn play(host: &Arc<Host>, session: &Arc<Session>, params: &Value) -> Resul
     let mut played = if take["from"] == "checkpoint" {
         from_checkpoint(session, &take, name, params, fast).await?
     } else {
-        runs::replay(session, &take, name, &json!({ "to_frame": params["to_frame"], "until_mark": params["until_mark"], "fast": fast })).await?
+        runs::replay(session, &take, name, &json!({ "to_frame": params["to_frame"], "until_mark": params["until_mark"], "fast": fast, "film": params["film"] }))
+            .await?
     };
 
     let summary = played["summary"]

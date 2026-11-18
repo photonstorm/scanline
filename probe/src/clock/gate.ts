@@ -755,6 +755,16 @@ export function letGo (): { frame: number }
     return { frame };
 }
 
+// Something to be waited for between one frame and the next: a film (film.ts) lets a frame's
+// worth of sound play there, and its encoder catch up. Frames, steps and holds wait as they
+// do while a frame's timers run.
+let frameGap: (() => Promise<void>) | null = null;
+
+export function setFrameGap (gap: (() => Promise<void>) | null): void
+{
+    frameGap = gap;
+}
+
 function afterFrame (): void
 {
     for (const hook of settledHooks)
@@ -766,6 +776,34 @@ function afterFrame (): void
     {
         startLine();
     }
+
+    if (frameGap !== null && !loading)
+    {
+        const carryOn = (): void =>
+        {
+            draining = false;
+            betweenFrames();
+        };
+
+        draining = true;
+
+        try
+        {
+            frameGap().then(carryOn, carryOn);
+        }
+        catch
+        {
+            carryOn();
+        }
+
+        return;
+    }
+
+    betweenFrames();
+}
+
+function betweenFrames (): void
+{
 
     // A hold is taken here, between two frames. A page that was running or part-way
     // through a step stays where it is until the hold is let go.

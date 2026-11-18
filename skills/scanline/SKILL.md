@@ -39,6 +39,8 @@ To ask only "does it load, play and stay healthy?", one call does the whole loop
 - A gamepad: `gfx_input(events: [{"gamepad": 0, "axes": [1, 0], "buttons": {"0": true}}])`. Mouse-look: launch with `pointer_lock: "shim"`, click the canvas, then send `{"pointer": "move", "dx": 12, "dy": -3}`.
 - `gfx_capture(when: {error: true})` runs until the page raises an error (or `{frame_ms_over: 20}`, `{mark: "name"}`) and captures that frame with the ones before it.
 
+A clip of the game to keep or post: `gfx_film(frames: 1800)` steps the page and writes an MP4 with its sound, exactly 60 frames a second whatever the machine; `gfx_film(run: "run_1")` films a kept run. `gfx_help(topic: "film")`.
+
 ## What the page and its engine say
 
 - `gfx_page()` lists what the page offers through the page protocol, and what Scanline's adapter found if the page uses three.js, PixiJS or Phaser 4: the game's state in its own words, controls you may set, debug views it can draw, and the last frame's draws by named group.

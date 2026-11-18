@@ -1,6 +1,6 @@
 # Handover: what to do next
 
-Written on 11 November 2026, first at the end of the work on the Mac and then again the same day at the end of the Windows build on the PC, brought up to date on 12 November 2026 after the Scanline app was built on the Mac, and again on 17 November 2026 after the app was built on the PC, for whoever carries on: a person, or an agent in a new session on either machine. A new session has none of the earlier conversation, so everything it needs is here or in a file this names.
+Written on 11 November 2026, first at the end of the work on the Mac and then again the same day at the end of the Windows build on the PC, brought up to date on 12 November 2026 after the Scanline app was built on the Mac, again on 17 November 2026 after the app was built on the PC, and on 18 November 2026 after the smoke-testing work on the Mac (section 0), for whoever carries on: a person, or an agent in a new session on either machine. A new session has none of the earlier conversation, so everything it needs is here or in a file this names.
 
 Read this first, then [DEPARTURES.md](DEPARTURES.md) (what was built and how it differs from the specification) and [BY-HAND.md](BY-HAND.md) (what only a person can check).
 
@@ -15,6 +15,7 @@ Read this first, then [DEPARTURES.md](DEPARTURES.md) (what was built and how it 
 - **Nothing has been compiled or run on Linux.**
 - **The Scanline app is built on the Mac** ([app/](../app/README.md), designed in [APP.md](APP.md)): one window with the game in an embedded Chromium (CEF 156) and Scanline's panels (GPUI) beside it, the host kept as its own process. The host launches it as a session's browser with `display: "app"`. Stages 0 to 2 of the design and part of stage 3 are done: APP.md, section 12. `npm run test:app` drives it (skipped where it is not built). **It builds and runs on the PC too** since 17 November 2026, and `test:app` passes there; what is left on Windows is in section 2a.
 - **Scanline for games** ([GAME.md](GAME.md)) was built on 13 November 2026, all six milestones: tabs, watches, audio, takes, notes, clips and engine watchables, each a command with the app's part. What differs from the plan is in DEPARTURES.md, "Scanline for games"; what needs a person, BY-HAND.md items 12 to 15. Their tests are in `tests/protocol.test.mjs`. Next for it: watches in flight recordings, takes and notes in one exported file, and a stepped frame advancing audio.
+- **Smoke testing, replays across loading and films** were built on the Mac on 18 November 2026, at the owner's request, after Scanline was tried on one of his games (plain ES modules on raw WebGL 2, no engine): section 0. In short: a page is known to be ready and can be waited for (`launch --wait ready`, `scanline help loading`); a deterministic session now loads first and counts its frames from ready, so a run recorded on a page that loads assets replays exactly; `scanline smoke <url>` is a smoke test in one command; `step`, `policy` and `smoke` take pictures along the way as one labelled sheet (`shots`); and `scanline film` makes an MP4 by stepping, H.264 with the game's sound. `DEPARTURES.md`, "Smoke testing, replays and recordings for games", says what each is and why; `BY-HAND.md` items 23 to 29 what a person must check.
 - The specification is not in this repository. It is in the `render-debugger/` folder of the `render-debugger-spec` branch of the `v3-gameblocks` repository, which is pushed. Read it there. Do not edit it and do not copy it here.
 
 ## How to work in this repository
@@ -41,6 +42,11 @@ Things learned the hard way:
 - A page's WebGPU set-up is asynchronous and slow through Direct3D. A test that looks at a WebGPU page waits for the page to be ready; it does not sleep and hope.
 - GPU time is not steady on the PC: its graphics card slows its clock when it has little to do, and the same frame can read several times higher a few seconds later. A test that compares GPU time before and after a change takes several readings of each, turn about, and compares the middle ones. One of each is a coin-toss there. Even so the slow-frame journey on WebGL cannot be relied on there, and says "GPU time was not steady on this machine, so it was not compared" where it would have asserted: look for that line in a run on the Mac, where it should not appear.
 
+- A test that compares GPU time is at the mercy of whatever else is using the GPU. On 18 November `b14` (in `test:findings`) and both slow-frame journeys failed on the Mac while other sessions were at work on the same machine, and failed the same way with the release binary built before that day's changes: check a timing failure against an older binary before believing it. A fixture opened in a browser preview pane counts as something else using the GPU.
+- Port 8765 may be taken by a server of the owner's own. A fixture server started by hand should take another port, and say which.
+- The probe keeps 600 frames of frame times, counters and console frames. Anything that reports on a longer stretch of play reads them every 600 frames or fewer, as `smoke` does.
+- A page's `onmessage` handler on any `MessagePort` is wrapped by the probe and held while the clock is frozen. A port of the probe's own must be added to `ownPorts` (`probe/src/natives.ts`) before its handler is set, or its messages are held with the page's and its handler counted as a timer's.
+
 On the PC in particular:
 
 - **The owner's npm configuration there has `os=linux`** (in their own `.npmrc`, for their own reasons: leave it). With it, `npm install` fetches the Linux builds of TypeScript and esbuild, and `npm run typecheck` fails. Install with:
@@ -54,6 +60,23 @@ npm ci --os=win32
 - Every text file is LF on every machine (`.gitattributes`). The install script for Windows is given CRLF when a release is packed, not in the repository.
 - File names ignore case on Windows, as on most Macs: `Scanline.exe` and `scanline.exe` in one folder are one file, and so are `dist\Scanline-…zip` and `dist\scanline-…zip`. The app's command line is `scanline-cli.exe` for that reason, and the app's package is `Scanline-app-…`.
 - Building the app: section 2a.
+
+## 0. Smoke testing, replays and films: built on 18 November, and what they left
+
+Built and tested on the Mac only. Each has a help topic (`loading`, `smoke`, `film`), a section in `DEPARTURES.md` and tests in `tests/protocol.test.mjs` (26 new ones, on `fixtures/protocol/loading.html`, `smoke.html` and `film.html`).
+
+Left to do:
+
+- **The app has not been compiled with the day's one change to it** (`app/src/channel.rs` and `host.rs`: the app finds the host's socket through `runtime.json` when the home's path is too long for one). The app's build needs cmake, which the shell this was written in did not have. It goes with section 1.
+- **None of it has run on Windows.** In particular: `film` needs the platform's H.264 and AAC encoders through WebCodecs (Chrome on Windows has both; look at the first sound packet's time stamp, which decides how much of the start is dropped); a long `SCANLINE_HOME` is not a problem there (a pipe is named by a hash); `ready`, `smoke` and `shots` have nothing of the Mac's in them and should simply pass.
+- **A person has not watched or heard a film**, nor posted one: `BY-HAND.md` items 27 to 29. The tests play it back with ffmpeg (pictures to the pixel, each beep within 30 ms of its frame, and 2 to 5 ms on a quiet machine), and ffmpeg takes anything.
+- **A film of the page as composited is slow** (0.15 s a frame at a phone's size: about 7 minutes for 45 s), because the browser takes a picture after every frame and it comes through the debugging channel twice. Encoding in the hidden replay page from a screencast, or a capture of the tab as a media stream, might be quicker; neither was tried.
+- **CSS animation is not on the virtual clock** (`document.timeline`), which now shows in two places: a film of the page, where CSS moves too fast, and a page whose loading waits on a CSS transition's end, which is real time and so not the same frame every run.
+- **Sound from `<audio>` and `<video>` elements** is not stepped and not in a film.
+- **What "ready" follows.** The guess does not follow what a worker loads, IndexedDB, or a WebSocket, and a page that goes on loading after it looks quiet does that work on counted frames. A page that calls `__scanline.loading()` and `ready()` is exact; the owner's games' shared shell is to be given those calls (in their repository, not this one).
+- **A flight recording's contact sheet is still unlabelled.** The letters are there now (`scanline-image`, `contact_sheet`): it could use them.
+- **`navigate` does not wait for ready** by itself; the next `step` does, in a session that holds loading.
+- **Watches in flight recordings, takes and notes in one exported file** are still as GAME.md left them. "A stepped frame advancing audio" is built, for a film; outside a film a stepped game is still silent.
 
 ## 1. Back on the Mac: build the app again
 
@@ -85,6 +108,8 @@ npm test
 and `cargo test` in `app/` (7 tests on a Mac; the PC runs two more, for the desktop and the stamp, which are Windows-only). Then open the app and try ⌘L, ⌘. and ⇧⌘C by hand: the bindings' spelling changed.
 
 ### What was run last
+
+On the Mac on 18 November 2026, after the smoke-testing work (section 0), every group a group at a time at low priority, on the debug build: the type check, the Rust unit tests (55: `scanline` 9, `scanline-core` 26, `scanline-image` 8, the rest as before), `test:wgsl` (10), `test:probe` (52), `test:bugs` (33), `test:security` (18, and one Windows-only), `test:package` (5), `test:app` (3, on the app as built on 12 November) and `test:protocol` (50, of which 26 are new) all passed. Six tests that compare GPU time failed in that run, and nothing else did: "an experiment measures a change and takes it away again" in `test:e2e` (57 of 58), `b14` and `w14` in `test:findings` (52 of 54), "a WebGL frame is timed pass by pass" in `test:webgpu` (27 of 28) and both slow-frame journeys. Other sessions were using the same machine and its GPU throughout. Each was then run against the release binary built on 13 November, before any of the day's changes: the experiment, `b14` and both journeys failed there the same way, and the other two failed on some runs and passed on others with either binary (the pass-timing test: the old binary failed two runs of three, the new one of three). Earlier the same day, between the work on loading and the rest, `test:e2e` had passed 58 of 58 and `test:webgpu` 28 of 28. **Run those six again on a quiet machine before trusting either result**; the app's own unit tests were not run (the app was not rebuilt).
 
 On the PC on 17 November 2026, on the Mac's later work and the game debugger (`f236671`), then on each commit after it: every group passed, a group at a time and not as one `npm test` (the suite was stopped by its first failure, which was a test's, and the rest run on from there): the type check, `test:wgsl` (10), `test:probe` (52), `test:bugs` (33), the Rust unit tests (50), `test:e2e` (58, one changed: a depth of 0.5 reads 0.5000001 through Direct3D), `test:findings` (54), `test:webgpu` (28), `test:journeys` (2, GPU time not steady, so not compared), `test:protocol` (27), `test:security` (17) and `test:package` (5); then `test:app` (3) on the app's debug and release builds, and the app's own unit tests (9). The Rust unit tests were run again after the host's one change (`find_app`).
 

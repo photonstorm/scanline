@@ -83,4 +83,8 @@ Some games you will not get through. `gfx_request_human(instruction: "Play to th
 
 - A game whose loop runs on `MessageChannel` or `scheduler.postTask` is not paused by stepping.
 - Without the pointer-lock shim, relative mouse moves are refused: the browser's own pointer lock is not driven.
-- Audio keeps real time; it is not stepped.
+- A stepped game is silent: its audio contexts are held between steps, so their clocks do not run ahead. The exception is a film (`gfx_film`), which lets the sound play for exactly a frame's time after each frame and records it.
+
+## A clip to share
+
+`gfx_film(run: "run_N")` plays a kept run again and writes it as an MP4: H.264 with the game's sound, every frame exactly 1/60 s however slow the machine. `gfx_film(frames: 1800)` films the next 30 seconds of stepping; `action: "start"` and `"stop"` go round any stepping of your own. `source: "page"` includes what the game draws in HTML over its canvas (a score). `gfx_help(topic: "film")`.
