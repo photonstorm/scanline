@@ -101,34 +101,63 @@ function summarise (values: number[]): { mean: number; p50: number; p95: number;
     };
 }
 
-// GPU time over the frames since `first`: the frames measured, and for WebGPU each pass.
+// GPU time over the frames since `first`: the frames measured, and each pass.
 function gpuReport (first: number): Record<string, unknown>
 {
     const measured = gpuSamples(FRAMES).filter((sample) => sample.frame >= first);
-    const passes = new G.Map() as Map<string, number[]>;
+    const passes = new G.Map() as Map<string, { times: number[]; added: number[] }>;
 
     for (const sample of measured)
     {
         for (const pass of sample.passes ?? [])
         {
-            let times = passes.get(pass.label);
+            let found = passes.get(pass.label);
 
-            if (!times)
+            if (!found)
             {
-                times = [];
-                passes.set(pass.label, times);
+                found = { times: [], added: [] };
+                passes.set(pass.label, found);
             }
 
-            times.push(pass.ms);
+            found.times.push(pass.ms);
+
+            if (pass.added !== undefined)
+            {
+                found.added.push(pass.added);
+            }
         }
     }
 
+    const mean = (values: number[]): number => values.reduce((a, b) => a + b, 0) / values.length;
+
+    // WebGPU's times are timestamps, which the browser may coarsen; WebGL's are timer queries.
+    const stamped = measured.filter((sample) => sample.timestamps === true);
+    const last = stamped[stamped.length - 1];
+
     return {
         frames: measured.length,
+        // WebGPU: the time at least one pass of the frame was open. Its passes can overlap,
+        // so this is not their times added up.
         ms: summarise(measured.map((sample) => sample.ms)),
-        passes: [...passes].map(([label, times]) => ({ label, frames: times.length, ...summarise(times) })),
-        // WebGPU's times are timestamps, which the browser may coarsen; WebGL's are timer queries.
-        timestamps: measured.some((sample) => sample.timestamps === true),
+        // A WebGPU pass: `mean` and the rest are from its start to its end; `added` is the
+        // mean of what it added to its frame, and those do add up to the frame's time.
+        passes: [...passes].map(([label, { times, added }]) => ({ label, frames: times.length, ...summarise(times), ...(added.length ? { added: mean(added) } : {}) })),
+        timestamps: stamped.length > 0,
+        ...(last ? {
+            // How many frames had passes that overlapped, and what the passes add up to.
+            overlapped: stamped.filter((sample) => (sample.overlap ?? 0) > 0).length,
+            sumMs: summarise(stamped.map((sample) => sample.sum ?? sample.ms)),
+            // First pass starting to last pass ending: more than `ms` where the GPU waited between passes.
+            spanMs: summarise(stamped.map((sample) => sample.span ?? sample.ms)),
+            // The last frame measured as the GPU stamped it: each pass's start and end in ms
+            // after the frame's first pass started, which was at `at` on the GPU's clock.
+            last: {
+                frame: last.frame,
+                at: last.at,
+                ms: last.ms,
+                passes: (last.passes ?? []).map((pass) => ({ label: pass.label, start: pass.start ?? 0, end: (pass.start ?? 0) + pass.ms }))
+            }
+        } : {}),
         notes: timingNotes()
     };
 }

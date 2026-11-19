@@ -19,7 +19,11 @@ Read three numbers: the frame interval, CPU time per frame (script), and GPU tim
 - **GPU time high:** carry on here.
 - **Neither high, but frames are late:** something outside the page's own timings. `gfx_trace(frames: 120)` records the browser's own trace and says how busy the GPU process was and on what.
 
-Timings on a paused, stepped page are of the frames you stepped. A single frame is noise: use 30 or more.
+Timings on a paused, stepped page are of the frames you stepped. A single frame is noise: use 30 or more. Do not step with `fast: true` for GPU time: it measures one or two frames a call.
+
+On WebGPU the frame's GPU time is the time at least one of its passes was under way, and the passes listed under it can overlap: on a tile-based GPU (Apple's) a small pass that follows a large one reads nearly as long. When they do, `gfx_stats` says so, and gives beside each pass what it added to the frame. Read that figure, not the pass's own time, for where the frame's time went, and never add the passes' own times up.
+
+GPU time is time that passed on a GPU that other programs share and that slows when it has little to do: a frame at a steady 60 a second can read twice what it reads a minute later, and more stepped one at a time. Compare readings taken turn about, not one against a number written down earlier, and do not hold a frame to a budget of GPU time on one reading.
 
 ## 2. Is it the pixels, or the geometry and draw count?
 
@@ -34,7 +38,7 @@ If it is the pixels, two more experiments say which part of filling them. `gfx_e
 
 `gfx_capture()`, then `gfx_profile(capture, by: "pass")` to see which pass holds the time, and `gfx_profile(capture, by: "shader")` to rank the programs. It replays each draw several times inside a timer and says how it measured. Trust the order and the rough proportions, not the last digit.
 
-On a WebGPU page `gfx_profile` works the same way, and `by: "shader"` groups by pipeline. WebGPU times passes, not draws, so the replay issues each draw in timed passes of its own; the result says how. On the stock profile the browser rounds GPU timestamps, so a cheap draw reads as 0: `gfx_launch(profile: "deep")` gives fine ones. The per-pass GPU times in `gfx_stats` are from the live page, and `gfx_experiment(kind: "skip", filter: {pipeline: "pip_N"})` measures what one pipeline costs there.
+On a WebGPU page `gfx_profile` works the same way, and `by: "shader"` groups by pipeline. WebGPU times passes, not draws, so the replay issues each draw in timed passes of its own; the result says how. On the stock profile the browser rounds GPU timestamps, so a cheap draw reads as 0: `gfx_launch(profile: "deep")` gives fine ones. The per-pass GPU times in `gfx_stats` are from the live page (see step 1 for how to read them when passes overlap), and `gfx_experiment(kind: "skip", filter: {pipeline: "pip_N"})` measures what one pipeline costs there.
 
 `gfx_view(capture, view: "overdraw")` counts how many times each pixel was drawn. High overdraw with a cheap shader is a sorting or culling problem, not a shader problem.
 

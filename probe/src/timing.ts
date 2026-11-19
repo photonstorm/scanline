@@ -2,7 +2,9 @@
 //
 // WebGL: one timer query around each frame. Results arrive a few frames later and are
 // thrown away when the driver says its timer was disturbed.
-// WebGPU: a timestamp at the start and end of every pass, resolved once a frame.
+// WebGPU: a timestamp at the start and end of every pass, resolved once a frame. The frame's
+// time is the time at least one of its passes was open, not the passes added up: they
+// overlap on a tile-based GPU (shared/gpu-time.ts).
 //
 // Both change something a page could notice, so neither runs in unmodified mode.
 
@@ -21,14 +23,35 @@ import { G, nSetTimeout, type Fn } from './natives';
 import type { Tag } from './tag';
 import { gpuEncoderTag } from './tags.generated';
 import { emit } from './transport';
+import { frameGpuTime } from '../../shared/gpu-time';
+
+export interface GpuPass
+{
+    label: string;
+    // WebGL: the span's timer query. WebGPU: from the pass's start to its end.
+    ms: number;
+    // WebGPU only. When it started, in ms after the frame's first pass did, and what it
+    // added to the frame: the part of its time that no pass ending sooner had covered.
+    start?: number;
+    added?: number;
+}
 
 export interface GpuSample
 {
     frame: number;
+    // The frame's GPU time. WebGL: its timer queries added up, which cannot overlap.
+    // WebGPU: the time at least one pass was open.
     ms: number;
-    passes: Array<{ label: string; ms: number }> | null;
+    passes: GpuPass[] | null;
     // Measured with WebGPU timestamps, not a WebGL timer query.
     timestamps?: boolean;
+    // WebGPU only, in ms: the passes' times added up, which is more than `ms` by `overlap`
+    // when they overlap; from the first pass starting to the last ending; and when the
+    // first started, on the GPU's own clock.
+    sum?: number;
+    overlap?: number;
+    span?: number;
+    at?: number;
 }
 
 const SAMPLES = 600;
@@ -556,32 +579,47 @@ function gpuFrameEnd (): void
                 n.GPUBuffer.unmap.call(timer.read);
                 timer.reading = false;
 
-                const passes = [];
+                // A pass whose commands were never submitted this frame leaves no usable pair:
+                // a query that was not written resolves to zero. A pair that is equal is a
+                // pass shorter than the step the browser rounds timestamps to, and counts
+                // as zero: left out, only the rare pass that straddles a step would be
+                // counted, and a quick GPU's mean would read as a whole step.
+                const timed: number[] = [];
 
-                let total = 0;
+                let first = 0n;
 
                 for (let i = 0; i < count; i++)
                 {
                     const begin = times[i * 2];
-                    const end = times[i * 2 + 1];
 
-                    // A pass whose commands were never submitted this frame leaves no usable pair:
-                    // a query that was not written resolves to zero. A pair that is equal is a
-                    // pass shorter than the step the browser rounds timestamps to, and counts
-                    // as zero: left out, only the rare pass that straddles a step would be
-                    // counted, and a quick GPU's mean would read as a whole step.
-                    if (begin > 0n && end >= begin)
+                    if (begin > 0n && times[i * 2 + 1] >= begin)
                     {
-                        const ms = G.Number(end - begin) / 1e6;
-
-                        passes.push({ label: labels[i], ms });
-                        total += ms;
+                        first = timed.length === 0 || begin < first ? begin : first;
+                        timed.push(i);
                     }
                 }
 
-                if (passes.length)
+                if (timed.length)
                 {
-                    record({ frame, ms: total, passes, timestamps: true });
+                    // Whole nanoseconds after the first pass started, so the sums are exact.
+                    const intervals = timed.map((i) => ({ start: G.Number(times[i * 2] - first), end: G.Number(times[i * 2 + 1] - first) }));
+                    const time = frameGpuTime(intervals);
+
+                    record({
+                        frame,
+                        ms: time.busy / 1e6,
+                        passes: timed.map((i, at) => ({
+                            label: labels[i],
+                            ms: (intervals[at].end - intervals[at].start) / 1e6,
+                            start: intervals[at].start / 1e6,
+                            added: time.added[at] / 1e6
+                        })),
+                        timestamps: true,
+                        sum: time.sum / 1e6,
+                        overlap: time.overlap / 1e6,
+                        span: time.span / 1e6,
+                        at: G.Number(first) / 1e6
+                    });
                 }
             }, () =>
             {

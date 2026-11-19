@@ -646,6 +646,25 @@ describe('GPU time', () =>
             // (65.5 µs outside the deep profile), and such a pass reads as zero.
             assert.ok(stats.gpu.passes.every((pass) => pass.frames > 3 && pass.mean >= 0 && pass.mean < 50));
             assert.equal(stats.counters.passes.last, 2);
+
+            // The frame's time is the time at least one pass was under way: no more than the
+            // passes added up (less, where the GPU runs them together), and no more than
+            // from the first starting to the last ending.
+            const close = 1e-9;
+
+            assert.ok(stats.gpu.ms.mean <= stats.gpu.sumMs.mean + close, `${stats.gpu.ms.mean} ms against ${stats.gpu.sumMs.mean} ms added up`);
+            assert.ok(stats.gpu.ms.mean <= stats.gpu.spanMs.mean + close);
+            assert.ok(stats.gpu.overlapped >= 0 && stats.gpu.overlapped <= stats.gpu.frames);
+            assert.ok((stats.gpu.overlapped === 0) === (stats.gpu.sumMs.mean - stats.gpu.ms.mean < close), 'the passes add up to the frame exactly when none overlapped');
+
+            // What each pass added is no more than its own time, and they add up to the frame's.
+            assert.ok(stats.gpu.passes.every((pass) => pass.added >= 0 && pass.added <= pass.mean + close));
+            assert.ok(Math.abs(stats.gpu.passes.reduce((sum, pass) => sum + pass.added, 0) - stats.gpu.ms.mean) < 1e-6);
+
+            // The last frame as the GPU stamped it.
+            assert.equal(stats.gpu.last.passes.length, 2);
+            assert.ok(stats.gpu.last.at > 0 && stats.gpu.last.passes.every((pass) => pass.start >= 0 && pass.end >= pass.start));
+            assert.equal(Math.min(...stats.gpu.last.passes.map((pass) => pass.start)), 0, 'times count from the first pass starting');
         });
     });
 

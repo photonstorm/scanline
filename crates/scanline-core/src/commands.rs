@@ -2046,6 +2046,28 @@ async fn failed(session: &Arc<Session>, params: &Value) -> Result<Value> {
     Ok(result(lines.join("\n"), json!({ "failed_requests": shown, "total": rows.len(), "next": next })))
 }
 
+/// What `stats` says before its list of passes when a WebGPU frame's passes overlapped: the
+/// frame's GPU time is the time at least one pass was under way, so the passes' own times
+/// come to more than it and are not to be added up. Nothing when none overlapped.
+pub(crate) fn gpu_overlap_lines(gpu: &Value) -> Vec<String> {
+    let overlapped = gpu["overlapped"].as_u64().unwrap_or(0);
+
+    if overlapped == 0 {
+        return Vec::new();
+    }
+
+    let stamped = gpu["sumMs"]["mean"].as_f64().map_or(String::new(), |sum| format!(": added up they come to {sum:.3} ms a frame"));
+    let frames = gpu["frames"].as_u64().unwrap_or(0);
+
+    vec![
+        format!(
+            "    That is the time at least one pass of the frame was under way. The passes overlapped in {}, so the times below are not a sum{stamped}.",
+            if overlapped >= frames { "every frame".to_string() } else { format!("{overlapped} of the {frames} frames") }
+        ),
+        "    Each pass from its start to its end, then what it added to the frame: the part of its time no pass that ended sooner had covered.".to_string(),
+    ]
+}
+
 pub async fn stats(session: &Arc<Session>, params: &Value) -> Result<Value> {
     let frames = params["window_frames"].as_u64().unwrap_or(120).clamp(1, 600);
 
@@ -2111,10 +2133,22 @@ pub async fn stats(session: &Arc<Session>, params: &Value) -> Result<Value> {
 
         passes.sort_by(|a, b| b["mean"].as_f64().unwrap_or(0.0).total_cmp(&a["mean"].as_f64().unwrap_or(0.0)));
 
+        // WebGPU stamps each pass as it starts and as it ends, and passes can be under way
+        // together (a tile-based GPU's are). The frame's time is then less than its passes
+        // added up, and the list must not be read as a sum.
+        let overlapped = gpu["overlapped"].as_u64().unwrap_or(0);
+
+        lines.extend(gpu_overlap_lines(gpu));
+
         for pass in passes.iter().take(8) {
             // A WebGPU pass is named by the page; a WebGL one by Scanline, for where it draws.
             lines.push(if gpu["timestamps"] == true {
-                format!("    {} ms  «{}»", number(&pass["mean"], 3), page_text(pass["label"].as_str().unwrap_or(""), 60))
+                let added = match pass["added"].as_f64() {
+                    Some(added) if overlapped > 0 => format!("  (added {added:.3} ms)"),
+                    _ => String::new(),
+                };
+
+                format!("    {} ms  «{}»{added}", number(&pass["mean"], 3), page_text(pass["label"].as_str().unwrap_or(""), 60))
             } else {
                 format!("    {} ms  {}", number(&pass["mean"], 3), page_text(pass["label"].as_str().unwrap_or(""), 60))
             });
@@ -2475,5 +2509,23 @@ mod tests {
         assert_eq!(windows_file_url(r"C:/game/index.html"), "file:///C:/game/index.html");
         assert_eq!(windows_file_url(r"\\?\UNC\server\share\index.html"), "file://server/share/index.html");
         assert_eq!(windows_file_url(r"\\server\share\index.html"), "file://server/share/index.html");
+    }
+
+    #[test]
+    fn stats_says_when_webgpu_passes_overlap_and_not_otherwise() {
+        // Passes one after another, and WebGL's timer queries: nothing to say.
+        assert!(gpu_overlap_lines(&json!({ "frames": 60, "overlapped": 0, "sumMs": { "mean": 4.0 } })).is_empty());
+        assert!(gpu_overlap_lines(&json!({ "frames": 60, "ms": { "mean": 4.0 } })).is_empty());
+
+        let every = gpu_overlap_lines(&json!({ "frames": 116, "overlapped": 116, "sumMs": { "mean": 26.0418 } }));
+
+        assert_eq!(every.len(), 2);
+        assert!(every[0].contains("overlapped in every frame"), "{}", every[0]);
+        assert!(every[0].contains("not a sum: added up they come to 26.042 ms a frame"), "{}", every[0]);
+        assert!(every[1].contains("what it added to the frame"), "{}", every[1]);
+
+        let some = gpu_overlap_lines(&json!({ "frames": 116, "overlapped": 40, "sumMs": { "mean": 9.5 } }));
+
+        assert!(some[0].contains("overlapped in 40 of the 116 frames"), "{}", some[0]);
     }
 }

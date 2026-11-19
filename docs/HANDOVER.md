@@ -16,6 +16,7 @@ Read this first, then [DEPARTURES.md](DEPARTURES.md) (what was built and how it 
 - **The Scanline app is built on the Mac** ([app/](../app/README.md), designed in [APP.md](APP.md)): one window with the game in an embedded Chromium (CEF 156) and Scanline's panels (GPUI) beside it, the host kept as its own process. The host launches it as a session's browser with `display: "app"`. Stages 0 to 2 of the design and part of stage 3 are done: APP.md, section 12. `npm run test:app` drives it (skipped where it is not built). **It builds and runs on the PC too** since 17 November 2026, and `test:app` passes there; what is left on Windows is in section 2a.
 - **Scanline for games** ([GAME.md](GAME.md)) was built on 13 November 2026, all six milestones: tabs, watches, audio, takes, notes, clips and engine watchables, each a command with the app's part. What differs from the plan is in DEPARTURES.md, "Scanline for games"; what needs a person, BY-HAND.md items 12 to 15. Their tests are in `tests/protocol.test.mjs`. Next for it: watches in flight recordings, takes and notes in one exported file, and a stepped frame advancing audio.
 - **Smoke testing, replays across loading and films** were built on the Mac on 18 November 2026, at the owner's request, after Scanline was tried on one of his games (plain ES modules on raw WebGL 2, no engine): section 0. In short: a page is known to be ready and can be waited for (`launch --wait ready`, `scanline help loading`); a deterministic session now loads first and counts its frames from ready, so a run recorded on a page that loads assets replays exactly; `scanline smoke <url>` is a smoke test in one command; `step`, `policy` and `smoke` take pictures along the way as one labelled sheet (`shots`); and `scanline film` makes an MP4 by stepping, H.264 with the game's sound. `DEPARTURES.md`, "Smoke testing, replays and recordings for games", says what each is and why; `BY-HAND.md` items 23 to 29 what a person must check.
+- **A WebGPU frame's GPU time was fixed on the Mac on 19 November 2026**: it is the time at least one pass was under way, not the passes added up, which read double or worse on Apple's GPU. Section 0a.
 - The specification is not in this repository. It is in the `render-debugger/` folder of the `render-debugger-spec` branch of the `v3-gameblocks` repository, which is pushed. Read it there. Do not edit it and do not copy it here.
 
 ## How to work in this repository
@@ -28,7 +29,41 @@ These are the owner's standing instructions. They were given in conversation on 
 - **Documentation is in plain British English.** The licence is the PolyForm Shield License 1.0.0 (`LICENSE.md`), chosen by the owner on 11 November 2026: do not change it, and do not call Scanline "open source", which that licence is not. `packages/scanline-hooks` alone is MIT.
 - **Ask before fetching code from outside.** On the Mac, `npm install --save-dev playcanvas` and the Chrome for Testing download were both left for the owner. On a new machine the first `npm install` and `cargo build` download every dependency, which needs the owner's go-ahead there. (On the PC the owner gave it, for what the lock files name.)
 - **Keep the owner's name, email and project names out of requests to outside services.**
-- **A test run must not take over the machine.** Run the suite at low priority, one run at a time.
+- **A test run must not take over the machine.** Test only what you changed: see "Testing a change" below. One run at a time, at low priority.
+
+### Testing a change
+
+The owner's instruction, 18 November 2026. After the smoke-testing work a session ran every group of the suite. It took two hours and took over the Mac for most of them. That must not happen again.
+
+- **After a change, run the tests of that feature and of what sits next to it, and nothing more.** A new command is tested by its own tests and those of the commands it is built from, not by the suite.
+- **Never run the whole suite unless the owner asks for it.** That means `npm test`, every group in turn, and an evaluation round. The whole suite is for a release to the public, and the owner starts it or says to.
+- **A change to something everything rests on** (the hook generator, stepping and the clock, the DevTools client, the store) still gets the nearest tests only. Say in your report that a full run is the owner's to start, and why it may be worth one.
+- **Say what you ran and what you did not**, in the commit or the report, so nobody takes a narrow run for a full one.
+- **Do not run a test again to chase a pass.** The tests that compare GPU time fail when another session shares the GPU. Say so and move on.
+
+One test by name, which is the usual run:
+
+```bash
+node --test --test-concurrency=1 --test-timeout=120000 --test-name-pattern "smoke" tests/protocol.test.mjs
+```
+
+One group, when the change is wider than a few tests:
+
+| What changed | Run |
+|---|---|
+| The WGSL reader | `npm run test:wgsl` (no browser) |
+| A Rust crate, with nothing the browser sees | `cargo test -p <crate>` |
+| The probe (`probe/src`) | The tests in `probe/test/probe.test.mjs` that name what changed, then the tests of the command that reads it |
+| A command: stepping, input, screenshots, pixels, captures, patches, experiments, `emulate`, `trace`, runs | The tests in `tests/e2e.test.mjs` that name it |
+| The page protocol, engine adapters, watches, audio, takes, notes, ready, `smoke`, contact sheets, films | The tests in `tests/protocol.test.mjs` that name it |
+| What a capture volunteers, `lint`, a planted bug | The tests in `tests/findings.test.mjs` that name it; `npm run test:bugs` if a fixture in `fixtures/bugs` changed |
+| The analysis of a WebGPU capture | The tests in `tests/webgpu.test.mjs` that name it |
+| A capture as a file, the tiers | `npm run test:security` |
+| The skills, help topics, the installer, the plugin files | `npm run test:package` |
+| The app | `npm run test:app`, and `cargo test` in `app/` |
+| The slow-frame journey | `npm run test:journeys`, on a machine nothing else is using |
+
+Cheap enough to run every time: `npm run typecheck`, `cargo fmt`, and `cargo test -p` for the crate you touched.
 
 Things learned the hard way:
 
@@ -78,6 +113,21 @@ Left to do:
 - **`navigate` does not wait for ready** by itself; the next `step` does, in a session that holds loading.
 - **Watches in flight recordings, takes and notes in one exported file** are still as GAME.md left them. "A stepped frame advancing audio" is built, for a film; outside a film a stepped game is still silent.
 
+## 0a. GPU time of a WebGPU frame: fixed on 19 November, and what it left
+
+Found while the owner's engine was being measured: `stats` read 25 ms of GPU time on a game holding a steady 60 frames a second. The passes of a frame overlap on Apple's GPU, and their times were being added up. `DEPARTURES.md`, "GPU time of a WebGPU frame", has the measurements and what changed (`shared/gpu-time.ts`, `probe/src/timing.ts`, `stats`, and with them `smoke`, `assert` and `experiment`).
+
+Run on it: the new unit tests (`probe/test/gpu-time.test.mjs`, 9), the probe's own tests that name it, the type check and `cargo fmt`. The debug binary was rebuilt. Nothing wider was run, as "Testing a change" says.
+
+Left to do:
+
+- **The app has not been built or run with it**, and the app's Live panel reads the same figure. It goes with section 1.
+- **Nothing of it has run on Windows.**
+- **GPU time is still time that passed, not work done.** Apple's GPU slows when it has little to do, so the same frame reads 5 to 8 ms at the display's pace and 9 to 13 ms just after loading. Eight builds of one game measured after the fix swung two-fold between runs on a Mac in use. A budget in milliseconds is met or missed by the state the GPU is in. A load that holds the clock up, or a known draw timed beside the page's, would make it comparable; neither is built.
+- **`step(fast: true)` measures one or two frames a call**, and they read anything. For GPU time, step without `fast`.
+- **The slow-frame journey on WebGPU** still asserts on a pass's start-to-end time. `added` is what it should read where passes overlap. It was not changed.
+- **A full run of the tests that compare GPU time** (`test:webgpu`, `test:findings`, the journeys) is the owner's to start, on a quiet machine: the figure they read has changed.
+
 ## 1. Back on the Mac: build the app again
 
 **Do this first on the Mac.** The app was built on the PC on 17 November 2026 (section 2a), and that changed code the Mac shares, none of which has been compiled on a Mac since:
@@ -102,10 +152,10 @@ npm run app
 ```
 
 ```bash
-npm test
+npm run test:app
 ```
 
-and `cargo test` in `app/` (7 tests on a Mac; the PC runs two more, for the desktop and the stamp, which are Windows-only). Then open the app and try ⌘L, ⌘. and ⇧⌘C by hand: the bindings' spelling changed.
+(the app's own group, not the whole suite: "Testing a change", above) and `cargo test` in `app/` (7 tests on a Mac; the PC runs two more, for the desktop and the stamp, which are Windows-only). Then open the app and try ⌘L, ⌘. and ⇧⌘C by hand: the bindings' spelling changed.
 
 ### What was run last
 

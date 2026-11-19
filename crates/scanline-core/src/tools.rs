@@ -239,7 +239,7 @@ pub const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "stats",
-        description: "Frame pacing and per-frame counts over recent frames: frame interval, CPU time in frame callbacks and GPU time (mean, 95th percentile, worst), GPU time per pass, draws, instances, triangles, API calls, shader compiles.",
+        description: "Frame pacing and per-frame counts over recent frames: frame interval, CPU time in frame callbacks and GPU time (mean, 95th percentile, worst), GPU time per pass, draws, instances, triangles, API calls, shader compiles. A WebGPU frame's GPU time is the time at least one of its passes was under way: passes can overlap, and it says when they do.",
         schema: schema!("[]", session!(), context!(), r#""window_frames": { "type": "integer", "description": "Default 120, at most 600." }"#),
         read_only: true,
     },
@@ -1155,7 +1155,8 @@ screenshot, console and errors by frame, frame statistics, events, the live inve
 objects with their creation sites, shader sources and logs, uniform values, WebGL state,
 buffer contents, memory estimates and snapshot diffs, region statistics, image diff, GPU time
 per frame and per pass (WebGPU by the page's passes; WebGL by each run of draws to one
-framebuffer).
+framebuffer). A WebGPU frame's GPU time is the time at least one of its passes was under
+way, which is less than the passes added up when they overlap: see below.
 
 Frame capture and replay for WebGL 1, WebGL 2 and WebGPU: the draw list with what each
 event changed, the state at each draw, the target at any draw, which draw produced a pixel,
@@ -1286,12 +1287,33 @@ Known limits
     away still shows its outline.
   - profile on WebGPU: the stock profile's browser rounds GPU timestamps to 65.5 µs, so a
     draw is timed to about 4 µs; launch(profile: \"deep\") for finer.
-  - GPU time on a desktop graphics card is not steady. Such a card slows its clock when it
-    has little to do, so the same frame can read several times higher a few seconds later,
-    and a frame made cheaper can read no lower. Read stats more than once, and trust a
-    difference that holds across readings. experiment measures with and without a change
-    three times each, turn about, gives the middle reading of each, and says so when the
-    readings of one disagree among themselves.
+  - GPU time on WebGPU is read from two time stamps a pass, one as it starts and one as it
+    ends, and passes need not run one after another. A tile-based GPU (Apple's) does the
+    vertex work of every pass of a frame first and the fragment work after, so a pass of one
+    line of text that follows a 10 ms scene pass starts just after it, ends just after it,
+    and reads 10 ms itself. So a frame's GPU time (stats, smoke, assert and experiment all
+    use the one figure) is the time at least one of its passes was under way, never the
+    passes added up. When passes overlapped, stats says so, gives what they add up to, and
+    beside each pass what it added to the frame: the part of its time that no pass ending
+    sooner had covered. Those do add up to the frame's time, and are the better guide to
+    where it went, though the vertex work of a later pass is counted to an earlier one.
+    stats --json has the last frame as the GPU stamped it (gpu.last: each pass's start and
+    end), the passes added up (gpu.sumMs) and first start to last end (gpu.spanMs).
+    WebGL's timer queries run one after another and cannot overlap.
+  - GPU time is not steady, and it is time that passed, not work done: from a time stamp to
+    a time stamp, whatever the GPU did between them. A GPU slows its clock when it has
+    little to do, a desktop graphics card and Apple's alike, and another page or program
+    using the GPU is in the figure. On an Apple GPU one scene read 5 to 8 ms a frame at the
+    display's pace, 9 to 13 ms in the first seconds after it loaded, and 12 to 14 ms
+    stepped one frame a second, with nothing else changed. So the same frame can read
+    several times higher a few seconds later, and a frame made cheaper can read no lower.
+    Read stats more than once, and trust a difference that holds across readings.
+    experiment measures with and without a change three times each, turn about, gives the
+    middle reading of each, and says so when the readings of one disagree among themselves.
+  - step(fast: true) measures the GPU time of one or two frames a call, and they can read
+    anything (3 to 12 ms for that scene): the browser sends frames run back to back to the
+    GPU together, and one readback of time stamps is in flight for the whole call. For GPU
+    time, step without fast, or let the page run. stats says how many frames it measured.
   - profile repeats each draw, and a tile-based GPU (Apple's) shades only the last of several
     opaque draws to a pixel. So a draw with no blend is repeated with one that replaces what
     is there, which costs the same and is shaded every time. A draw to a target that cannot

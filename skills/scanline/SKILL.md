@@ -57,7 +57,7 @@ A clip of the game to keep or post: `gfx_film(frames: 1800)` steps the page and 
 - `gfx_resource(handle: "shd_2")` gives a shader's source and compile log.
 - `gfx_resource(handle: "tex_3", preview: true)` shows a texture. `gfx_pixels(source: "tex_3", x, y)` reads its exact values, floats included.
 - `gfx_resource(handle: "ctx_1")` gives the WebGL state a draw would use right now: blend, depth, bound textures, vertex layout.
-- `gfx_stats()` gives frame pacing, CPU time and GPU time.
+- `gfx_stats()` gives frame pacing, CPU time and GPU time. On WebGPU the passes it lists can overlap, and it says when: their times are then not a sum.
 
 ## Finding a leak
 

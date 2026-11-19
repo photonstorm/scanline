@@ -691,11 +691,40 @@ Also fixed on the way: a frame-end hook that also runs when a timer draws was ta
 
 Tested: one unit test of the MP4's layout (every sample where the index says, the durations, the key frames, the edit list), and `tests/protocol.test.mjs`, "a film" (5 tests): the file's tracks, clocks and counts read from its boxes; with ffmpeg where there is one, the pictures to the pixel and each beep within 30 ms of its frame (it is 2 to 5 ms on a quiet machine; the test once failed in a full run at low priority beside other work, and what the sound can run on by is however long the page's thread is kept from stopping it, which the next frames then wait out); start and stop round a step, a policy and a slow step, at a size asked for; no sound asked for, and none played; the page as composited, each picture of its own frame; a kept run filmed whole and in part with its fingerprints matching.
 
+## GPU time of a WebGPU frame (19 November 2026)
+
+Found on the Mac, on a game with a 3D scene pass and a HUD pass at 2560×1440: `stats` read a mean of 17 to 27 ms of GPU time while the frame interval held at 16.67 ms, and gave the HUD pass (one line of text) nearly the time of the scene pass in every frame.
+
+`stats` gave a WebGPU frame's GPU time as its passes' times added up, each pass being its end time stamp less its start. That is right only where passes run one after another. On Apple's GPU they do not. One frame as the GPU stamped it, in ms after the first pass started:
+
+| Pass | Start | End | End less start |
+|---|---|---|---|
+| render pass 1 | 0.000 | 1.311 | 1.311 |
+| render pass 2 | 0.328 | 1.638 | 1.311 |
+| meshes3d.main | 0.655 | 12.583 | 11.928 |
+| render pass 4 (the HUD) | 1.049 | 13.697 | 12.648 |
+
+Every pass has started within a millisecond or so, and each ends after the one before it: a tile-based GPU does the vertex work of all the passes first and their fragment work after. Added up, that frame is 27.2 ms. It took 13.7 ms.
+
+What changed:
+
+- **A WebGPU frame's GPU time is the time at least one of its passes was under way**: the union of the passes' intervals (`shared/gpu-time.ts`, run by the probe in `probe/src/timing.ts`, with tests in `probe/test/gpu-time.test.mjs`). Where passes run one after another it is their sum, as before. Time between two passes when none was under way is not counted. The probe's one figure is what `stats`, `smoke`, `assert` (`max_gpu_ms`), `experiment`, the viewer's graph and the app's Live panel all read, so all of them follow.
+- **`stats` says when passes overlapped**, in how many of the frames, and what they add up to, so that the list of passes is not read as a sum. The list is still each pass from its start to its end.
+- **Beside each pass, what it added to the frame**: the part of its time that no pass ending sooner had covered. These add up to the frame's time. In the frame above the HUD pass added 1.1 ms. It is the better guide to where the time went, and still not exact: the vertex work of a later pass falls inside an earlier pass's time and is counted to it.
+- **`stats --json` has the raw figures**: `gpu.last` (the last frame measured: each pass's start and end, and when the first started on the GPU's clock), `gpu.sumMs` (the passes added up, which is what `gpu.ms` used to be), `gpu.spanMs` (first start to last end), `gpu.overlapped` (frames whose passes overlapped) and `added` in each of `gpu.passes`.
+- WebGL is unchanged: its timer queries run one after another and cannot overlap.
+
+What the figure still is not, found on the same game:
+
+- **It is time that passed, not work done, and Apple's GPU slows when it has little to do.** The GPU's clock keeps real time (twenty frames at the display's pace began 332.86 ms apart by it, 16.64 ms a frame), so a figure is the time from a stamp to a stamp, whatever the GPU did between them. With the game the only thing of Scanline's on the GPU, and nothing in it changing: 5 to 8 ms a frame at the display's pace once it had run a while (eight readings over 24 s); 9 to 13 ms in the first six seconds after it loaded; 7.8 ms for single steps one straight after another; and a mean of 11.7 ms, the middle 13.8 and the worst 19.7, for single steps with a second of nothing before each. So the less the GPU is asked to do, the longer the same frame reads, and a budget of GPU time ("under 8 ms") is met or missed by the state the GPU happens to be in. Whether a frame at a steady 60 a second reads more than the work it is could not be measured: frames run back to back are not timed (next item). What would make it comparable is what `DEPARTURES.md`, "Windows", says of the PC: a load that holds the clock up, or a known draw timed beside the page's. Neither is built.
+- **`step(fast: true)` measures one or two frames a call**, and they read anything (12.5, 2.9 and 4.4 ms in three calls): the browser sends frames run back to back to the GPU together, and one readback is in flight for the whole call. For GPU time, step without `fast`. `smoke` is not affected: it measured 128 of its 300 frames.
+- **The slow-frame journey on WebGPU** asserts that the `godrays` pass has over 60% of the frame's GPU time, by its start-to-end time. On a GPU whose passes overlap that pass is the last to end and would hold most of the frame's time whatever it cost; `added` is what the test should read there. It was not changed.
+
 ## Known gaps in what is built
 
 - Unlabelled WebGPU objects are not given generated labels, which the specification lists as a modification. They are named by handle in results instead.
 - "Last used" is exact for WebGL objects (at bind, and once a frame for what is bound when drawing). For WebGPU it is sampled: on a frame in sixteen, on any frame that begins a quarter of a second or more after the last sampled one (so frames stepped by hand are each looked at), and for the rest of any frame in which the page makes an object (so one made and used within a frame is seen), the probe notes the pipelines, bind groups, vertex and index buffers and bundles a pass sets, and the textures it draws to. Textures, buffers and samplers held by a used bind group or bundle are marked when the inventory is read. Rows say `used ~f120` or `not seen in use`. Following every frame would put a lookup on every `setBindGroup`.
-- WebGPU pass timing measures one frame at a time: a frame that ends while the previous readback is in flight goes unmeasured (about one frame in three at 60 Hz here).
+- WebGPU pass timing measures one frame at a time: a frame that ends while the previous readback is in flight goes unmeasured (about one frame in three at 60 Hz here, and all but one of the frames of a `step(fast: true)`).
 - Timer queries and timestamp writes are only added at the `observe` level and above, and never in unmodified mode.
 - If a WebGL 2 page has set the default framebuffer's read buffer to `NONE`, the readback raises a GL error the page can see.
 - Step broadcasts to every probe at once (frames and workers) but does not keep them in step with each other frame by frame.
